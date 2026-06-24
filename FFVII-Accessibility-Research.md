@@ -492,3 +492,35 @@ Character name tokens (0xEA–0xF2) should be replaced with the actual equipped 
 - [FF7 LGP Format — Qhimm Wiki](https://qhimm-modding.fandom.com/wiki/FF7/LGP_format)
 - [Makou Reactor (field editor)](https://github.com/myst6re/makoureactor)
 - [PCGamingWiki — FF7 2012/2013](https://www.pcgamingwiki.com/wiki/Final_Fantasy_VII_%282012%29)
+
+---
+
+## 9. Build History
+
+### v1 — First Successful Compile — 2026-06-24
+
+**Toolchain**: CMake 4.0.3 + MSVC 19.40 (Visual Studio BuildTools 2022), target x86 (32-bit)
+**Output**: `AccessibilityMod/build/dist/Release/winmm.dll` — 220,672 bytes, x86 `14C machine`
+**Exports**: 168 functions (167 runtime naked-JMP stubs + `timeGetTime` implemented by us)
+
+**Scope of v1**:
+- Field story dialog TTS (MESSAGE opcode 0x40) — state machine, page advance, silence on close
+- Field choice menu TTS (ASK opcode 0x48) — speaks full text on open; per-option cursor tracking deferred to v2
+- Config file (`ffvii_accessibility.cfg`) with per-feature toggles
+- Full winmm proxy (168 exports), hook chain compatible with FFNx
+
+**Key compile issues resolved**:
+
+1. **`.def` forwarding is circular**: `funcname = WINMM.funcname` in a .def file requires `winmm.lib` at link time. Adding `winmm.lib` makes our DLL import from "winmm.dll" — which is us at runtime, creating infinite forwarding. **Fix**: runtime naked-JMP stubs loading the real System32 `winmm.dll` by absolute path via `LoadLibraryA`.
+
+2. **MSVC STL requires `/EHsc`**: Disabling exceptions with `/EHs-c-` causes C4530 in every STL header (`string`, `fstream`, etc.) because MSVC's STL references exception internals even when the user never throws. **Fix**: use `/EHsc` (standard C++ exception handling).
+
+3. **CMake .def file**: Use the source list, not `LINK_FLAGS "/DEF:..."`. Adding `winmm.def` to `add_library(... SHARED ...)` sources is the CMake-native idiom — it handles path quoting and establishes build dependencies automatically.
+
+**What to test first** (before v2 work):
+- Drop `winmm.dll` + `Tolk.dll` into FF7 install folder
+- Verify story dialog is spoken on screen (MESSAGE opcode path)
+- Verify "Choose:" prefix on first choice menu appearance (ASK opcode path)
+- Confirm voice acting still works (FFNx chain not broken)
+- Verify `speak_dialog = false` in config silences dialog TTS while menus still work
+- If dialog TTS fires on wrong window: adjust `get_opcode_param_byte` index for ASK window_id (currently index 2; try 0 or 1 if wrong)
