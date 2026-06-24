@@ -1,0 +1,217 @@
+/*
+ * proxy.cpp -- version.dll proxy: 17 runtime stubs + background hook installer.
+ *
+ * WHY RUNTIME STUBS (not .def forwarding):
+ *   .def forwarding "funcname = VERSION.funcname" requires VERSION.lib at link
+ *   time, which makes the linker look for "VERSION" to verify the target.
+ *   When our DLL IS named "version.dll", the OS resolves "VERSION" to us,
+ *   creating an infinite forwarding loop. Runtime stubs bypass this entirely:
+ *   we load the real System32 version.dll by its full absolute path and
+ *   resolve each export directly via GetProcAddress.
+ *
+ * STUB MECHANISM (x86):
+ *   Every forwarded function is a naked JMP through a stored function pointer:
+ *
+ *     __declspec(naked) void Foo() { __asm { jmp [fp_Foo] } }
+ *
+ *   MSVC generates:  FF 25 [&fp_Foo]  (indirect JMP through memory)
+ *
+ *   This works for both __stdcall (callee cleans stack with RET N) and __cdecl
+ *   (caller cleans): the real function's prologue, body, and epilogue execute
+ *   exactly as if our stub never existed.
+ *
+ * WHY #define VER_H BEFORE INCLUDES:
+ *   windows.h unconditionally includes winver.h, which declares all 17 version
+ *   API functions (GetFileVersionInfoA, VerQueryValueA, etc.). Our MAKE_STUB
+ *   macro re-declares these as naked extern "C" functions with no parameters.
+ *   MSVC C2733 fires when two extern "C" declarations of the same name have
+ *   incompatible signatures, even across definition/declaration order.
+ *
+ *   winver.h uses #ifndef VER_H as its include guard (line 15). By defining
+ *   VER_H before any include, winver.h's body is skipped for this translation
+ *   unit. We need none of winver.h's declarations here — we never call these
+ *   functions directly, only forward to them. All other windows.h content
+ *   (HMODULE, GetSystemDirectoryA, CreateThread, etc.) is unaffected.
+ *
+ * BACKGROUND THREAD:
+ *   Unlike the original winmm proxy (which used timeGetTime as a per-frame
+ *   trigger), version.dll exports no high-frequency function. Instead,
+ *   Proxy::Init() spawns a background thread (InitThread) that:
+ *
+ *     1. Sleep(200ms) — by the time this elapses, DllMain has returned,
+ *        the loader lock is released, and FFNx has finished ff7_init_hooks.
+ *     2. Config::Load() — parse ffvii_accessibility.cfg (no DLL loading).
+ *     3. TTS::Init()   — LoadLibrary("Tolk.dll"); safe past the 200ms mark.
+ *     4. Loop: Hooks::Install() every 50ms until FF7's field module loads.
+ *     5. Exit.
+ *
+ *   The 50ms poll is invisible to the player: FF7 takes several seconds to
+ *   reach the first field map. Hooks::Install() is idempotent and fast
+ *   (two VirtualProtect + DWORD writes) so repeated calls before success
+ *   cause no side effects.
+ *
+ * VERSION.DLL EXPORTS (17, from dumpbin /exports C:\Windows\SysWOW64\version.dll):
+ *   VerLanguageNameA and VerLanguageNameW are forwarded by the system
+ *   version.dll to KERNEL32. GetProcAddress follows the forward chain
+ *   automatically and returns the kernel32 function address, so our stubs
+ *   redirect correctly without any special handling.
+ */
+
+// Suppress winver.h declarations BEFORE any include processes windows.h.
+// See file-level comment above for the full explanation.
+#define VER_H
+
+#include "proxy.h"
+#include "hooks.h"
+#include "tts.h"
+#include "config.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+// ---------------------------------------------------------------------------
+// Complete export list for version.dll.
+// Derived from: dumpbin /exports C:\Windows\SysWOW64\version.dll
+// ---------------------------------------------------------------------------
+#define VERSION_FORWARD_FUNCS(X) \
+    X(GetFileVersionInfoA)       \
+    X(GetFileVersionInfoByHandle)\
+    X(GetFileVersionInfoExA)     \
+    X(GetFileVersionInfoExW)     \
+    X(GetFileVersionInfoSizeA)   \
+    X(GetFileVersionInfoSizeExA) \
+    X(GetFileVersionInfoSizeExW) \
+    X(GetFileVersionInfoSizeW)   \
+    X(GetFileVersionInfoW)       \
+    X(VerFindFileA)              \
+    X(VerFindFileW)              \
+    X(VerInstallFileA)           \
+    X(VerInstallFileW)           \
+    X(VerLanguageNameA)          \
+    X(VerLanguageNameW)          \
+    X(VerQueryValueA)            \
+    X(VerQueryValueW)
+
+// ---------------------------------------------------------------------------
+// Pass 1: One void* function pointer per forwarded function.
+// Starts as nullptr; filled by GetProcAddress in Proxy::Init().
+// ---------------------------------------------------------------------------
+#define DECLARE_FP(name) static void* fp_##name = nullptr;
+VERSION_FORWARD_FUNCS(DECLARE_FP)
+#undef DECLARE_FP
+
+// ---------------------------------------------------------------------------
+// Pass 2: Naked stub bodies — one per forwarded function.
+//
+// Each generates FF 25 [&fp_name] (JMP DWORD PTR [abs_addr]).
+// The call passes control to the real function with the exact same stack
+// layout as a direct call. No prologue or epilogue needed.
+//
+// These work without parameter lists because we never touch the stack —
+// the real function handles its own calling convention cleanup.
+// ---------------------------------------------------------------------------
+#define MAKE_STUB(name) \
+    extern "C" void __declspec(naked) name() { __asm { jmp [fp_##name] } }
+VERSION_FORWARD_FUNCS(MAKE_STUB)
+#undef MAKE_STUB
+
+// ---------------------------------------------------------------------------
+// Background initialization thread.
+//
+// This thread handles Config/TTS/Hook init outside the loader lock.
+// Created by Proxy::Init() during DllMain DLL_PROCESS_ATTACH.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI InitThread(LPVOID /*unused*/)
+{
+    // Wait for DllMain to return and the loader lock to be released before
+    // calling LoadLibrary (TTS::Init → Tolk.dll). Also ensures FFNx has
+    // completed ff7_find_externals / ff7_init_hooks, which happen during
+    // the first game frames well within this 200ms window.
+    //
+    // CreateThread from DllMain is technically a grey area per MSDN, but is
+    // the established standard for proxy DLLs (used by ReShade, ENBSeries,
+    // DXVK, etc.) and is safe here because DisableThreadLibraryCalls() was
+    // called before us, and this Sleep() guards the LoadLibrary call.
+    Sleep(200);
+
+    // Load and parse ffvii_accessibility.cfg. Pure file I/O; no DLL loading.
+    Config::Load();
+
+    // Initialize the Tolk screen reader library. Calls LoadLibrary("Tolk.dll").
+    // Safe here because 200ms have passed and the loader lock is long released.
+    TTS::Init();
+
+    // Poll until FF7's field opcode dispatch table is populated.
+    // Hooks::Install() calls FF7Addr::Resolve() internally, which returns
+    // false when table[0x40] is still zero (field module not yet loaded).
+    // The 50ms interval is imperceptible — FF7 takes seconds to reach the
+    // first field map after startup.
+    while (!Hooks::Install()) {
+        Sleep(50);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Proxy::Init and Proxy::Shutdown
+// ---------------------------------------------------------------------------
+
+namespace Proxy {
+
+static HMODULE s_real_version = nullptr;
+static bool    s_loaded       = false;
+
+void Init()
+{
+    if (s_loaded) return;
+    s_loaded = true;
+
+    // Load the real system version.dll from System32 by full absolute path.
+    // Using the full path creates a distinct module-list entry (System32\version.dll)
+    // separate from our proxy (FINAL FANTASY VII\version.dll). Both coexist in
+    // the process because Windows module identity is based on the canonical path.
+    char sys_dir[MAX_PATH]  = {};
+    char real_path[MAX_PATH] = {};
+    GetSystemDirectoryA(sys_dir, MAX_PATH);
+    _snprintf_s(real_path, MAX_PATH, _TRUNCATE, "%s\\version.dll", sys_dir);
+
+    s_real_version = LoadLibraryA(real_path);
+    if (!s_real_version) {
+        OutputDebugStringA("[FF7Access] FATAL: could not load system version.dll.\n");
+        return;
+    }
+
+    // Pass 3: Resolve all 17 stub function pointers.
+    // GetProcAddress follows DLL forwarder chains automatically, so
+    // VerLanguageNameA/W resolve to their kernel32 implementations.
+#define RESOLVE_FP(name) fp_##name = GetProcAddress(s_real_version, #name);
+    VERSION_FORWARD_FUNCS(RESOLVE_FP)
+#undef RESOLVE_FP
+
+    // Spawn the background init thread. We do NOT wait for it; it runs
+    // independently and exits after Hooks::Install() succeeds.
+    //
+    // DisableThreadLibraryCalls() was called in DllMain before this function,
+    // which suppresses DLL_THREAD_ATTACH notifications for our DLL and reduces
+    // loader lock contention from the new thread's startup sequence.
+    HANDLE hThread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+    if (hThread) {
+        CloseHandle(hThread); // Don't need to join; thread exits on its own.
+    } else {
+        OutputDebugStringA("[FF7Access] Warning: could not create init thread. "
+                           "Hooks will not be installed.\n");
+    }
+}
+
+void Shutdown()
+{
+    if (s_real_version) {
+        FreeLibrary(s_real_version);
+        s_real_version = nullptr;
+    }
+}
+
+} // namespace Proxy

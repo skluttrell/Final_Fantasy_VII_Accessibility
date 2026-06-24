@@ -81,12 +81,21 @@ bool Resolve()
 
     // Step 1c: Verify the table's MESSAGE entry (opcode 0x40) points somewhere
     //          plausible. If the field module hasn't initialized yet, this entry
-    //          will be 0 or an invalid address. We use this to detect "not ready."
+    //          will be zero (BSS-initialized global array). We use this to detect
+    //          "not ready."
+    //
+    // Accept any address >= 0x400000, which covers:
+    //   - Original FF7 handler (~0x60xxxx) — table populated, FFNx not yet loaded
+    //   - FFNx's patched handler (~0x69xxxxxx) — normal case when running with FFNx
+    //   - Our own hook function (in our DLL range) — already installed, won't get here
+    //
+    // The previous narrower check (0x401000 to 0x9FFFFF) was wrong: FFNx patches
+    // the opcode table during ff7_init_hooks (before our thread runs), so table[0x40]
+    // is already 0x69xxxxxx when we first check. The old check rejected that range
+    // as "not ready," causing Resolve() to return false permanently.
     const uint32_t msg_handler = reinterpret_cast<const uint32_t*>(table_ptr)[0x40];
-    if (msg_handler < 0x401000 || msg_handler > 0x9FFFFF) {
-        // This is the most common early-call case: timeGetTime fired before the
-        // field module populated the opcode table. Return false so the caller
-        // will retry on the next timeGetTime call.
+    if (msg_handler < 0x400000) {
+        // Table entry is zero or near-zero — field module not yet initialized.
         return false;
     }
 

@@ -2,7 +2,7 @@
 
 A screen reader / TTS accessibility mod for **Final Fantasy VII (2013 Steam Edition)**, built for blind and visually impaired players.
 
-Implemented as a `winmm.dll` proxy DLL. Drop it into your FF7 install folder alongside your existing mods — no changes to your workflow required.
+Implemented as a `version.dll` proxy DLL. Drop it into your FF7 install folder alongside your existing mods — no changes to your workflow required.
 
 ---
 
@@ -29,7 +29,7 @@ Works with **NVDA**, **JAWS**, and Windows **SAPI** (Narrator / any SAPI voice).
 - **FFNx** (graphics/audio/voice acting mod used by 7th Heaven) — fully compatible. If FFNx has hooked into game functions before us, we chain through FFNx's handlers. Voice acting and TTS fire simultaneously.
 - **Voice acting packs** (e.g., Echo-S) — compatible. Use `speak_dialog = false` in the config file if you prefer to hear the voice actors rather than the screen reader reading dialog text. Choice menus, battle, and main menu TTS are controlled separately.
 - **Footstep audio mods** — compatible.
-- **Other winmm.dll proxies** (e.g., Reunion mod) — if you already have a `winmm.dll` proxy, rename it to `winmm_chain.dll`. Chaining support is planned for v2; v1 assumes this mod is the only winmm proxy.
+- **Other winmm.dll proxies** (e.g., Reunion mod) — fully compatible. We no longer use `winmm.dll`; we use `version.dll` instead, so there is no conflict with other winmm proxies.
 
 ---
 
@@ -47,7 +47,7 @@ Works with **NVDA**, **JAWS**, and Windows **SAPI** (Narrator / any SAPI voice).
 2. Copy all files into your **FF7 install folder** (the folder containing `FF7.exe`):
    ```
    FF7 install folder/
-     winmm.dll                   ← the accessibility mod
+     version.dll                 ← the accessibility mod
      Tolk.dll                    ← screen reader library
      nvdaControllerClient32.dll  ← NVDA support
      ffvii_accessibility.cfg     ← configuration (edit to your preference)
@@ -107,15 +107,15 @@ cmake -B build -A Win32
 # Build Release
 cmake --build build --config Release
 
-# Output: build/dist/Release/winmm.dll
+# Output: build/dist/Release/version.dll
 ```
 
-Copy `build/dist/Release/winmm.dll` to your FF7 folder alongside `Tolk.dll` and `ffvii_accessibility.cfg`.
+Copy `build/dist/Release/version.dll` to your FF7 folder alongside `Tolk.dll` and `ffvii_accessibility.cfg`.
 
-### First Successful Build
+### Build History
 
-v1 compiled successfully on **2026-06-24** with CMake 4.0.3 + MSVC 19.40 (VS BuildTools 2022).
-Output: `winmm.dll` — 220 KB, x86 32-bit, 168 exports.
+- **v1.0 (2026-06-24)**: First compile as `winmm.dll` — 220 KB, 168 exports. Crashed on first test: FFNx's `ff7_find_externals` walked our naked JMP stubs as if they were real winmm code and crashed with Exception 0xc0000005.
+- **v1.1 (2026-06-24)**: Switched to `version.dll` proxy — 205 KB, 17 exports. Fixes the FFNx crash. Background thread replaces timeGetTime trigger. Resolved readiness check widened to accept FFNx-patched addresses.
 
 ---
 
@@ -123,11 +123,13 @@ Output: `winmm.dll` — 220 KB, x86 32-bit, 168 exports.
 
 ### How the Proxy Works
 
-FF7.exe imports `timeGetTime` from `winmm.dll`. By placing our DLL in the FF7 folder, Windows loads it instead of the system winmm. Our DLL:
+FF7 (and FFNx) import `version.dll` for version resource lookups. By placing our DLL in the FF7 folder, Windows loads it instead of the system copy. Our DLL:
 
-1. At load time (`DllMain`): loads the **real** system `winmm.dll` from `System32` by its full path, capturing all real function pointers.
-2. For every winmm function except `timeGetTime`: implements a **naked JMP stub** that redirects to the real system function with zero overhead.
-3. For `timeGetTime`: runs our implementation, which on first call installs hooks and delegates to the real function. The game's timing is unaffected.
+1. At load time (`DllMain`): loads the **real** system `version.dll` from `System32` by its full path, capturing all 17 real function pointers. Spawns a background init thread.
+2. For all 17 version.dll exports: implements a **naked JMP stub** that redirects to the real system function with zero overhead.
+3. The **background thread** (started from `DllMain`, runs after the loader lock releases): waits 200ms, loads config and TTS, then polls every 50ms until FF7's field module is ready, then installs hooks.
+
+**Why not `winmm.dll`**: FFNx's address resolution (`ff7_find_externals`) uses `GetModuleHandle("winmm.dll")` as an anchor, then walks the real winmm code at specific offsets. When we were `winmm.dll`, it got our JMP stubs instead of real code, found unexpected bytes, and crashed. `version.dll` is not used by FFNx for this purpose.
 
 ### Hook Mechanism
 
@@ -188,9 +190,9 @@ FFVII-Access/
       config.h/.cpp           ffvii_accessibility.cfg parser
       tts.h/.cpp              Tolk runtime loader + speak/silence API
       hooks.h/.cpp            Opcode table patching (MESSAGE, ASK)
-      winmm_proxy.h/.cpp      167 naked-JMP stubs + timeGetTime
+      proxy.h/.cpp            17 naked-JMP stubs + background init thread
       dllmain.cpp             DLL entry point
-    winmm.def                 Export names
+    version.def               Export names (17 version.dll exports)
     CMakeLists.txt            CMake build (x86 enforced)
     ffvii_accessibility.cfg   Default configuration
   FFNx/                       FFNx source (reference — not modified)

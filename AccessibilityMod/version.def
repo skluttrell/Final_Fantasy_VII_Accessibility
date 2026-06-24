@@ -1,0 +1,33 @@
+; version.def -- Export definitions for the FF7 Accessibility Mod version.dll proxy.
+;
+; WHY NOT .DEF FORWARDING (funcname = VERSION.funcname):
+;   .def forwarding requires VERSION.lib at link time, which creates a circular
+;   import dependency when our DLL IS named "version.dll". All exports here are
+;   implemented as runtime naked-JMP stubs in proxy.cpp instead.
+;
+; All 17 entries match the exports from C:\Windows\SysWOW64\version.dll
+; as verified by: dumpbin /exports C:\Windows\SysWOW64\version.dll
+;
+; VerLanguageNameA and VerLanguageNameW are forwarded by the system version.dll
+; to KERNEL32. Our GetProcAddress call follows that forward automatically.
+
+LIBRARY version
+
+EXPORTS
+    GetFileVersionInfoA
+    GetFileVersionInfoByHandle
+    GetFileVersionInfoExA
+    GetFileVersionInfoExW
+    GetFileVersionInfoSizeA
+    GetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW
+    GetFileVersionInfoSizeW
+    GetFileVersionInfoW
+    VerFindFileA
+    VerFindFileW
+    VerInstallFileA
+    VerInstallFileW
+    VerLanguageNameA
+    VerLanguageNameW
+    VerQueryValueA
+    VerQueryValueW

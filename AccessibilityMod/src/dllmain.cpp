@@ -1,34 +1,46 @@
 /*
- * dllmain.cpp -- DLL entry point for the FF7 Accessibility Mod (winmm.dll proxy).
+ * dllmain.cpp -- DLL entry point for the FF7 Accessibility Mod (version.dll proxy).
+ *
+ * WHY VERSION.DLL (NOT WINMM.DLL):
+ *   The original implementation used winmm.dll as the proxy. This caused an
+ *   immediate crash: FFNx's ff7_find_externals() uses GetModuleHandle("winmm.dll")
+ *   + GetProcAddress to get a function address it then walks instruction-by-
+ *   instruction. When we were winmm.dll, it got our naked JMP stub (6 bytes:
+ *   FF 25 [addr]) instead of real winmm code, found 0xF800 where it expected
+ *   an E8 CALL opcode, and crashed with Exception 0xc0000005. Switching to
+ *   version.dll avoids this: FFNx does not walk version.dll's internals.
+ *   See proxy.h for the full analysis.
  *
  * DLL_PROCESS_ATTACH:
- *   - Call WinmmProxy::Init() to load the system winmm.dll and capture the
- *     real timeGetTime pointer. This is safe from DllMain because we use the
- *     full System32 path (see winmm_proxy.h for the reasoning).
- *   - Config, TTS, and hook installation are deferred to the first call of
- *     our timeGetTime() implementation (see winmm_proxy.cpp).
+ *   - DisableThreadLibraryCalls() — suppresses DLL_THREAD_ATTACH/DETACH
+ *     notifications and reduces loader lock contention from the init thread.
+ *     Must be called BEFORE Proxy::Init() spawns the background thread.
+ *   - Proxy::Init() — loads the real system version.dll from System32,
+ *     resolves all 17 function pointers, and spawns the background init thread.
+ *
+ * Background thread (in proxy.cpp):
+ *   - Sleeps 200ms (loader lock released, FFNx init complete)
+ *   - Config::Load() + TTS::Init()
+ *   - Polls Hooks::Install() every 50ms until FF7's field module is ready
+ *   - Exits after successful install
  *
  * DLL_PROCESS_DETACH:
- *   - Uninstall hooks (restores game memory to its previous state).
- *   - Shut down TTS (silences screen reader, unloads Tolk.dll).
- *   - Unload system winmm handle.
+ *   - Hooks::Uninstall() — restore game memory to pre-hook state
+ *   - TTS::Shutdown()    — silence screen reader, release Tolk.dll
+ *   - Proxy::Shutdown()  — release system version.dll handle
  *
- * DLL_THREAD_ATTACH / DLL_THREAD_DETACH:
- *   - Not used. All our work happens on the main game thread.
- *     DisableThreadLibraryCalls() prevents these notifications for efficiency.
- *
- * LOADER LOCK NOTE:
- *   Windows calls DllMain with the loader lock held. Calling LoadLibrary,
- *   CreateThread, or most synchronization primitives from DllMain is unsafe.
- *   The ONLY Win32 calls made here during DLL_PROCESS_ATTACH are:
- *     - DisableThreadLibraryCalls (safe, documented exception)
- *     - WinmmProxy::Init → GetSystemDirectoryA, LoadLibraryA, GetProcAddress
- *   LoadLibraryA with a Known DLL full path is a documented safe case: the
- *   system winmm.dll is a Known DLL and its init has already completed before
- *   ours starts (it has no circular dependency on user-mode DLLs).
+ * LOADER LOCK:
+ *   DllMain runs with the loader lock held. Calls made here:
+ *     - DisableThreadLibraryCalls — documented safe from DllMain
+ *     - Proxy::Init → GetSystemDirectoryA, LoadLibraryA (version.dll has
+ *       no circular deps), GetProcAddress, CreateThread
+ *   The background thread starts with Sleep(200ms), ensuring DllMain has
+ *   returned and the loader lock is released before any LoadLibrary calls
+ *   in the thread (TTS::Init → Tolk.dll). This is the standard proxy DLL
+ *   pattern used by ReShade, ENBSeries, DXVK, and others.
  */
 
-#include "winmm_proxy.h"
+#include "proxy.h"
 #include "hooks.h"
 #include "tts.h"
 
@@ -42,27 +54,24 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
     switch (fdwReason)
     {
     case DLL_PROCESS_ATTACH:
-        // Disable DLL_THREAD_ATTACH/DETACH notifications — we have no
-        // per-thread state and this avoids unnecessary DllMain re-entries.
+        // Must be called before CreateThread in Proxy::Init() to suppress
+        // DLL_THREAD_ATTACH notifications and reduce loader lock pressure.
         DisableThreadLibraryCalls(hinstDLL);
 
-        // Load the real system winmm.dll and capture its timeGetTime pointer.
-        // All other initialization (Config, TTS, Hooks) is deferred to the
-        // first timeGetTime() call, safely outside the loader lock.
-        WinmmProxy::Init();
+        // Load system version.dll, capture all 17 function pointers, and
+        // spawn the background thread that installs hooks when FF7 is ready.
+        Proxy::Init();
         break;
 
     case DLL_PROCESS_DETACH:
-        // Restore game memory to its pre-hook state before we unload.
-        // This prevents crashes if the game somehow continues to execute
-        // after the DLL is detached (edge case with some mod managers).
+        // Restore opcode table entries to their pre-hook values.
         Hooks::Uninstall();
 
-        // Stop any in-progress TTS speech and release Tolk.dll.
+        // Silence any ongoing TTS speech and unload Tolk.dll.
         TTS::Shutdown();
 
-        // Release our handle to the system winmm.dll.
-        WinmmProxy::Shutdown();
+        // Release our handle to the system version.dll.
+        Proxy::Shutdown();
         break;
 
     default:

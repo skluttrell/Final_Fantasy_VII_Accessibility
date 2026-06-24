@@ -90,10 +90,10 @@ static void patch_dword(uint32_t addr, uint32_t new_value)
 // Saved original function pointers
 //
 // Before installing our hooks we save the current value in each slot.
-// Because FFNx loads before us (AF3DN.P is loaded during DirectX init, which
-// happens before our timeGetTime fires in the game loop), these saved values
-// point to FFNx's handlers, not the bare FF7 originals. Chaining through them
-// means both FFNx voice acting and our TTS fire correctly.
+// FFNx completes ff7_init_hooks during early game startup — well before our
+// background thread's 200ms sleep elapses and Install() is called. So these
+// saved values point to FFNx's handlers, not the bare FF7 originals.
+// Chaining through them means both FFNx voice acting and our TTS fire correctly.
 // ---------------------------------------------------------------------------
 
 // Saved opcode table entry for MESSAGE (0x40).
@@ -205,10 +205,10 @@ static int __cdecl hook_message()
 // Per-option TTS (speak only the currently-highlighted option as the cursor
 // moves) is deferred to v2. It requires patching the CALL to
 // field_opcode_ask_update_loop_6310A1 inside FF7's ORIGINAL opcode_ask
-// function at offset +0x8E. That approach is unsafe here because by the time
-// our timeGetTime fires, FFNx has already replaced execute_opcode_table[0x48]
-// with its own handler — so s_old_ask points to FFNx's compiled function, not
-// FF7's opcode_ask, and the +0x8E offset into FFNx's code is meaningless.
+// function at offset +0x8E. That approach is unsafe here because FFNx has
+// already replaced execute_opcode_table[0x48] with its own handler by the
+// time our hooks install — so s_old_ask points to FFNx's compiled function,
+// not FF7's opcode_ask, and the +0x8E offset into FFNx's code is meaningless.
 // ---------------------------------------------------------------------------
 static int __cdecl hook_ask(int unk)
 {

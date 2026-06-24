@@ -21,10 +21,10 @@
  *   mod blocks the other.
  *
  * THREAD SAFETY:
- *   Install() must be called from the game's main thread, during the game loop,
- *   after the game has finished initializing. It is not safe to call from
- *   DllMain. The winmm_proxy.cpp timeGetTime hook triggers Install() at the
- *   right moment.
+ *   Install() is called from the background init thread (proxy.cpp InitThread),
+ *   which runs after the main thread's DllMain has returned and the loader lock
+ *   is released. The opcode table DWORD write is atomic on x86 for naturally-
+ *   aligned 4-byte accesses, so no additional locking is needed.
  */
 
 #pragma once
@@ -32,16 +32,16 @@
 namespace Hooks {
 
 /*
- * Install: Patch the opcode table and CALL sites to redirect game functions
- * through our hook handlers.
+ * Install: Patch the opcode table entries to redirect game functions through
+ * our hook handlers.
  *
  * This function is idempotent — calling it more than once is a no-op.
- * It is called once from WinmmProxy::OnGameLoopStarted() the first time
- * timeGetTime is called after the game's field subsystem has initialized.
+ * It is polled by the background init thread (proxy.cpp) every 50ms until
+ * FF7's field subsystem has initialized and the opcode table is populated.
  *
  * Returns true if all hooks were installed successfully.
- * Returns false if FF7Addr::Resolve() failed (game not yet initialized, or
- * wrong exe version). The caller should retry on the next timeGetTime call.
+ * Returns false if FF7Addr::Resolve() failed (field module not yet loaded, or
+ * wrong exe version). The background thread will retry after 50ms.
  */
 bool Install();
 

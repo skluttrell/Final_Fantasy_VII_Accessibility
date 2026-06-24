@@ -215,7 +215,7 @@ inline uint32_t read_abs_ref_at(uint32_t addr, uint32_t byte_offset)
  *
  * Must be called after the game has finished initializing (the opcode table
  * is only populated once the field module's init function has run).
- * The winmm_proxy.cpp timeGetTime hook calls this once at the right time.
+ * The background init thread (proxy.cpp) polls this until it returns true.
  *
  * Returns true if all addresses were resolved successfully.
  * Returns false if any pointer looks invalid (game not yet initialized,
