@@ -27,6 +27,7 @@
  * DLL_PROCESS_DETACH:
  *   - Hooks::Uninstall() — restore game memory to pre-hook state
  *   - TTS::Shutdown()    — silence screen reader, release Tolk.dll
+ *   - Log::Shutdown()    — flush and close the debug log file (if open)
  *   - Proxy::Shutdown()  — release system version.dll handle
  *
  * LOADER LOCK:
@@ -43,6 +44,7 @@
 #include "proxy.h"
 #include "hooks.h"
 #include "tts.h"
+#include "log.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -69,6 +71,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
 
         // Silence any ongoing TTS speech and unload Tolk.dll.
         TTS::Shutdown();
+
+        // Flush and close the debug log file (if open).
+        Log::Shutdown();
 
         // Release our handle to the system version.dll.
         Proxy::Shutdown();

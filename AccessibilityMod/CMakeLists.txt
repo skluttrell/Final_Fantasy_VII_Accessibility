@@ -39,6 +39,7 @@ set(MOD_SOURCES
     src/ff7_addresses.cpp
     src/ff7_text.cpp
     src/config.cpp
+    src/log.cpp             # debug logging: file output + OutputDebugStringA
     src/tts.cpp
     # Including version.def in the source list is the correct CMake idiom for MSVC:
     # CMake recognizes .def files and passes them to the linker as /DEF:version.def.

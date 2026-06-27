@@ -27,48 +27,48 @@ extern "C" {
  * Must be called once before any other Tolk function.
  * Automatically detects the active screen reader (NVDA, JAWS, etc.).
  */
-void WINAPI Tolk_Load();
+voidTolk_Load();
 
 /*
  * Tolk_IsLoaded: Returns true if Tolk_Load() has been called successfully.
  */
-bool WINAPI Tolk_IsLoaded();
+boolTolk_IsLoaded();
 
 /*
  * Tolk_Unload: Uninitialize Tolk and release all resources.
  * Call this when the host application is shutting down.
  */
-void WINAPI Tolk_Unload();
+voidTolk_Unload();
 
 /*
  * Tolk_TrySAPI: If true, Tolk will try Windows SAPI as a last-resort
  * when no dedicated screen reader (NVDA/JAWS) is detected.
  * Call before Tolk_Load() to take effect at initialization.
  */
-void WINAPI Tolk_TrySAPI(bool trySAPI);
+voidTolk_TrySAPI(bool trySAPI);
 
 /*
  * Tolk_PreferSAPI: If true, SAPI is used even when NVDA/JAWS is running.
  * Not typically desired; here for completeness.
  */
-void WINAPI Tolk_PreferSAPI(bool preferSAPI);
+voidTolk_PreferSAPI(bool preferSAPI);
 
 /*
  * Tolk_DetectScreenReader: Returns the name of the active screen reader
  * (e.g. "NVDA", "JAWS"), or NULL if none is detected.
  * Returned string is owned by Tolk; do not free it.
  */
-const wchar_t* WINAPI Tolk_DetectScreenReader();
+const wchar_t*Tolk_DetectScreenReader();
 
 /*
  * Tolk_HasSpeech: Returns true if the active screen reader supports speech.
  */
-bool WINAPI Tolk_HasSpeech();
+boolTolk_HasSpeech();
 
 /*
  * Tolk_HasBraille: Returns true if the active screen reader supports braille output.
  */
-bool WINAPI Tolk_HasBraille();
+boolTolk_HasBraille();
 
 /*
  * Tolk_Output: Send text to both speech and braille simultaneously.
@@ -76,7 +76,7 @@ bool WINAPI Tolk_HasBraille();
  * interrupt: If true, cancel any currently-playing speech before starting.
  * Returns true on success.
  */
-bool WINAPI Tolk_Output(const wchar_t* str, bool interrupt);
+boolTolk_Output(const wchar_t* str, bool interrupt);
 
 /*
  * Tolk_Speak: Send text to the speech synthesizer only (no braille).
@@ -84,24 +84,24 @@ bool WINAPI Tolk_Output(const wchar_t* str, bool interrupt);
  * interrupt: If true, cancel any currently-playing speech before starting.
  * Returns true on success.
  */
-bool WINAPI Tolk_Speak(const wchar_t* str, bool interrupt);
+boolTolk_Speak(const wchar_t* str, bool interrupt);
 
 /*
  * Tolk_Braille: Send text to the braille display only (no speech).
  * Returns true on success.
  */
-bool WINAPI Tolk_Braille(const wchar_t* str);
+boolTolk_Braille(const wchar_t* str);
 
 /*
  * Tolk_IsSpeaking: Returns true if speech is currently being output.
  */
-bool WINAPI Tolk_IsSpeaking();
+boolTolk_IsSpeaking();
 
 /*
  * Tolk_Silence: Interrupt and cancel any currently-playing speech.
  * Returns true on success.
  */
-bool WINAPI Tolk_Silence();
+boolTolk_Silence();
 
 #ifdef __cplusplus
 }

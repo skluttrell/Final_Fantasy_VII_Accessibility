@@ -47,6 +47,7 @@ static const wchar_t* token_placeholder(uint8_t token_byte)
     case 0xED: return L"[target]";
     case 0xEE: return L"[attack]";
     case 0xEF: return L"[special]";
+    case 0xF0: return L"[target letter]";  // Source: FFNx voice.cpp case 0xF0
     default:   return L"[...]";
     }
 }
@@ -61,36 +62,59 @@ std::wstring Decode(const char* encoded_text)
     const uint8_t* p = reinterpret_cast<const uint8_t*>(encoded_text);
     bool at_start = true; // Used to detect speaker-name tokens at position 0.
 
-    while (*p != 0xFF) {
+    // Safety cap: FF7 dialog strings are never more than a few hundred bytes.
+    // Without this limit, a stale or garbage pointer (e.g. freed text from
+    // the Echo-S intro still held in DIALOG_TEXT_PTRS) would run the loop
+    // into unmapped memory, causing an access violation. 4096 bytes is a
+    // safe upper bound that no real FF7 string will approach.
+    const uint8_t* const p_end = p + 4096;
+
+    while (p < p_end && *p != 0xFF) {
         const uint8_t byte = *p;
 
-        if (byte >= 0xEA && byte <= 0xF2) {
-            // Character name token. These single bytes represent a character's name.
-            // At the start of a string they indicate the speaking character.
-            // Mid-string they are unusual but still decoded as the name.
+        if (at_start && byte >= 0xEA && byte <= 0xF2) {
+            // Speaker indicator: a character name token as the FIRST byte of dialog.
+            // 0xEA=Cloud, 0xEB=Barret, ..., 0xF2=Cid. Single byte, no data bytes.
+            // Format as "CharName: " to separate speaker from dialog text.
             const int name_idx = byte - 0xEA;
             if (name_idx < kCharNameCount) {
-                if (at_start) {
-                    // Format as "CharName: " — the colon and space separate the
-                    // speaker's name from the dialog text that follows.
-                    result += kCharNames[name_idx];
-                    result += L": ";
-                } else {
-                    result += kCharNames[name_idx];
-                }
+                result += kCharNames[name_idx];
+                result += L": ";
             }
             ++p;
             at_start = false;
         }
-        else if (byte >= 0xEB && byte <= 0xEF) {
-            // 4-byte dynamic token: [token_byte][data0][data1][data2].
-            // This range overlaps with character name tokens 0xEB–0xEF, but
-            // when used as a dynamic token the 3 following bytes are data bytes.
-            // We emit a human-readable placeholder so the TTS output still
-            // makes grammatical sense.
+        else if (byte >= 0xEB && byte <= 0xF0) {
+            // Mid-string dynamic token: [type_byte][data0][data1][data2] — 4 bytes total.
+            // The same byte values 0xEB-0xEF serve as speaker indicators at position 0
+            // (handled above) but are 4-byte dynamic tokens everywhere else.
+            // 0xF0 is "target letter" — only appears mid-string, no speaker use.
+            // Source: FFNx voice.cpp decode_ff7_text cases 0xEB-0xF0.
+            //
+            // WHY THIS BRANCH MUST COME BEFORE THE NORMAL-CHAR BRANCH:
+            //   Without this, the data bytes following the token header would be
+            //   decoded as normal characters (byte+0x20), producing garbage like
+            //   the "ö­ù" prefix observed before character name outputs.
             result += token_placeholder(byte);
-            // Skip the 3 data bytes that follow the token header.
-            p += 4;
+            p += 4;  // skip type byte + 3 data bytes
+            at_start = false;
+        }
+        else if (byte == 0xEA) {
+            // 0xEA mid-string: inline reference to the current party leader's name.
+            // In most runs this is Cloud; v1 hardcodes the default since reading
+            // the savemap rename is deferred to v2.
+            result += kCharNames[0];  // Cloud
+            ++p;
+            at_start = false;
+        }
+        else if (byte >= 0xF1 && byte <= 0xF2) {
+            // 0xF1=Vincent, 0xF2=Cid appearing mid-string. Rare but possible when
+            // a character name is referenced inline in dialog text.
+            const int name_idx = byte - 0xEA;
+            if (name_idx < kCharNameCount) {
+                result += kCharNames[name_idx];
+            }
+            ++p;
             at_start = false;
         }
         else if (byte == 0xF8) {
@@ -122,12 +146,39 @@ std::wstring Decode(const char* encoded_text)
         }
     }
 
-    // Trim trailing whitespace (newlines at the end of dialog produce trailing spaces).
-    while (!result.empty() && result.back() == L' ') {
-        result.pop_back();
+    // TEMPORARY ASCII FILTER:
+    // Many FF7 bytes in the 0x5F-0xDF range decode incorrectly via byte+0x20
+    // (e.g., 0xB2 → U+00D2 'Ò' instead of the left curly quote FF7 actually renders,
+    // 0xB5 → U+00D5 'Õ' instead of apostrophe). There are also 3-byte window-style
+    // header sequences (e.g., 0xD6 ?? 0xD9) at the start of some dialogs that decode
+    // to extended Latin characters. All of these produce garbled TTS output.
+    //
+    // Until a proper lookup table is in place, strip every character outside printable
+    // ASCII (U+0020–U+007E) and replace it with a space to preserve word boundaries.
+    // Consecutive non-ASCII characters produce only a single replacement space.
+    //
+    // WHY NOT JUST STRIP (leave nothing): stripping without spacing would concatenate
+    // adjacent words ("Cloud" + "Cloud Strife" → "CloudCloud Strife") which TTS reads
+    // as one word. A replacement space keeps words audibly separate.
+    std::wstring filtered;
+    filtered.reserve(result.size());
+    bool prev_was_space = true; // treat virtual start-of-string as space
+    for (wchar_t ch : result) {
+        if (ch >= 0x0020 && ch <= 0x007E) {
+            filtered += ch;
+            prev_was_space = (ch == L' ');
+        } else if (!prev_was_space) {
+            filtered += L' ';
+            prev_was_space = true;
+        }
+        // Else: consecutive non-ASCII after a space — skip (no double spaces).
     }
 
-    return result;
+    // Trim leading and trailing spaces introduced by the filter.
+    const std::wstring::size_type first = filtered.find_first_not_of(L' ');
+    if (first == std::wstring::npos) return {}; // all whitespace
+    const std::wstring::size_type last = filtered.find_last_not_of(L' ');
+    return filtered.substr(first, last - first + 1);
 }
 
 } // namespace FF7Text

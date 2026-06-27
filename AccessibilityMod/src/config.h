@@ -43,6 +43,15 @@ struct Settings {
     // Set to false if your screen reader handles queuing better than interruption.
     // Default: true.
     bool interrupt = true;
+
+    // debug_log: If true, all [FF7Access] diagnostic messages are written to
+    // ffvii_accessibility.log in the FF7 install folder. The log file is
+    // overwritten each session so it contains only the most recent run.
+    //
+    // Enable this when reporting a bug: reproduce the issue, then send the
+    // ffvii_accessibility.log file alongside your bug report.
+    // Default: false.
+    bool debug_log = false;
 };
 
 // Load reads ffvii_accessibility.cfg from the DLL's own directory.

@@ -11,6 +11,7 @@
 
 #include "tts.h"
 #include "config.h"
+#include "log.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -24,23 +25,35 @@ namespace {
 
     // Function pointer types matching the Tolk C API signatures.
     // These match the declarations in deps/tolk/Tolk.h.
-    using Fn_Tolk_Load            = void    (WINAPI*)();
-    using Fn_Tolk_IsLoaded        = bool    (WINAPI*)();
-    using Fn_Tolk_Unload          = void    (WINAPI*)();
-    using Fn_Tolk_TrySAPI         = void    (WINAPI*)(bool);
-    using Fn_Tolk_Output          = bool    (WINAPI*)(const wchar_t*, bool);
-    using Fn_Tolk_Speak           = bool    (WINAPI*)(const wchar_t*, bool);
-    using Fn_Tolk_Silence         = bool    (WINAPI*)();
-    using Fn_Tolk_DetectScreenReader = const wchar_t* (WINAPI*)();
+    //
+    // WHY NO WINAPI (__stdcall):
+    //   The dkager Tolk C API is compiled with no explicit calling convention,
+    //   which defaults to __cdecl in MSVC. __cdecl means the CALLER cleans the
+    //   stack after the call (compiler emits "add esp, N" after the call site).
+    //   __stdcall (WINAPI) means the CALLEE cleans (emits "ret N"). Declaring
+    //   a __cdecl function as __stdcall causes the compiler to omit the "add
+    //   esp, N" cleanup, leaving arguments on the stack. For any function that
+    //   takes parameters (Tolk_TrySAPI, Tolk_Speak), this silently corrupts ESP
+    //   and the next function return jumps to garbage, producing an access
+    //   violation at an unmapped address (0x5997AC69 in our crash log).
+    using Fn_Tolk_Load            = void    (*)();
+    using Fn_Tolk_IsLoaded        = bool    (*)();
+    using Fn_Tolk_Unload          = void    (*)();
+    using Fn_Tolk_TrySAPI         = void    (*)(bool);
+    using Fn_Tolk_Output          = bool    (*)(const wchar_t*, bool);
+    using Fn_Tolk_Speak           = bool    (*)(const wchar_t*, bool);
+    using Fn_Tolk_Silence         = bool    (*)();
+    using Fn_Tolk_DetectScreenReader = const wchar_t* (*)();
 
     // Runtime-loaded Tolk function pointers. All start as nullptr.
     // Any function that remains nullptr is treated as unavailable.
     HMODULE            g_tolk_dll        = nullptr;
-    Fn_Tolk_Load       g_Tolk_Load       = nullptr;
-    Fn_Tolk_Unload     g_Tolk_Unload     = nullptr;
-    Fn_Tolk_TrySAPI    g_Tolk_TrySAPI    = nullptr;
-    Fn_Tolk_Speak      g_Tolk_Speak      = nullptr;
-    Fn_Tolk_Silence    g_Tolk_Silence    = nullptr;
+    Fn_Tolk_Load             g_Tolk_Load             = nullptr;
+    Fn_Tolk_Unload           g_Tolk_Unload           = nullptr;
+    Fn_Tolk_TrySAPI          g_Tolk_TrySAPI          = nullptr;
+    Fn_Tolk_Speak            g_Tolk_Speak            = nullptr;
+    Fn_Tolk_Silence          g_Tolk_Silence          = nullptr;
+    Fn_Tolk_DetectScreenReader g_Tolk_DetectScreenReader = nullptr;
 
     bool g_initialized = false;
 
@@ -51,6 +64,25 @@ namespace {
     T resolve(const char* name) {
         return reinterpret_cast<T>(GetProcAddress(g_tolk_dll, name));
     }
+
+// ---------------------------------------------------------------------------
+// SEH-isolated Tolk call helper.
+//
+// MSVC C2712: __try cannot appear in a function that has C++ objects with
+// destructors (including std::string). TTS::Init() uses std::string, so the
+// actual SEH block lives here where no unwinding objects are in scope.
+// Returns true if both calls succeeded, false if either threw an exception.
+// ---------------------------------------------------------------------------
+static bool tolk_init_with_seh(Fn_Tolk_TrySAPI trySAPI, Fn_Tolk_Load load)
+{
+    __try {
+        if (trySAPI) trySAPI(true);
+        load();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 
 } // anonymous namespace
 
@@ -77,36 +109,66 @@ void Init()
     g_tolk_dll = LoadLibraryA(tolk_path.c_str());
     if (!g_tolk_dll) {
         // Tolk.dll not found — TTS is unavailable but the game runs normally.
-        // OutputDebugString can be seen in a debugger if needed.
-        OutputDebugStringA("[FF7Access] Tolk.dll not found — TTS disabled.\n");
+        Log::Write("[FF7Access] Tolk.dll not found — TTS disabled.");
         return;
     }
 
     // Resolve all Tolk exports we need.
-    g_Tolk_Load    = resolve<Fn_Tolk_Load>   ("Tolk_Load");
-    g_Tolk_Unload  = resolve<Fn_Tolk_Unload> ("Tolk_Unload");
-    g_Tolk_TrySAPI = resolve<Fn_Tolk_TrySAPI>("Tolk_TrySAPI");
-    g_Tolk_Speak   = resolve<Fn_Tolk_Speak>  ("Tolk_Speak");
-    g_Tolk_Silence = resolve<Fn_Tolk_Silence>("Tolk_Silence");
+    g_Tolk_Load             = resolve<Fn_Tolk_Load>            ("Tolk_Load");
+    g_Tolk_Unload           = resolve<Fn_Tolk_Unload>          ("Tolk_Unload");
+    g_Tolk_TrySAPI          = resolve<Fn_Tolk_TrySAPI>         ("Tolk_TrySAPI");
+    g_Tolk_Speak            = resolve<Fn_Tolk_Speak>           ("Tolk_Speak");
+    g_Tolk_Silence          = resolve<Fn_Tolk_Silence>         ("Tolk_Silence");
+    g_Tolk_DetectScreenReader = resolve<Fn_Tolk_DetectScreenReader>("Tolk_DetectScreenReader");
 
     if (!g_Tolk_Load || !g_Tolk_Speak) {
         // Tolk.dll present but doesn't export the functions we need.
         // Possibly wrong Tolk version.
-        OutputDebugStringA("[FF7Access] Tolk.dll found but missing required exports.\n");
+        Log::Write("[FF7Access] Tolk.dll found but missing required exports.");
         FreeLibrary(g_tolk_dll);
         g_tolk_dll = nullptr;
         return;
     }
 
-    // Enable SAPI as a fallback so TTS works even without NVDA or JAWS running.
-    // This ensures accessibility for users who only use Windows' built-in narrator.
-    if (g_Tolk_TrySAPI) g_Tolk_TrySAPI(true);
+    // Enable SAPI fallback and initialize Tolk (screen reader detection).
+    // SEH lives in tolk_init_with_seh() — see comment on that function.
+    // If Tolk.dll is the .NET ndarilek fork rather than the native C++ dkager
+    // build, its exports are CLR managed stubs that crash when called from a
+    // native thread. We catch that here so a bad Tolk.dll cannot crash the game.
+    if (!tolk_init_with_seh(g_Tolk_TrySAPI, g_Tolk_Load)) {
+        Log::Write("[FF7Access] Tolk call threw an exception. "
+                   "Use the native C++ Tolk from dkager/tolk, "
+                   "not the .NET ndarilek fork. TTS disabled.");
+        FreeLibrary(g_tolk_dll);
+        g_tolk_dll                = nullptr;
+        g_Tolk_Load               = nullptr;
+        g_Tolk_Unload             = nullptr;
+        g_Tolk_TrySAPI            = nullptr;
+        g_Tolk_Speak              = nullptr;
+        g_Tolk_Silence            = nullptr;
+        g_Tolk_DetectScreenReader = nullptr;
+        return;
+    }
 
-    // Initialize Tolk — this triggers screen reader detection.
-    g_Tolk_Load();
     g_initialized = true;
 
-    OutputDebugStringA("[FF7Access] Tolk initialized successfully.\n");
+    // Log which screen reader Tolk selected so we can confirm NVDA vs SAPI.
+    if (g_Tolk_DetectScreenReader) {
+        const wchar_t* reader = g_Tolk_DetectScreenReader();
+        if (reader && reader[0] != L'\0') {
+            // Convert the wide name to narrow ASCII for the log (screen reader
+            // names are always ASCII in practice: "NVDA", "JAWS", etc.).
+            char buf[128] = "[FF7Access] Screen reader detected: ";
+            int off = (int)strlen(buf);
+            for (int i = 0; reader[i] && off < 120; ++i)
+                buf[off++] = (char)reader[i];
+            buf[off] = '\0';
+            Log::Write(buf);
+        } else {
+            Log::Write("[FF7Access] No screen reader detected — SAPI only.");
+        }
+    }
+    Log::Write("[FF7Access] Tolk initialized successfully.");
 }
 
 void Speak(const wchar_t* text, bool interrupt)

@@ -38,11 +38,13 @@
  *   trigger), version.dll exports no high-frequency function. Instead,
  *   Proxy::Init() spawns a background thread (InitThread) that:
  *
- *     1. Sleep(200ms) — by the time this elapses, DllMain has returned,
- *        the loader lock is released, and FFNx has finished ff7_init_hooks.
+ *     1. Sleep(200ms) — by the time this elapses, DllMain has returned and
+ *        the loader lock is released. FFNx timing is handled separately by
+ *        Resolve() (see ff7_addresses.cpp), not by this sleep.
  *     2. Config::Load() — parse ffvii_accessibility.cfg (no DLL loading).
  *     3. TTS::Init()   — LoadLibrary("Tolk.dll"); safe past the 200ms mark.
- *     4. Loop: Hooks::Install() every 50ms until FF7's field module loads.
+ *     4. Loop: Hooks::Install() every 50ms until FF7's field module is ready
+ *        AND FFNx's voice_init() has patched the opcode table.
  *     5. Exit.
  *
  *   The 50ms poll is invisible to the player: FF7 takes several seconds to
@@ -65,6 +67,7 @@
 #include "hooks.h"
 #include "tts.h"
 #include "config.h"
+#include "log.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -126,9 +129,11 @@ VERSION_FORWARD_FUNCS(MAKE_STUB)
 static DWORD WINAPI InitThread(LPVOID /*unused*/)
 {
     // Wait for DllMain to return and the loader lock to be released before
-    // calling LoadLibrary (TTS::Init → Tolk.dll). Also ensures FFNx has
-    // completed ff7_find_externals / ff7_init_hooks, which happen during
-    // the first game frames well within this 200ms window.
+    // calling LoadLibrary (TTS::Init → Tolk.dll). The 200ms is purely for
+    // loader-lock safety — it does NOT guarantee FFNx has finished initializing.
+    // FFNx timing is handled by Resolve() checking execute_opcode_table[0x40]:
+    // we only install hooks after FFNx's voice_init() has patched that entry,
+    // which is a reliable signal that ff7_find_externals has already completed.
     //
     // CreateThread from DllMain is technically a grey area per MSDN, but is
     // the established standard for proxy DLLs (used by ReShade, ENBSeries,
@@ -139,15 +144,22 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     // Load and parse ffvii_accessibility.cfg. Pure file I/O; no DLL loading.
     Config::Load();
 
+    // Open the debug log file if debug_log = true. Must be called after
+    // Config::Load() so we know the user's setting. TTS::Init() and all
+    // subsequent code route their diagnostic output through Log::Write().
+    Log::Init(Config::Get().debug_log);
+
     // Initialize the Tolk screen reader library. Calls LoadLibrary("Tolk.dll").
     // Safe here because 200ms have passed and the loader lock is long released.
     TTS::Init();
 
-    // Poll until FF7's field opcode dispatch table is populated.
-    // Hooks::Install() calls FF7Addr::Resolve() internally, which returns
-    // false when table[0x40] is still zero (field module not yet loaded).
-    // The 50ms interval is imperceptible — FF7 takes seconds to reach the
-    // first field map after startup.
+    // Poll until both conditions are met (checked inside FF7Addr::Resolve()):
+    //   1. FF7's field opcode table is populated (field module has loaded), AND
+    //   2. FFNx's voice_init() has patched table[0x40] (if FFNx is running),
+    //      confirming that ff7_find_externals has safely finished reading it.
+    // The 50ms poll interval is imperceptible — FF7 takes seconds to reach
+    // the first field map. Once both conditions clear, Install() is idempotent
+    // and the thread exits.
     while (!Hooks::Install()) {
         Sleep(50);
     }
@@ -180,6 +192,8 @@ void Init()
 
     s_real_version = LoadLibraryA(real_path);
     if (!s_real_version) {
+        // Log::Init has not been called yet at this point (Config::Load is in the
+        // background thread, not here). Route directly to OutputDebugStringA.
         OutputDebugStringA("[FF7Access] FATAL: could not load system version.dll.\n");
         return;
     }
@@ -201,6 +215,7 @@ void Init()
     if (hThread) {
         CloseHandle(hThread); // Don't need to join; thread exits on its own.
     } else {
+        // Log::Init has not been called yet here either — still direct.
         OutputDebugStringA("[FF7Access] Warning: could not create init thread. "
                            "Hooks will not be installed.\n");
     }

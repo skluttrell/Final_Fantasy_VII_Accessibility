@@ -23,6 +23,7 @@
  */
 
 #include "ff7_addresses.h"
+#include "log.h"
 
 namespace FF7Addr {
 
@@ -63,7 +64,7 @@ bool Resolve()
     // Sanity: must be a plausible FF7 code segment address.
     // The 2013 Steam exe maps its code between roughly 0x401000 and 0x900000.
     if (execute_opcode < 0x401000 || execute_opcode > 0x9FFFFF) {
-        OutputDebugStringA("[FF7Access] Resolve failed: execute_opcode address out of range.\n");
+        Log::Write("[FF7Access] Resolve failed: execute_opcode address out of range.");
         return false;
     }
 
@@ -75,27 +76,59 @@ bool Resolve()
 
     // Sanity: must be a plausible data segment address.
     if (table_ptr < 0x400000 || table_ptr > 0xF0000000UL) {
-        OutputDebugStringA("[FF7Access] Resolve failed: execute_opcode_table pointer out of range.\n");
+        Log::Write("[FF7Access] Resolve failed: execute_opcode_table pointer out of range.");
         return false;
     }
 
-    // Step 1c: Verify the table's MESSAGE entry (opcode 0x40) points somewhere
-    //          plausible. If the field module hasn't initialized yet, this entry
-    //          will be zero (BSS-initialized global array). We use this to detect
-    //          "not ready."
+    // Step 1c: Verify the table's MESSAGE entry (opcode 0x40) is populated AND that
+    //          FFNx has finished reading from it before we overwrite it.
     //
-    // Accept any address >= 0x400000, which covers:
-    //   - Original FF7 handler (~0x60xxxx) — table populated, FFNx not yet loaded
-    //   - FFNx's patched handler (~0x69xxxxxx) — normal case when running with FFNx
-    //   - Our own hook function (in our DLL range) — already installed, won't get here
+    // THE RACE CONDITION THIS CHECK PREVENTS:
+    //   FFNx's common_create_window (common.cpp:989) calls ff7_init_hooks, which
+    //   calls ff7_find_externals. That function reads execute_opcode_table[0x40] to
+    //   locate opcode_message, then walks the function's machine code via
+    //   get_relative_call(opcode_message, 0x3B) to find dependent addresses.
     //
-    // The previous narrower check (0x401000 to 0x9FFFFF) was wrong: FFNx patches
-    // the opcode table during ff7_init_hooks (before our thread runs), so table[0x40]
-    // is already 0x69xxxxxx when we first check. The old check rejected that range
-    // as "not ready," causing Resolve() to return false permanently.
+    //   After ff7_init_hooks returns, common_create_window calls voice_init()
+    //   (common.cpp:1027), which unconditionally patches table[0x40] to FFNx's
+    //   own opcode_voice_message handler (in AF3DN.P, ~0x69xxxxxx).
+    //
+    //   If we install our hook (setting table[0x40] to our version.dll function)
+    //   BEFORE voice_init() runs, then ff7_find_externals may still be in progress
+    //   (or may read the table in a second pass). It will find our hook function
+    //   (0x705Axxxx, inside version.dll) and try to walk its code via
+    //   get_relative_call. Our naked JMP stub contains 0xF800 at offset +0x3B —
+    //   not a recognizable CALL instruction — so FFNx logs a WARNING, computes a
+    //   garbage address, then crashes in get_absolute_value dereferencing that garbage.
+    //
+    // CORRECT INSTALLATION ORDER:
+    //   1. ff7_find_externals reads table[0x40] (sees FF7 original, ~0x630D50)
+    //   2. voice_init() patches table[0x40] to opcode_voice_message (~0x69xxxxxx)
+    //   3. We install: table[0x40] = our hook, saving the FFNx handler as previous
+    //
+    // DETECTION: once voice_init() has patched the entry, msg_handler moves from
+    //   the FF7 exe range (0x401000–0x9FFFFF) into a DLL range (> 0x9FFFFF). We
+    //   use GetModuleHandleA("AF3DN.P") to confirm FFNx is present, then require
+    //   the entry to be outside the FF7 exe range before proceeding.
+    //
+    // WITHOUT FFNx: voice_init() never runs, so the table keeps the FF7 original
+    //   handler forever. We skip the FFNx check and accept the original value.
     const uint32_t msg_handler = reinterpret_cast<const uint32_t*>(table_ptr)[0x40];
-    if (msg_handler < 0x400000) {
-        // Table entry is zero or near-zero — field module not yet initialized.
+
+    if (msg_handler < 0x401000) {
+        // Zero or near-zero — field module not yet loaded, table not populated.
+        // Also rejects PE header addresses (0x400000–0x400FFF) which are not code.
+        return false;
+    }
+
+    // If FFNx (AF3DN.P) is running, wait until voice_init() has patched table[0x40].
+    // voice_init() sets the entry to opcode_voice_message in AF3DN.P, which resides
+    // above 0x9FFFFF. While the entry is still in the FF7 exe range (0x401000–0x9FFFFF),
+    // ff7_find_externals may still be active — installing our hook now is the crash.
+    if (GetModuleHandleA("AF3DN.P") != nullptr && msg_handler <= 0x9FFFFF) {
+        // FFNx is loaded but voice_init() has not yet run. Retry in 50ms.
+        // This window is very short: voice_init() runs in the same common_create_window
+        // call that triggered ff7_find_externals, so this condition clears quickly.
         return false;
     }
 
@@ -114,7 +147,7 @@ bool Resolve()
     const uint32_t state_ptr = read_abs_ref_at(OPCODE_MSG_UPDATE_LOOP, 0x12);
 
     if (state_ptr < 0x400000 || state_ptr > 0xF0000000UL) {
-        OutputDebugStringA("[FF7Access] Resolve failed: opcode_message_loop_code pointer out of range.\n");
+        Log::Write("[FF7Access] Resolve failed: opcode_message_loop_code pointer out of range.");
         // Roll back the opcode table pointer so the next Resolve() call retries.
         execute_opcode_table = nullptr;
         return false;
@@ -123,7 +156,7 @@ bool Resolve()
     opcode_message_loop_code = reinterpret_cast<uint8_t*>(state_ptr);
 
     resolved = true;
-    OutputDebugStringA("[FF7Access] Address resolution succeeded.\n");
+    Log::Write("[FF7Access] Address resolution succeeded.");
     return true;
 }
 
