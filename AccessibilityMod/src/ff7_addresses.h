@@ -95,8 +95,8 @@ constexpr uint32_t DIALOG_TEXT_PTRS = 0xCBF578;
 //   buf+4  : uint16 num_sections (= 9 for field files)
 //   buf+6  : uint32[9] section_offsets — each is a byte offset from buf start
 //   Each section: uint32 section_size | uint8 section_data[]
-//   Dialog text section index: unknown — confirmed NOT section 7 (background)
-//   or section 8 (triggers). get_field_dialog_text() searches all sections.
+//   Dialog text is embedded in section 0 (script section), accessed via the
+//   wStringOffset field of ff7_field_script_header at script_data+4.
 //
 // Source: ff7_externals.field_file_buffer = (byte*)0xCFF594 in externals_102_us.h
 //         FF7_FIELD_OFFSET=0x2A, FF7_FIELD_NUM_SECTIONS=9 in ff7/file.cpp
@@ -313,83 +313,43 @@ inline const char* get_dialog_text_ptr(uint8_t window_id)
 
 /*
  * get_field_dialog_text: Return a pointer to the complete static FF7-encoded
- * text for dialog_id from the current field's text section. Returns nullptr if
- * the field buffer is not loaded, dialog_id is out of range, or no section
- * matching the text-section format can be found.
+ * text for dialog_id from the current field. Returns nullptr if the field
+ * buffer is not loaded or dialog_id is out of range for this field.
  *
- * WHY THIS SEARCHES ALL SECTIONS:
- *   The text section index is not fixed. Diagnostic logging confirmed that
- *   sections 7 and 8 are the background and trigger sections respectively —
- *   neither is the text section. The actual text section appears to be at a
- *   lower index (likely 0–6). By searching all 9 sections and applying format
- *   validation, we identify the correct section at runtime without hardcoding.
+ * WHY THE SCRIPT SECTION (PRIMARY):
+ *   FF7 PC Steam stores dialog text embedded in section 0 (the field script
+ *   section), not in a separate section. This was the root cause of all
+ *   garbage TTS output: the old implementation explicitly SKIPPED the script
+ *   section, so get_field_dialog_text always returned nullptr, forcing a
+ *   fallback to the volatile typewriter pointer (DIALOG_TEXT_PTRS). That
+ *   pointer is a live cursor that advances as text is displayed, holds stale
+ *   values between dialogs, and can be written by unrelated game operations.
  *
- * TEXT SECTION FORMAT (any section that passes validation):
- *   uint16[num_dialogs] offsets  — each is a byte offset from section_data start
- *   text_data[]
- *   offsets[0] == num_dialogs * 2  (size of the offset table in bytes)
- *   All subsequent offsets must be >= offsets[0] (no overlap with offset table).
+ * HOW wStringOffset WORKS:
+ *   The ff7_field_script_header (documented in FFNx src/ff7.h) sits at the
+ *   start of script_data (section 0, past its 4-byte size DWORD):
+ *     offset 0: WORD unknown1 (not the string offset — unrelated field)
+ *     offset 2: char nEntities
+ *     offset 3: char nModels
+ *     offset 4: WORD wStringOffset  <- byte offset from script_data to the
+ *                                       dialog string offset table
+ *   At script_data + wStringOffset the format is identical to non-script
+ *   text sections (kernel2_get_text format):
+ *     uint16_t offsets[num_dialogs] — offsets[0] == num_dialogs * 2
+ *     offsets[i] == byte offset from (script_data + wStringOffset) to
+ *                   dialog[i]'s text (0xFF-terminated FF7-encoded string)
+ *   Source: FFNx src/ff7.h ff7_field_script_header; kernel2_get_text.
  *
- * Source: FF7 field file format; FFNx ff7/file.cpp (FF7_FIELD_OFFSET=0x2A);
- *         FFNx kernel2_get_text: text = section_data + ((uint16_t*)section_data)[id]
+ * FALLBACK:
+ *   A section-search fallback remains for any field that may use a different
+ *   layout (e.g., when a dialog's id exceeds the primary section's table
+ *   count, the dialog may live in a different field file section). The script
+ *   section is excluded from this search because its leading uint16 could
+ *   coincidentally match the offset-table format and return entity bytecodes.
+ *
+ * Implemented in ff7_addresses.cpp — too large for a header-only inline,
+ * and the fallback path includes diagnostic logging via Log::Write.
  */
-inline const char* get_field_dialog_text(uint8_t dialog_id)
-{
-    // Dereference FIELD_FILE_BUFFER to get the base of the decompressed field file.
-    const char* const buf = *reinterpret_cast<const char* const*>(FIELD_FILE_BUFFER);
-    if (!buf) return nullptr;
-
-    // Identify the script section so we can skip it. The script section starts with
-    // uint16 entity_count, which might coincidentally look like a valid first_off.
-    // field_script_ptr at FIELD_SCRIPT_PTR holds the absolute address of script data
-    // (after the 4-byte size DWORD), so sect == script_data means "this is the script".
-    const char* const script_data = *reinterpret_cast<const char* const*>(FIELD_SCRIPT_PTR);
-
-    // Search all 9 sections for the one that matches the text-section format.
-    // Section i offset entry: *(uint32_t*)(buf + 6 + i*4)
-    // Section i data: buf + section_offset + 4  (skip the 4-byte size prefix)
-    for (int si = 0; si < 9; ++si) {
-        const uint32_t sect_off =
-            *reinterpret_cast<const uint32_t*>(buf + 6 + si * 4);
-
-        // Section offset must be at least past the 42-byte file header and within 512 KB.
-        if (sect_off < 0x2Au || sect_off > 512u * 1024u) continue;
-
-        const char* const sect = buf + sect_off + 4; // skip 4-byte size DWORD
-
-        // Skip the script section: its uint16 entity_count could coincidentally
-        // fall in our validation range, returning bytecode as if it were dialog text.
-        if (script_data && sect == script_data) continue;
-
-        // Text section validation:
-        //   offsets[0] == num_dialogs * 2 — must be even, 2–2048 (1–1024 dialogs).
-        const uint16_t first_off = *reinterpret_cast<const uint16_t*>(sect);
-        if (first_off < 2u || first_off > 2048u || (first_off & 1u) != 0u) continue;
-
-        const uint16_t num_dialogs = first_off / 2u;
-        if (dialog_id >= num_dialogs) continue;
-
-        // Additional validation: the next few offsets must be >= first_off
-        // (text cannot overlap the offset table) and must be monotonically non-decreasing.
-        // Checking 4 entries is enough to distinguish the text section from binary data.
-        bool valid = true;
-        const int check_n = (num_dialogs < 4) ? num_dialogs : 4;
-        uint16_t prev = first_off;
-        for (int j = 1; j < check_n && valid; ++j) {
-            const uint16_t off_j =
-                reinterpret_cast<const uint16_t*>(sect)[j];
-            if (off_j < prev) valid = false;
-            prev = off_j;
-        }
-        if (!valid) continue;
-
-        const uint16_t text_off = reinterpret_cast<const uint16_t*>(sect)[dialog_id];
-        if (text_off < first_off) continue; // Text would overlap the offset table.
-
-        return sect + text_off;
-    }
-
-    return nullptr;
-}
+const char* get_field_dialog_text(uint8_t dialog_id);
 
 } // namespace FF7Addr

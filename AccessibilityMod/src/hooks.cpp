@@ -99,6 +99,77 @@
 namespace Hooks {
 
 // ---------------------------------------------------------------------------
+// log_raw_bytes: Dump the first 18 raw bytes of a dialog text pointer as hex.
+//
+// Pairing this with every "MSG ... speaking" log entry lets us trace any NVDA
+// utterance to its exact log line: look up each hex byte in the FF7 character
+// table (ff7_text.cpp kExtendedChars / byte+0x20 formula) to reconstruct the
+// decoded text. Examples:
+//   EB → Barret speaker prefix
+//   27 45 54 00 → G e t (space) → "Get..."
+//   4F 42 54 41 → O b t a → "Obta..." (Obtained óPotion)
+//
+// path_tag: label embedded in the log line, e.g. "START/sect" or "DLGID/rawptr".
+// Called only when decoded is non-empty, so text[0] != 0xFF is guaranteed.
+// ---------------------------------------------------------------------------
+static void log_raw_bytes(const char* path_tag, const char* text)
+{
+    char hex[72] = {}; int n = 0;
+    for (int i = 0; i < 18; ++i) {
+        const uint8_t b = reinterpret_cast<const uint8_t*>(text)[i];
+        if (b == 0xFF) break;
+        n += _snprintf_s(hex + n, (int)sizeof(hex) - n, _TRUNCATE, "%02X ", b);
+    }
+    if (n > 0) hex[n - 1] = '\0'; // trim trailing space
+    char line[140];
+    _snprintf_s(line, sizeof(line), _TRUNCATE,
+        "[FF7Access] MSG raw(%s): %s", path_tag, hex);
+    Log::Write(line);
+}
+
+// ---------------------------------------------------------------------------
+// log_field_header_if_changed: Log the 16-byte ff7_field_script_header once
+// per field load.
+//
+// Field changes are detected by comparing FIELD_FILE_BUFFER against the last
+// logged address. A new field always allocates a new buffer (different pointer),
+// so pointer equality is a reliable change detector.
+//
+// Called from the DLGID path (dialog_id change detection) — a field change
+// always precedes the first dialog of any new field, so the header is logged
+// at most one frame before the first dialog speak event.
+// ---------------------------------------------------------------------------
+static void log_field_header_if_changed()
+{
+    static const char* s_last_buf = nullptr;
+    const char* const buf =
+        *reinterpret_cast<const char* const*>(FF7Addr::FIELD_FILE_BUFFER);
+    const char* const sd =
+        *reinterpret_cast<const char* const*>(FF7Addr::FIELD_SCRIPT_PTR);
+    if (!buf || buf == s_last_buf) return;
+    s_last_buf = buf;
+
+    if (sd) {
+        const uint8_t* h = reinterpret_cast<const uint8_t*>(sd);
+        char diag[220];
+        _snprintf_s(diag, sizeof(diag), _TRUNCATE,
+            "[FF7Access] FIELD buf=0x%X sd=0x%X "
+            "hdr=[%02X %02X %02X %02X | %02X %02X | %02X %02X | %02X %02X %02X %02X %02X %02X %02X %02X]",
+            (uint32_t)buf, (uint32_t)sd,
+            h[0],  h[1],  h[2],  h[3],  // unknown1 (WORD), nEntities, nModels
+            h[4],  h[5],                 // wStringOffset (WORD)
+            h[6],  h[7],                 // nAkaoOffsets (WORD)
+            h[8],  h[9],  h[10], h[11], h[12], h[13], h[14], h[15]); // scale + padding
+        Log::Write(diag);
+    } else {
+        char diag[72];
+        _snprintf_s(diag, sizeof(diag), _TRUNCATE,
+            "[FF7Access] FIELD buf=0x%X sd=null", (uint32_t)buf);
+        Log::Write(diag);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // patch_dword: Overwrite a 32-bit value at a given address.
 //
 // Used to replace function pointer entries in the opcode dispatch table.
@@ -155,6 +226,16 @@ struct WindowState {
     // which FF7 never approaches). Initialising to 0xFF ensures the first dialog on
     // any window is always detected as "new" regardless of its actual id.
     uint8_t last_dialog_id = 0xFF;
+
+    // Set when a new dialog_id is detected; cleared after rawptr is read and spoken.
+    //
+    // WHY ONE-FRAME DELAY:
+    //   DIALOG_TEXT_PTRS[window_id] is written by field_text_box_window_create_631586,
+    //   which runs INSIDE s_old_message() — at the END of our hook. On the frame where
+    //   dialog_id first changes, the rawptr still holds the previous dialog's pointer.
+    //   We set pending_speak=true and defer the read to the NEXT frame, by which time
+    //   s_old_message() has already updated the rawptr to the correct dialog text.
+    bool pending_speak = false;
 };
 static WindowState s_window[8];
 
@@ -188,28 +269,68 @@ static bool is_readable_ptr(const void* ptr)
 }
 
 // ---------------------------------------------------------------------------
+// is_valid_dialog_rawptr: Check that a DIALOG_TEXT_PTRS pointer is safe to
+// decode as dialog text.
+//
+// We accept rawptrs from ANY section of the field file, not just section 0.
+// dialog_id in MESSAGE opcodes is entity-relative: different entity scripts
+// can use the same dialog_id to reference text in different field sections.
+// The engine sets DIALOG_TEXT_PTRS[window_id] directly to the correct section's
+// text for the currently-executing entity, so restricting to section 0 bounds
+// would incorrectly reject valid text from other sections.
+//
+// WHY NO wStringOffset BOUNDS:
+//   Previous versions used script_data+wStringOffset as a lower bound to reject
+//   entity bytecode. That check is unnecessary here because by the time this
+//   function is called (the frame AFTER dialog_id changed), s_old_message() has
+//   already updated the rawptr to the actual dialog string — it won't be pointing
+//   at bytecode. The one-frame pending delay (see pending_speak in WindowState)
+//   eliminates the stale-rawptr problem that originally motivated the bounds check.
+// ---------------------------------------------------------------------------
+static bool is_valid_dialog_rawptr(const char* raw_text)
+{
+    if (!raw_text) return false;
+
+    // Must be within the loaded field file buffer (any section).
+    const char* const field_buf =
+        *reinterpret_cast<const char* const*>(FF7Addr::FIELD_FILE_BUFFER);
+    if (!field_buf) return false;
+    if (raw_text < field_buf || raw_text >= field_buf + 512u * 1024u) return false;
+
+    // Memory must be committed/readable, and the string non-empty.
+    if (!is_readable_ptr(raw_text)) return false;
+    if ((uint8_t)raw_text[0] == 0xFF) return false;
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Hook: MESSAGE opcode (0x40)
 //
 // Called every game frame while a MESSAGE dialog window is open.
 // FF7's field script VM calls execute_opcode_table[0x40]() on each frame
 // until the player dismisses the dialog.
 //
-// ----- DETECTION STRATEGY (v1.4): DIALOG_ID TRACKING -----
+// ----- DETECTION STRATEGY (v1.5): PENDING RAWPTR -----
 //
-// PRIMARY trigger (new dialog for win=0/1): state machine 0→N or 7→N transition.
-//   Works reliably for windows whose state byte follows standard sequences.
-//   Provides 1-frame earlier detection than the fallback path for those windows.
+// TRIGGER: dialog_id parameter changed (fires for ALL windows, no state machine split).
+//   On the trigger frame, set pending_speak=true and update last_dialog_id.
+//   Do NOT speak yet — the rawptr is stale until s_old_message() runs (end of hook).
 //
-// FALLBACK trigger (new dialog for win=2 and others): dialog_id parameter changed.
-//   dialog_id is read from the field script opcode parameters (param[1]).
-//   It is stable throughout a dialog and changes only when a new MESSAGE opcode
-//   executes. The fallback fires 1 frame after the state changes because the text
-//   pointer is set inside s_old_message() (not before), so on the first call with
-//   a new dialog_id the text is still stale — we retry until it reads as valid.
+// SPEAK: next frame, pending_speak=true → read rawptr → speak if valid.
+//
+// WHY RAWPTR ONLY (no section lookup):
+//   dialog_id is entity-relative. Two different entity scripts can both use
+//   dialog_id=N to reference different text in different field file sections.
+//   get_field_dialog_text() indexes section 0's table at wStringOffset, which
+//   returns the wrong text when the active entity's dialog lives in another section.
+//   Observed: Field 2 id=6 → section 0 has "Obtained óPotion!", Barret's entity
+//   has "Get down here, Merc!" in a different section. The rawptr is the only
+//   authoritative source — the engine sets it to the correct section's text.
 //
 // PAGING trigger: state machine 14→2 or 4→8 transition.
 //
-// CLOSE trigger: state machine →7. Also resets dialog_id tracking for next dialog.
+// CLOSE trigger: state machine →7. Clears pending and resets dialog_id tracking.
 //
 // Calling convention: __cdecl (confirmed from FFNx's opcode_voice_message).
 // ---------------------------------------------------------------------------
@@ -305,165 +426,56 @@ static int __cdecl hook_message()
         }
 
         // ------------------------------------------------------------------
-        // PRIMARY SPEAK: state machine "starting" — fires for win=0, win=1.
+        // NEW DIALOG: set pending flag, do not speak yet.
         //
-        // WHY THIS IS THE PRIMARY PATH:
-        //   For win=0 (standard lifecycle) and win=1 (counting sequence), the
-        //   state machine reliably transitions through state 0 between dialogs.
-        //   The "starting" condition (last==0||7 → current≠0,7) fires exactly
-        //   once per new dialog, at the correct moment. The text pointer is
-        //   valid at this point (set by the previous frame's s_old_message()).
-        //
-        // WHY WE CHECK dialog_id != last_dialog_id HERE:
-        //   On the frame where state transitions to 0 (dialog closing), the
-        //   FALLBACK path below fires first (state=0 → starting=false, dialog_id
-        //   is already the new dialog's id → DLGID path speaks and sets
-        //   last_dialog_id). On the NEXT frame, the state transitions 0→N, so
-        //   starting becomes true. Without the last_dialog_id guard, PRIMARY would
-        //   speak the same dialog a second time. The guard prevents this: if DLGID
-        //   already spoke this dialog_id, PRIMARY skips. If DLGID did NOT speak it
-        //   (e.g., the text was unavailable on that frame), PRIMARY speaks instead.
+        // The rawptr (DIALOG_TEXT_PTRS[window_id]) is stale on this frame —
+        // s_old_message() hasn't run yet (called at the bottom of this hook).
+        // We defer reading until next frame when rawptr is guaranteed fresh.
         // ------------------------------------------------------------------
-        if (starting && Config::Get().speak_dialog &&
-            dialog_id != s_window[window_id].last_dialog_id) {
-            if (is_readable_ptr(raw_text)) {
+        if (dialog_id != s_window[window_id].last_dialog_id &&
+            Config::Get().speak_dialog) {
+            log_field_header_if_changed();
+            s_window[window_id].pending_speak  = true;
+            s_window[window_id].last_dialog_id = dialog_id;
+            char dbg[80];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] MSG win=%u id=%u [DLGID] pending",
+                window_id, dialog_id);
+            Log::Write(dbg);
+        }
+        // ------------------------------------------------------------------
+        // PENDING SPEAK: rawptr is fresh — s_old_message() ran last frame.
+        //
+        // raw_text was captured at the top of this hook call, AFTER last frame's
+        // s_old_message() already updated DIALOG_TEXT_PTRS[window_id] to the
+        // new dialog's text. Read it now. If still invalid, retry next frame.
+        // ------------------------------------------------------------------
+        else if (s_window[window_id].pending_speak && Config::Get().speak_dialog) {
+            if (is_valid_dialog_rawptr(raw_text)) {
                 const std::wstring decoded = FF7Text::Decode(raw_text);
                 if (!decoded.empty()) {
                     char dbg[80];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u id=%u [START] speaking", window_id, dialog_id);
+                        "[FF7Access] MSG win=%u id=%u [PENDING] speaking",
+                        window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
+                    log_raw_bytes("PENDING", raw_text);
                     TTS::Speak(decoded, /*interrupt=*/true);
-                    // Sync fallback tracker: this dialog is now spoken.
-                    s_window[window_id].last_dialog_id = dialog_id;
                 } else {
                     char dbg[80];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u [START] decoded empty (raw[0]=0x%02X)",
-                        window_id, (uint8_t)raw_text[0]);
+                        "[FF7Access] MSG win=%u id=%u [PENDING] decoded empty",
+                        window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
                 }
-            } else {
-                char dbg[80];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] MSG win=%u [START] text ptr null/invalid", window_id);
-                Log::Write(dbg);
+                s_window[window_id].pending_speak = false;
             }
+            // else: rawptr not ready; retry next frame
         }
         // ------------------------------------------------------------------
-        // FALLBACK SPEAK: dialog_id changed — fires for all windows where
-        // the state machine does not produce a "starting" transition first.
-        //
-        // WHY THIS CATCHES WHAT THE STATE MACHINE MISSES:
-        //   For win=2 (Barret "C'mon newcomer", Jessie's lines, mission
-        //   briefing), opcode_message_loop_code[24*2] NEVER changes — the
-        //   "starting" condition therefore never fires. For win=0 and win=1,
-        //   this path fires one frame BEFORE "starting" (on the state=0 frame,
-        //   where starting=false). The PRIMARY guard above then skips the START
-        //   speak if last_dialog_id was already updated here.
-        //
-        // TEXT SOURCE SELECTION:
-        //   1. get_field_dialog_text(dialog_id): reads from the static field text
-        //      section (section 8 of the field file buffer). Gives complete text
-        //      at any time, independent of typewriter animation state. Preferred.
-        //   2. Fallback: DIALOG_TEXT_PTRS[window_id] (volatile typewriter pointer).
-        //      Used only when the field text section is unavailable (field not yet
-        //      loaded, dialog_id out of range for this field, or wrong section index).
-        //      Less reliable (may be mid-animation or stale from a previous scene)
-        //      but prevents dialogs from being silently dropped when method 1 fails.
-        // ------------------------------------------------------------------
-        else if (dialog_id != s_window[window_id].last_dialog_id &&
-                 Config::Get().speak_dialog) {
-
-            // ---- One-time field buffer diagnostic ----
-            // Logs the buffer base and script section address once per session.
-            // Confirmed: dialog text is embedded in section 0 (the script section).
-            // get_field_dialog_text() correctly skips section 0 and returns nullptr
-            // for all other sections, so the rawptr path handles all dialogs.
-            static bool s_buf_diag_logged = false;
-            if (!s_buf_diag_logged) {
-                s_buf_diag_logged = true;
-                const char* const buf =
-                    *reinterpret_cast<const char* const*>(FF7Addr::FIELD_FILE_BUFFER);
-                const char* const script_data =
-                    *reinterpret_cast<const char* const*>(FF7Addr::FIELD_SCRIPT_PTR);
-                if (buf) {
-                    char diag[120];
-                    _snprintf_s(diag, sizeof(diag), _TRUNCATE,
-                        "[FF7Access] field buf=0x%X script_data=0x%X (text embedded in script section)",
-                        (uint32_t)buf, (uint32_t)script_data);
-                    Log::Write(diag);
-                } else {
-                    Log::Write("[FF7Access] field buf=null at first DLGID");
-                }
-            }
-
-            // ---- Text source selection ----
-            const char* static_text = FF7Addr::get_field_dialog_text(dialog_id);
-            const char* text_to_use = static_text;
-            const char* source_tag  = "sect";
-
-            if (!text_to_use) {
-                // Field text section unavailable. Fall back to volatile typewriter ptr.
-                //
-                // BOUNDS CHECK: valid dialog text pointers are always within the
-                // loaded field file buffer. Any pointer outside this range (e.g.,
-                // the TUTOR window's rawptr pointing to field script bytecode, or
-                // a stale pointer from a previous field) is garbage. Validating
-                // against the buffer bounds prevents reading binary script data as
-                // if it were dialog text and producing garbled TTS output.
-                const char* const field_buf =
-                    *reinterpret_cast<const char* const*>(FF7Addr::FIELD_FILE_BUFFER);
-                const bool in_field_buf = (field_buf != nullptr)
-                    && (raw_text >= field_buf)
-                    && (raw_text <  field_buf + 512u * 1024u);
-
-                if (in_field_buf && is_readable_ptr(raw_text)
-                    && (uint8_t)raw_text[0] != 0xFF) {
-                    text_to_use = raw_text;
-                    source_tag  = "rawptr";
-                    // Log the offset so we can identify which section this falls in.
-                    char ptr_diag[100];
-                    _snprintf_s(ptr_diag, sizeof(ptr_diag), _TRUNCATE,
-                        "[FF7Access] DIAG rawptr: win=%u id=%u buf_off=0x%X",
-                        window_id, dialog_id, (uint32_t)(raw_text - field_buf));
-                    Log::Write(ptr_diag);
-                }
-            }
-
-            if (text_to_use) {
-                const std::wstring decoded = FF7Text::Decode(text_to_use);
-                if (!decoded.empty()) {
-                    char dbg[100];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u id=%u [DLGID/%s] speaking",
-                        window_id, dialog_id, source_tag);
-                    Log::Write(dbg);
-                    TTS::Speak(decoded, /*interrupt=*/true);
-                    s_window[window_id].last_dialog_id = dialog_id;
-                } else {
-                    char dbg[100];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u id=%u [DLGID/%s] decoded empty",
-                        window_id, dialog_id, source_tag);
-                    Log::Write(dbg);
-                    // Do not update last_dialog_id — retry next frame.
-                }
-            } else {
-                // Both methods failed. Log so we can diagnose which fields or
-                // dialog_ids are affected.
-                char dbg[80];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] MSG win=%u id=%u [DLGID] no text (sect+rawptr both fail)",
-                    window_id, dialog_id);
-                Log::Write(dbg);
-            }
-        }
-        // ------------------------------------------------------------------
-        // PAGE ADVANCE: speak the current page's text when the player pages.
+        // PAGE ADVANCE: speak the next page's text when the player pages.
         // ------------------------------------------------------------------
         else if (paging && Config::Get().speak_dialog) {
-            // Page advance: speak immediately, the text pointer is valid at this point.
             if (is_readable_ptr(raw_text)) {
                 const std::wstring decoded = FF7Text::Decode(raw_text);
                 if (!decoded.empty()) {
@@ -476,9 +488,15 @@ static int __cdecl hook_message()
         // DIALOG CLOSE: silence TTS and reset tracking for next dialog.
         // ------------------------------------------------------------------
         else if (closing) {
-            // Reset last_dialog_id so the same dialog_id is detected as "new"
-            // if it is shown again (e.g., the same NPC is talked to twice).
-            s_window[window_id].last_dialog_id = 0xFF;
+            // Reset last_dialog_id to the CURRENT dialog_id (not 0xFF).
+            // WHY NOT 0xFF: resetting to 0xFF caused double-speak — on the frame
+            // immediately after CLOSE, the opcode still shows the just-closed
+            // dialog_id. With last_dialog_id=0xFF, dialog_id=1 != 0xFF fires DLGID
+            // again, speaking "Welcome to Project Echo-S." twice. Setting
+            // last_dialog_id=dialog_id prevents that re-fire while still allowing
+            // a new dialog (different id) to be detected on the very next frame.
+            s_window[window_id].pending_speak  = false;
+            s_window[window_id].last_dialog_id = dialog_id;
             TTS::Silence();
         }
 
@@ -541,62 +559,47 @@ static int __cdecl hook_ask(int unk)
             Log::Write(state_log);
         }
 
-        // PRIMARY: state machine detected menu open (reliable when it fires).
-        // Guard with dialog_id != last_dialog_id: the DLGID fallback (below) fires
-        // one frame before PRIMARY on the state=0 frame. Without this guard,
-        // PRIMARY would speak the same ASK dialog a second time.
-        if (starting && Config::Get().speak_choices &&
-            dialog_id != s_window[window_id].last_dialog_id) {
-            if (is_readable_ptr(raw_text)) {
+        // NEW DIALOG: set pending flag. Same one-frame delay as hook_message —
+        // rawptr is stale until s_old_ask() runs at the bottom of this hook.
+        if (dialog_id != s_window[window_id].last_dialog_id &&
+            Config::Get().speak_choices) {
+            s_window[window_id].pending_speak  = true;
+            s_window[window_id].last_dialog_id = dialog_id;
+            char dbg[80];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] ASK win=%u id=%u [DLGID] pending", window_id, dialog_id);
+            Log::Write(dbg);
+        }
+        // PENDING SPEAK: rawptr is fresh — s_old_ask() ran last frame.
+        else if (s_window[window_id].pending_speak && Config::Get().speak_choices) {
+            if (is_valid_dialog_rawptr(raw_text)) {
                 const std::wstring decoded = FF7Text::Decode(raw_text);
                 if (!decoded.empty()) {
                     char dbg[80];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] ASK win=%u id=%u [START] speaking", window_id, dialog_id);
+                        "[FF7Access] ASK win=%u id=%u [PENDING] speaking",
+                        window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
+                    log_raw_bytes("ASK/PENDING", raw_text);
                     std::wstring announcement = L"Choose: ";
                     announcement += decoded;
                     TTS::Speak(announcement, /*interrupt=*/true);
-                    s_window[window_id].last_dialog_id = dialog_id;
-                }
-            }
-        }
-        // FALLBACK: dialog_id changed. Try static field text section first;
-        // fall back to volatile typewriter pointer if unavailable.
-        else if (dialog_id != s_window[window_id].last_dialog_id &&
-                 Config::Get().speak_choices) {
-            const char* static_text = FF7Addr::get_field_dialog_text(dialog_id);
-            const char* text_to_use = static_text;
-            const char* source_tag  = "sect";
-            if (!text_to_use) {
-                const char* const field_buf =
-                    *reinterpret_cast<const char* const*>(FF7Addr::FIELD_FILE_BUFFER);
-                const bool in_field_buf = (field_buf != nullptr)
-                    && (raw_text >= field_buf)
-                    && (raw_text <  field_buf + 512u * 1024u);
-                if (in_field_buf && is_readable_ptr(raw_text)
-                    && (uint8_t)raw_text[0] != 0xFF) {
-                    text_to_use = raw_text;
-                    source_tag  = "rawptr";
-                }
-            }
-            if (text_to_use) {
-                const std::wstring decoded = FF7Text::Decode(text_to_use);
-                if (!decoded.empty()) {
-                    char dbg[100];
+                } else {
+                    char dbg[80];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] ASK win=%u id=%u [DLGID/%s] speaking",
-                        window_id, dialog_id, source_tag);
+                        "[FF7Access] ASK win=%u id=%u [PENDING] decoded empty",
+                        window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
-                    std::wstring announcement = L"Choose: ";
-                    announcement += decoded;
-                    TTS::Speak(announcement, /*interrupt=*/true);
-                    s_window[window_id].last_dialog_id = dialog_id;
                 }
+                s_window[window_id].pending_speak = false;
             }
+            // else: rawptr not ready; retry next frame
         }
         else if (closing) {
-            s_window[window_id].last_dialog_id = 0xFF;
+            // Same fix as hook_message: set to dialog_id (not 0xFF) to prevent
+            // one-frame re-fire of the just-closed ASK on the state=7 frame.
+            s_window[window_id].pending_speak  = false;
+            s_window[window_id].last_dialog_id = dialog_id;
             TTS::Silence();
         }
 

@@ -24,6 +24,7 @@
 
 #include "ff7_addresses.h"
 #include "log.h"
+#include <cstdio>
 
 namespace FF7Addr {
 
@@ -158,6 +159,118 @@ bool Resolve()
     resolved = true;
     Log::Write("[FF7Access] Address resolution succeeded.");
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// validate_offset_table: Sanity-check a candidate string offset table.
+//
+// Confirms that the first few offset entries are monotonically non-decreasing
+// starting from offsets[0] (== first_off == num_dialogs * 2). This
+// distinguishes a genuine dialog offset table from coincidental binary data
+// (e.g., entity bytecodes) that happens to pass the first_off range check.
+//
+// WHY 4 ENTRIES: checking offsets[1..3] gives very high false-positive
+// rejection at near-zero cost. A table with random bytes at index 1 that
+// happen to be < first_off would also fail index 2 most of the time.
+// Checking more than 4 gives diminishing returns and adds loop overhead.
+// ---------------------------------------------------------------------------
+static bool validate_offset_table(const uint16_t* offsets, uint16_t num_dialogs)
+{
+    const int check_n = (num_dialogs < 4) ? (int)num_dialogs : 4;
+    uint16_t prev = offsets[0]; // == first_off, already range-checked by caller
+    for (int j = 1; j < check_n; ++j) {
+        if (offsets[j] < prev) return false;
+        prev = offsets[j];
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// get_field_dialog_text: Implementation — see ff7_addresses.h for the full
+// contract, parameters, and design rationale.
+// ---------------------------------------------------------------------------
+const char* get_field_dialog_text(uint8_t dialog_id)
+{
+    const char* const buf = *reinterpret_cast<const char* const*>(FIELD_FILE_BUFFER);
+    if (!buf) return nullptr;
+
+    const char* const script_data = *reinterpret_cast<const char* const*>(FIELD_SCRIPT_PTR);
+
+    // ── PRIMARY: script section via wStringOffset ──────────────────────────
+    // The dialog offset table lives at script_data + wStringOffset.
+    if (script_data) {
+        const uint16_t wStringOffset =
+            *reinterpret_cast<const uint16_t*>(script_data + 4);
+
+        // wStringOffset sanity: must be past the 6-byte header minimum and
+        // within a reasonable range (no field script section exceeds 60 KB).
+        if (wStringOffset >= 6u && wStringOffset <= 60000u) {
+            const uint16_t* const offsets =
+                reinterpret_cast<const uint16_t*>(script_data + wStringOffset);
+
+            // offsets[0] == num_dialogs * 2: must be even, in [2, 2048].
+            const uint16_t first_off = offsets[0];
+            if (first_off >= 2u && first_off <= 2048u && (first_off & 1u) == 0u) {
+                const uint16_t num_dialogs = first_off / 2u;
+
+                if (dialog_id < num_dialogs &&
+                    validate_offset_table(offsets, num_dialogs)) {
+                    const uint16_t text_off = offsets[dialog_id];
+                    if (text_off >= first_off) {
+                        const char* const text =
+                            reinterpret_cast<const char*>(offsets) + text_off;
+                        // 0xFF = empty string; skip rather than return garbage.
+                        if (*reinterpret_cast<const uint8_t*>(text) != 0xFFu) {
+                            return text;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── FALLBACK: search other field file sections ─────────────────────────
+    // Some dialogs (observed: Field 2 "Get down here, Merc!" for id=6) live
+    // in a section OTHER than the primary script section. When the primary
+    // lookup fails (dialog_id >= num_dialogs in section 0, or wStringOffset
+    // is invalid), we scan all 9 sections for an offset table that covers
+    // dialog_id. The script section is excluded because its leading uint16
+    // (nEntities or unknown1) could coincidentally look like a valid offset
+    // table and return entity bytecodes as if they were dialog text.
+    for (int si = 0; si < 9; ++si) {
+        const uint32_t sect_off =
+            *reinterpret_cast<const uint32_t*>(buf + 6 + si * 4);
+        if (sect_off < 0x2Au || sect_off > 512u * 1024u) continue;
+
+        const char* const sect = buf + sect_off + 4; // past the 4-byte size DWORD
+        if (script_data && sect == script_data) continue; // skip script section
+
+        const uint16_t* const offsets = reinterpret_cast<const uint16_t*>(sect);
+        const uint16_t first_off = offsets[0];
+        if (first_off < 2u || first_off > 2048u || (first_off & 1u) != 0u) continue;
+
+        const uint16_t num_dialogs = first_off / 2u;
+        if (dialog_id >= num_dialogs) continue;
+        if (!validate_offset_table(offsets, num_dialogs)) continue;
+
+        const uint16_t text_off = offsets[dialog_id];
+        if (text_off < first_off) continue;
+
+        // Log which section the dialog came from. This fires at most once per
+        // dialog encounter (hooks.cpp only calls us on dialog_id changes).
+        // Knowing the section index tells us which field file layout is in use
+        // and confirms the primary section didn't cover this dialog_id.
+        {
+            char diag[80];
+            _snprintf_s(diag, sizeof(diag), _TRUNCATE,
+                "[FF7Access] FF7Addr: id=%u found in fallback section %d",
+                (unsigned)dialog_id, si);
+            Log::Write(diag);
+        }
+        return sect + text_off;
+    }
+
+    return nullptr;
 }
 
 } // namespace FF7Addr
