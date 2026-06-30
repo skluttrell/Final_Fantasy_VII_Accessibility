@@ -6,9 +6,9 @@
  * the game runs normally, TTS is simply silent — and avoids import-table
  * dependencies that could cause the process to fail to start.
  *
- * All public functions in this module are safe to call from multiple threads,
- * though in practice all calls originate from the game's main thread via hook
- * functions that run on the game loop.
+ * Speak() and Silence() are safe to call from multiple threads. They serialize
+ * through an internal CRITICAL_SECTION (g_speak_cs in tts.cpp). Callers include
+ * the game's main thread (via hook functions) and TitleCursorThread.
  */
 
 #pragma once

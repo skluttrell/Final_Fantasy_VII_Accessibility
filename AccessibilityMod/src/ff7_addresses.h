@@ -81,8 +81,17 @@ constexpr uint32_t BUILD_DIALOG_WINDOW = 0x6E97E0;
 // IMPORTANT — VOLATILE TYPEWRITER POINTER:
 //   This pointer advances byte-by-byte as the typewriter animation progresses.
 //   Reading it mid-dialog gives partial text starting at the current typewriter
-//   position, not the beginning of the dialog. For the complete static text,
-//   use get_field_dialog_text(dialog_id) which reads from the static text section.
+//   position, not the beginning of the dialog.
+//
+// CORRECT USAGE: read this pointer ONE FRAME AFTER the dialog_id changes (the
+//   pending_speak pattern in hooks.cpp). The engine's s_old_message() writes the
+//   correct value during the same frame the MESSAGE opcode executes; reading one
+//   frame later captures the fully-initialized pointer.
+//
+// DO NOT use get_field_dialog_text(dialog_id) as an alternative. That function
+//   reads from section 0's offset table, but dialog_id is entity-relative — two
+//   different entities can share dialog_id=6 for completely different text. For
+//   any entity that is not the section-0 entity, it returns the wrong string.
 // Source: ff7_externals.current_dialog_string_pointer // 0xCBF578 in ff7.h
 constexpr uint32_t DIALOG_TEXT_PTRS = 0xCBF578;
 
@@ -361,8 +370,11 @@ inline uint8_t get_dialog_state(uint8_t window_id)
  * FF7 dialog text for the given window slot, or nullptr if the slot is unused.
  *
  * WARNING: This pointer advances byte-by-byte as the typewriter animation
- * progresses. Reading it mid-dialog yields partial text. Prefer
- * get_field_dialog_text(dialog_id) for complete, static dialog text.
+ * progresses. Reading it mid-dialog yields partial text starting at the current
+ * typewriter position. Use the one-frame pending_speak delay (hooks.cpp) to
+ * read it after s_old_message() has written the fully-initialized value.
+ * DO NOT use get_field_dialog_text(dialog_id) — it reads from the wrong entity
+ * section and returns garbled text for any non-section-0 dialog.
  *
  * Equivalent to accessing ff7_externals.current_dialog_string_pointer[window_id].
  */

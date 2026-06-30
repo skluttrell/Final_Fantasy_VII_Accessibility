@@ -178,6 +178,7 @@ def main():
         if pid is None:
             speak_wait("FF7 not found. Start the game first.")
             print("ERROR: ff7_en.exe not running.")
+            print(f"\nLog saved to: {log_path}")
             return
         print(f"PID: {pid}")
 
@@ -186,6 +187,7 @@ def main():
         if not handle:
             speak_wait("Cannot open FF7. Try running as Administrator.")
             print("ERROR: OpenProcess failed.")
+            print(f"\nLog saved to: {log_path}")
             return
 
         speak_wait(

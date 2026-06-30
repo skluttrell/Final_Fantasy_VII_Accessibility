@@ -33,19 +33,22 @@
  *   functions directly, only forward to them. All other windows.h content
  *   (HMODULE, GetSystemDirectoryA, CreateThread, etc.) is unaffected.
  *
- * BACKGROUND THREAD:
- *   Unlike the original winmm proxy (which used timeGetTime as a per-frame
- *   trigger), version.dll exports no high-frequency function. Instead,
- *   Proxy::Init() spawns a background thread (InitThread) that:
+ * BACKGROUND THREADS:
+ *   Proxy::Init() spawns InitThread (a one-shot thread) that:
  *
- *     1. Sleep(200ms) — by the time this elapses, DllMain has returned and
- *        the loader lock is released. FFNx timing is handled separately by
- *        Resolve() (see ff7_addresses.cpp), not by this sleep.
+ *     1. Sleep(200ms) — loader lock released, FFNx init safe.
  *     2. Config::Load() — parse ffvii_accessibility.cfg (no DLL loading).
  *     3. TTS::Init()   — LoadLibrary("Tolk.dll"); safe past the 200ms mark.
- *     4. Loop: Hooks::Install() every 50ms until FF7's field module is ready
+ *     4. Spawn TitleCursorThread — persistent thread for title screen cursor
+ *        TTS. Must start before step 5 because the title screen appears before
+ *        the field module loads (which is what Install() waits for).
+ *     5. Loop: Hooks::Install() every 50ms until FF7's field module is ready
  *        AND FFNx's voice_init() has patched the opcode table.
- *     5. Exit.
+ *     6. Exit.
+ *
+ *   TitleCursorThread runs until Proxy::Shutdown() signals g_title_stop_event.
+ *   It uses WaitForSingleObject(g_title_stop_event, 150) as its sleep so that
+ *   Proxy::Shutdown() can wake and join it within 150ms on clean unload.
  *
  *   The 50ms poll is invisible to the player: FF7 takes several seconds to
  *   reach the first field map. Hooks::Install() is idempotent and fast
@@ -121,58 +124,99 @@ VERSION_FORWARD_FUNCS(DECLARE_FP)
 VERSION_FORWARD_FUNCS(MAKE_STUB)
 #undef MAKE_STUB
 
+// Stop event and saved handle for TitleCursorThread.
+// Written in InitThread before CreateThread; read in Proxy::Shutdown().
+// No lock needed: Shutdown() runs after InitThread exits (happens-before on
+// the global state the game loop observes when both threads are live).
+static HANDLE g_title_stop_event = nullptr;
+static HANDLE g_title_thread     = nullptr;
+
 // ---------------------------------------------------------------------------
 // Title screen cursor polling thread.
 //
-// Polls FF7Addr::TITLE_CURSOR (0x00DD6F24) every 150 ms and speaks
-// "Continue" (value=1) or "New Game" (value=0) whenever the byte changes.
+// Polls FF7Addr::TITLE_CURSOR (0x00DD6F24) and speaks "Continue" (value=1)
+// or "New Game" (value=0) whenever the byte changes to a valid cursor value.
+// Uses WaitForSingleObject(g_title_stop_event, 150) as its sleep so that
+// Proxy::Shutdown() can wake and join it within 150ms on clean unload.
 //
 // WHY A SEPARATE PERSISTENT THREAD:
-//   The title screen is displayed BEFORE the field module loads, which means
-//   Hooks::Install() has not yet succeeded when the player first sees it.
-//   This thread starts immediately after TTS::Init() and runs for the
-//   lifetime of the process, covering both the initial title screen and any
-//   return to it (e.g., after a Game Over).
+//   The title screen appears BEFORE the field module loads, so Hooks::Install()
+//   has not yet succeeded when the player first sees it. This thread starts
+//   immediately after TTS::Init() so the initial title screen is covered,
+//   as well as any return (e.g., after a Game Over).
 //
-// GUARD — only speak for values 0 or 1:
-//   During field/menu/battle modes the field module writes unrelated data into
-//   the 0xDD BSS segment, so 0x00DD6F24 may hold arbitrary values. Limiting
-//   announcement to the two valid cursor states (0 and 1) prevents false
-//   utterances during gameplay. If the byte briefly passes through 0 or 1 as
-//   part of some other field write it may produce a spurious utterance, but
-//   in practice field data at that offset is not a toggling binary value, so
-//   false positives are rare.
+// FIELD_ID GATE:
+//   FF7Addr::FIELD_ID (0xCC15D0) is non-zero while in a named field map and
+//   zero during the title screen, world map, and battle. When non-zero, the
+//   player cannot be on the title screen, so we reset the sentinel to 0xFF.
+//   This ensures that after field gameplay ends and the title screen re-appears,
+//   the first valid cursor position is always announced — regardless of what
+//   value the BSS byte held during field mode.
+//
+// last_cursor SENTINEL UPDATE RULE:
+//   last_cursor is updated ONLY inside the announce branches (values 0 and 1).
+//   Non-0/1 BSS values (from other modules writing into the 0xDD segment) must
+//   not advance the sentinel. If they did, a silent field-mode write of 0 or 1
+//   could pin last_cursor, silencing the announcement when the title screen
+//   later shows the same cursor position.
+//
+// KNOWN LIMITATION — initial splash announce:
+//   Windows zero-initializes the 0xDD BSS segment before process start, so
+//   TITLE_CURSOR == 0x00 (= New Game) during the company logo splash (~350ms).
+//   With FIELD_ID also zero at that point, the first poll fires a "New Game"
+//   announcement during the splash. last_cursor then equals 0, so when the
+//   actual title screen appears with cursor=0, the change-check suppresses a
+//   second announce. The user hears one premature cue and then must navigate
+//   (Up/Down) to hear the position on the real title screen. This is an
+//   inherent limitation of reading a BSS byte before the title module
+//   initializes it; there is no in-process signal that distinguishes "splash"
+//   from "title screen" at the byte level.
 //
 // Gated by Config::Get().speak_menus.
 // ---------------------------------------------------------------------------
 static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 {
-    uint8_t last_cursor = 0xFF;  // 0xFF = not yet read; triggers initial announce
+    uint8_t last_cursor = 0xFF;  // 0xFF = sentinel; triggers announce on first valid read
 
     for (;;) {
-        Sleep(150);
+        // Sleep 150ms, or wake immediately if Proxy::Shutdown() signals us.
+        if (WaitForSingleObject(g_title_stop_event, 150) == WAIT_OBJECT_0)
+            break;
 
         if (!Config::Get().speak_menus) {
-            last_cursor = 0xFF;  // reset so we re-announce if menus are re-enabled
+            last_cursor = 0xFF;
             continue;
         }
 
-        // Direct BSS dereference — safe because 0x00DD6F24 is in the game's
-        // statically-allocated data segment, always mapped for the process lifetime.
+        // FIELD_ID is non-zero while in a named field map. When non-zero the
+        // player is not on the title screen: reset the sentinel and skip.
+        // Safe dereference: 0xCC15D0 is in the statically-allocated game BSS.
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        if (field_id != 0) {
+            last_cursor = 0xFF;
+            continue;
+        }
+
+        // Safe dereference: 0x00DD6F24 is in the statically-allocated game BSS.
         const uint8_t curr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::TITLE_CURSOR);
 
         if (curr == last_cursor) continue;
-        last_cursor = curr;
 
+        // Update last_cursor only for values we announce, so non-0/1 BSS values
+        // cannot pin the sentinel and cause a false negative on title re-entry.
         if (curr == 1) {
+            last_cursor = curr;
             Log::Write("[FF7Access] TITLE cursor=1 (Continue)");
             TTS::Speak(L"Continue", /*interrupt=*/true);
         } else if (curr == 0) {
+            last_cursor = curr;
             Log::Write("[FF7Access] TITLE cursor=0 (New Game)");
             TTS::Speak(L"New Game", /*interrupt=*/true);
         }
-        // Other values are field/menu data — do not speak.
+        // Other values are BSS data from unrelated modules — do not announce
+        // and do not update last_cursor.
     }
 
     return 0;
@@ -212,18 +256,26 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     TTS::Init();
 
     // Spawn the title screen cursor polling thread immediately after TTS is ready.
-    // This MUST happen before the Hooks::Install() loop below, because the title
-    // screen is visible before the field module loads (which is what Resolve()
-    // and Install() wait for). Delaying until after Install() would miss the
-    // initial title screen entirely.
-    {
-        HANDLE hCursor = CreateThread(nullptr, 0, TitleCursorThread, nullptr, 0, nullptr);
-        if (hCursor) {
+    // Must happen before the Install() loop below: the title screen is visible
+    // before the field module loads (which is what Install() waits for), so
+    // delaying until after Install() would miss the initial title screen.
+    //
+    // The stop event is created first; TitleCursorThread blocks on it for its
+    // sleep, allowing Proxy::Shutdown() to wake and join it cleanly.
+    // The thread handle is saved (not closed here) so Shutdown() can wait on it.
+    g_title_stop_event = CreateEvent(nullptr, /*bManualReset=*/TRUE,
+                                     /*bInitialState=*/FALSE, nullptr);
+    if (g_title_stop_event) {
+        g_title_thread = CreateThread(nullptr, 0, TitleCursorThread, nullptr, 0, nullptr);
+        if (g_title_thread) {
             Log::Write("[FF7Access] Title cursor polling thread started.");
-            CloseHandle(hCursor);
         } else {
             Log::Write("[FF7Access] Warning: could not start title cursor thread.");
+            CloseHandle(g_title_stop_event);
+            g_title_stop_event = nullptr;
         }
+    } else {
+        Log::Write("[FF7Access] Warning: could not create title cursor stop event.");
     }
 
     // Poll until both conditions are met (checked inside FF7Addr::Resolve()):
@@ -296,6 +348,26 @@ void Init()
 
 void Shutdown()
 {
+    // Signal and join TitleCursorThread before anything else tears down.
+    // dllmain.cpp calls Proxy::Shutdown() first (before TTS::Shutdown and
+    // Log::Shutdown), so by the time those run no background thread can be
+    // mid-call into TTS or Log.
+    //
+    // On process exit (lpvReserved != NULL in DLL_PROCESS_DETACH) the OS
+    // has already terminated all threads, so WaitForSingleObject returns
+    // immediately (the handle is in signaled state). On explicit FreeLibrary
+    // the thread wakes from WaitForSingleObject within 150ms and exits normally.
+    if (g_title_stop_event) SetEvent(g_title_stop_event);
+    if (g_title_thread) {
+        WaitForSingleObject(g_title_thread, 500);
+        CloseHandle(g_title_thread);
+        g_title_thread = nullptr;
+    }
+    if (g_title_stop_event) {
+        CloseHandle(g_title_stop_event);
+        g_title_stop_event = nullptr;
+    }
+
     if (s_real_version) {
         FreeLibrary(s_real_version);
         s_real_version = nullptr;

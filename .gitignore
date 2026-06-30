@@ -12,3 +12,4 @@ resume.txt
 ff7_investigate.log
 scratchpad_ff7text.cpp
 investigate/*.log
+investigate/**/*.log

@@ -242,6 +242,7 @@ def main():
         if pid is None:
             speak_wait(f"{PROCESS_NAME} not found. Start FF7 first.")
             print(f"ERROR: {PROCESS_NAME} not running.")
+            print(f"\nLog saved to: {log_path}")
             return
         print(f"Found {PROCESS_NAME}: PID {pid}")
 
@@ -250,6 +251,7 @@ def main():
         except RuntimeError as e:
             speak_wait("Cannot open FF7. Try running as Administrator.")
             print(f"ERROR: {e}")
+            print(f"\nLog saved to: {log_path}")
             return
         print("Process opened.")
         print()

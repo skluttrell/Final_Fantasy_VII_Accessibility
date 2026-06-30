@@ -55,7 +55,8 @@ namespace {
     Fn_Tolk_Silence          g_Tolk_Silence          = nullptr;
     Fn_Tolk_DetectScreenReader g_Tolk_DetectScreenReader = nullptr;
 
-    bool g_initialized = false;
+    bool             g_initialized = false;
+    CRITICAL_SECTION g_speak_cs;   // serializes Speak/Silence; initialized in Init()
 
     // Helper: resolve a named export from Tolk.dll.
     // Returns nullptr (silently) if the export is absent — allowing forward
@@ -150,6 +151,7 @@ void Init()
         return;
     }
 
+    InitializeCriticalSection(&g_speak_cs);
     g_initialized = true;
 
     // Log which screen reader Tolk selected so we can confirm NVDA vs SAPI.
@@ -173,32 +175,52 @@ void Init()
 
 void Speak(const wchar_t* text, bool interrupt)
 {
-    // No-op guard: if Tolk failed to load, return immediately rather than crashing.
+    // Fast pre-check outside the lock; the real guard is repeated inside.
     if (!g_initialized || !g_Tolk_Speak) return;
     if (!text || text[0] == L'\0') return;
 
-    // Honor the global interrupt override from the config file.
-    // If the user set interrupt=false, never interrupt ongoing speech.
     const bool do_interrupt = interrupt && Config::Get().interrupt;
 
-    g_Tolk_Speak(text, do_interrupt);
+    // Serialize concurrent callers (game main thread via hook functions,
+    // TitleCursorThread via polling). g_initialized is re-checked under the
+    // lock so that a concurrent Shutdown() cannot cause a call into Tolk
+    // after FreeLibrary — any caller blocked here sees g_initialized=false
+    // when it acquires the lock and returns without touching g_Tolk_Speak.
+    EnterCriticalSection(&g_speak_cs);
+    if (g_initialized && g_Tolk_Speak)
+        g_Tolk_Speak(text, do_interrupt);
+    LeaveCriticalSection(&g_speak_cs);
 }
 
 void Silence()
 {
     if (!g_initialized || !g_Tolk_Silence) return;
-    g_Tolk_Silence();
+
+    EnterCriticalSection(&g_speak_cs);
+    if (g_initialized && g_Tolk_Silence)
+        g_Tolk_Silence();
+    LeaveCriticalSection(&g_speak_cs);
 }
 
 void Shutdown()
 {
     if (!g_initialized) return;
 
+    // Acquire the speak lock and clear g_initialized while holding it.
+    // Any Speak/Silence call that is blocked on EnterCriticalSection will see
+    // g_initialized=false when it acquires the lock and return without calling
+    // into Tolk. Any call already inside Tolk_Speak finishes before we proceed.
+    // By the time this runs, Proxy::Shutdown() has already joined
+    // TitleCursorThread, so no background thread is calling Speak() anymore.
+    EnterCriticalSection(&g_speak_cs);
+    g_initialized = false;
+    LeaveCriticalSection(&g_speak_cs);
+
     if (g_Tolk_Unload) g_Tolk_Unload();
     if (g_tolk_dll)    FreeLibrary(g_tolk_dll);
+    g_tolk_dll = nullptr;
 
-    g_tolk_dll    = nullptr;
-    g_initialized = false;
+    DeleteCriticalSection(&g_speak_cs);
 }
 
 } // namespace TTS

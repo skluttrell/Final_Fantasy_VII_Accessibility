@@ -66,6 +66,13 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
         break;
 
     case DLL_PROCESS_DETACH:
+        // Stop background threads first. TitleCursorThread calls TTS::Speak()
+        // and Log::Write(); those modules must not be torn down while it runs.
+        // Proxy::Shutdown() signals the thread's stop event and waits for it
+        // to exit (≤150ms on FreeLibrary; instant on process exit because the
+        // OS has already terminated threads before this point).
+        Proxy::Shutdown();
+
         // Restore opcode table entries to their pre-hook values.
         Hooks::Uninstall();
 
@@ -74,9 +81,6 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
 
         // Flush and close the debug log file (if open).
         Log::Shutdown();
-
-        // Release our handle to the system version.dll.
-        Proxy::Shutdown();
         break;
 
     default:
