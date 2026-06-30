@@ -1,9 +1,14 @@
 .claude/
+7th-Heaven-4.4.0/
+AccessibilityMod/build/
 Braver/
+Echo/
 FFNx/
 tools/venv/
 nvdaControllerClient32.dll
 nvdaControllerClient64.dll
 Tolk.dll
 resume.txt
-AccessibilityMod/build/
+ff7_investigate.log
+scratchpad_ff7text.cpp
+investigate/*.log

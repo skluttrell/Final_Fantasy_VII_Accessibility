@@ -120,6 +120,66 @@ constexpr uint32_t FIELD_CURR_SCRIPT_POS = 0xCC0CF8;
 // Source: ff7_externals.current_entity_id // 0xCC0964 in ff7_data.h
 constexpr uint32_t CURRENT_ENTITY_ID = 0xCC0964;
 
+// The numeric ID of the currently loaded field map (0 = none/title/world/battle).
+// Changes whenever the player transitions to a new field location.
+// Useful as a "player is in a named field" indicator: non-zero while in a
+// field map, zero (or unchanged) during title screen, world map, and battle.
+// Source: 7th Heaven mod manager 7thHeaven.var "FieldID" variable (confirmed
+//         by 7H source reading this as a signed 16-bit value via Marshal.ReadInt16)
+constexpr uint32_t FIELD_ID = 0xCC15D0;
+
+// Title screen cursor position. Valid only while the title screen is displayed.
+//   0 = NEW GAME cursor position
+//   1 = CONTINUE cursor position
+// Confirmed by ff7_title_poll.py / ff7_title_verify.py (2026-06-30):
+//   single address in 0xDD segment, changed exactly once per Up/Down press,
+//   verified as clean 0↔1 toggle in sync with cursor movement.
+// Located 0x2B2C bytes after the name-entry cursor column (0xDD46F8).
+// During field/menu/battle modes this address holds unrelated BSS data —
+// the polling thread guards against this by only speaking for values 0 or 1.
+constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
+
+// ---------------------------------------------------------------------------
+// SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
+//
+// SAVEMAP_BASE (0xDBFD38) is the start of a region that includes both the
+// traditional savemap and immediately following game-state data. The offsets
+// below are confirmed from 7th Heaven's 7thHeaven.var address table, which
+// reads these as absolute addresses with no module-base addition (FF7 does
+// not use ASLR).
+//
+// Character blocks: each of the 9 playable characters occupies 0x84 bytes,
+// starting at SAVEMAP_BASE + 0x70. Within each block the weapon byte is at
+// offset 0x0, armor at 0x1, accessory at 0x2. HP/MP/stats follow the
+// standard FF7 savemap character struct layout.
+//
+// Absolute addresses of each character block (= SAVEMAP_BASE + 0x70 + N*0x84):
+//   Cloud     0xDBFDA8   Barret    0xDBFE2C   Tifa      0xDBFEB0
+//   Aeris     0xDBFF34   Red XIII  0xDBFFB8   Yuffie    0xDC003C
+//   Cait Sith 0xDC00C0   Vincent   0xDC0144   Cid       0xDC01C8
+//
+// Other confirmed savemap-region addresses (7thHeaven.var):
+//   0xDC08DC  PPV (Party Progress Variable) — signed WORD, story progress
+//   0xDC08EB  Time played — BYTE
+//   0xDC091C  KeyItems1  — DWORD bitfield (32 key item flags)
+//   0xDC0920  KeyItems2  — DWORD bitfield (additional key item flags)
+//   0xDC09E5  PartyLeader — BYTE, character ID of the current party leader
+//   0xDC0BCF  Subtitles  — BYTE, subtitles on/off setting
+//   0xDC0BD5  UTS        — BYTE, unlock/tutorial/subtitles options byte
+//   0xDC0BD6  Unlocks    — BYTE
+//   0xDC0BD7  Music      — BYTE, music on/off setting
+// ---------------------------------------------------------------------------
+
+// Character ID of the current party leader (Cloud=0, Barret=1, Tifa=2, …).
+// Useful for constructing "Cloud says:" style TTS speaker prefixes.
+// Source: 7th Heaven 7thHeaven.var "PartyLeader"
+constexpr uint32_t PARTY_LEADER = 0xDC09E5;
+
+// Story progress variable — a signed 16-bit counter advanced by field scripts.
+// 7th Heaven uses it to apply different mod configs based on story position.
+// Source: 7th Heaven 7thHeaven.var "PPV"
+constexpr uint32_t STORY_PROGRESS = 0xDC08DC;
+
 // ---------------------------------------------------------------------------
 // Named anchor functions whose absolute addresses are known from FFNx's
 // naming convention. These are the starting points for dynamic discovery.

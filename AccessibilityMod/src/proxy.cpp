@@ -65,6 +65,7 @@
 
 #include "proxy.h"
 #include "hooks.h"
+#include "ff7_addresses.h"
 #include "tts.h"
 #include "config.h"
 #include "log.h"
@@ -121,6 +122,63 @@ VERSION_FORWARD_FUNCS(MAKE_STUB)
 #undef MAKE_STUB
 
 // ---------------------------------------------------------------------------
+// Title screen cursor polling thread.
+//
+// Polls FF7Addr::TITLE_CURSOR (0x00DD6F24) every 150 ms and speaks
+// "Continue" (value=1) or "New Game" (value=0) whenever the byte changes.
+//
+// WHY A SEPARATE PERSISTENT THREAD:
+//   The title screen is displayed BEFORE the field module loads, which means
+//   Hooks::Install() has not yet succeeded when the player first sees it.
+//   This thread starts immediately after TTS::Init() and runs for the
+//   lifetime of the process, covering both the initial title screen and any
+//   return to it (e.g., after a Game Over).
+//
+// GUARD — only speak for values 0 or 1:
+//   During field/menu/battle modes the field module writes unrelated data into
+//   the 0xDD BSS segment, so 0x00DD6F24 may hold arbitrary values. Limiting
+//   announcement to the two valid cursor states (0 and 1) prevents false
+//   utterances during gameplay. If the byte briefly passes through 0 or 1 as
+//   part of some other field write it may produce a spurious utterance, but
+//   in practice field data at that offset is not a toggling binary value, so
+//   false positives are rare.
+//
+// Gated by Config::Get().speak_menus.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
+{
+    uint8_t last_cursor = 0xFF;  // 0xFF = not yet read; triggers initial announce
+
+    for (;;) {
+        Sleep(150);
+
+        if (!Config::Get().speak_menus) {
+            last_cursor = 0xFF;  // reset so we re-announce if menus are re-enabled
+            continue;
+        }
+
+        // Direct BSS dereference — safe because 0x00DD6F24 is in the game's
+        // statically-allocated data segment, always mapped for the process lifetime.
+        const uint8_t curr =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::TITLE_CURSOR);
+
+        if (curr == last_cursor) continue;
+        last_cursor = curr;
+
+        if (curr == 1) {
+            Log::Write("[FF7Access] TITLE cursor=1 (Continue)");
+            TTS::Speak(L"Continue", /*interrupt=*/true);
+        } else if (curr == 0) {
+            Log::Write("[FF7Access] TITLE cursor=0 (New Game)");
+            TTS::Speak(L"New Game", /*interrupt=*/true);
+        }
+        // Other values are field/menu data — do not speak.
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Background initialization thread.
 //
 // This thread handles Config/TTS/Hook init outside the loader lock.
@@ -152,6 +210,21 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     // Initialize the Tolk screen reader library. Calls LoadLibrary("Tolk.dll").
     // Safe here because 200ms have passed and the loader lock is long released.
     TTS::Init();
+
+    // Spawn the title screen cursor polling thread immediately after TTS is ready.
+    // This MUST happen before the Hooks::Install() loop below, because the title
+    // screen is visible before the field module loads (which is what Resolve()
+    // and Install() wait for). Delaying until after Install() would miss the
+    // initial title screen entirely.
+    {
+        HANDLE hCursor = CreateThread(nullptr, 0, TitleCursorThread, nullptr, 0, nullptr);
+        if (hCursor) {
+            Log::Write("[FF7Access] Title cursor polling thread started.");
+            CloseHandle(hCursor);
+        } else {
+            Log::Write("[FF7Access] Warning: could not start title cursor thread.");
+        }
+    }
 
     // Poll until both conditions are met (checked inside FF7Addr::Resolve()):
     //   1. FF7's field opcode table is populated (field module has loaded), AND
