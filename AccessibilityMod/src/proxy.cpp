@@ -46,9 +46,10 @@
  *        AND FFNx's voice_init() has patched the opcode table.
  *     6. Exit.
  *
- *   TitleCursorThread runs until Proxy::Shutdown() signals g_title_stop_event.
- *   It uses WaitForSingleObject(g_title_stop_event, 150) as its sleep so that
- *   Proxy::Shutdown() can wake and join it within 150ms on clean unload.
+ *   TitleCursorThread and MenuCursorThread both run until Proxy::Shutdown()
+ *   signals g_cursor_stop_event (a shared manual-reset event). Each thread
+ *   uses WaitForSingleObject(g_cursor_stop_event, 150) as its sleep; one
+ *   SetEvent() wakes both within 150ms on clean unload.
  *
  *   The 50ms poll is invisible to the player: FF7 takes several seconds to
  *   reach the first field map. Hooks::Install() is idempotent and fast
@@ -124,19 +125,22 @@ VERSION_FORWARD_FUNCS(DECLARE_FP)
 VERSION_FORWARD_FUNCS(MAKE_STUB)
 #undef MAKE_STUB
 
-// Stop event and saved handle for TitleCursorThread.
-// Written in InitThread before CreateThread; read in Proxy::Shutdown().
+// Shared manual-reset stop event for TitleCursorThread and MenuCursorThread.
+// Both threads block on WaitForSingleObject(g_cursor_stop_event, 150).
+// One SetEvent() in Proxy::Shutdown() wakes both simultaneously.
+// Written in InitThread before either CreateThread call; read in Shutdown().
 // No lock needed: Shutdown() runs after InitThread exits (happens-before on
 // the global state the game loop observes when both threads are live).
-static HANDLE g_title_stop_event = nullptr;
-static HANDLE g_title_thread     = nullptr;
+static HANDLE g_cursor_stop_event = nullptr;
+static HANDLE g_title_thread      = nullptr;
+static HANDLE g_menu_thread       = nullptr;
 
 // ---------------------------------------------------------------------------
 // Title screen cursor polling thread.
 //
 // Polls FF7Addr::TITLE_CURSOR (0x00DD6F24) and speaks "Continue" (value=1)
 // or "New Game" (value=0) whenever the byte changes to a valid cursor value.
-// Uses WaitForSingleObject(g_title_stop_event, 150) as its sleep so that
+// Uses WaitForSingleObject(g_cursor_stop_event, 150) as its sleep so that
 // Proxy::Shutdown() can wake and join it within 150ms on clean unload.
 //
 // WHY A SEPARATE PERSISTENT THREAD:
@@ -180,7 +184,7 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 
     for (;;) {
         // Sleep 150ms, or wake immediately if Proxy::Shutdown() signals us.
-        if (WaitForSingleObject(g_title_stop_event, 150) == WAIT_OBJECT_0)
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
             break;
 
         if (!Config::Get().speak_menus) {
@@ -223,6 +227,113 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
+// Main-menu cursor polling thread.
+//
+// Polls FF7Addr::MENU_CURSOR (0x00CC1B42) and announces the highlighted
+// main-menu option by name whenever the cursor moves.
+//
+// CURSOR INDEX → OPTION NAME:
+//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit  6=Config
+//   7=???   8=???   (unlockable, identity TBD — skipped until confirmed)
+//   9=Save  10=Quit
+// Confirmed via ff7_menu_cursor_poll.py (2026-07-01): static BSS address in
+// the 0xCC region, verified clean cursor tracking with correct index range.
+//
+// FIELD_ID GATE:
+//   The main menu can only be opened from a field map. FIELD_ID (0xCC15D0)
+//   is non-zero while in a named field map and zero elsewhere (title screen,
+//   world map, battle). When FIELD_ID == 0 the player cannot be in the main
+//   menu, so we reset the sentinel and skip. This prevents the thread from
+//   reacting to the cursor byte's retained value during non-field game states.
+//
+// CHANGE-ONLY DETECTION:
+//   MENU_CURSOR retains its last value when the menu closes, so we only
+//   speak on value-change — not on menu-open. The player can press a
+//   direction to hear their current position if they re-open at the same row.
+//   A "menu is open" flag (to re-announce on open) was not found during
+//   investigation; locating it is noted as future work.
+//
+// UNKNOWN SLOTS 7–8:
+//   These cursor indices exist but correspond to menu options not yet
+//   unlocked in the game (likely PHS and one other). The thread skips them
+//   silently and logs a diagnostic. Update kMenuLabels[] when confirmed.
+//
+// Gated by Config::Get().speak_menus.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
+{
+    // Map cursor index → spoken label. nullptr entries are unlockable options
+    // whose names are not yet confirmed; they are logged but not spoken.
+    static const wchar_t* const kMenuLabels[] = {
+        L"Item",    // 0
+        L"Magic",   // 1
+        L"Equip",   // 2
+        L"Status",  // 3
+        L"Order",   // 4
+        L"Limit",   // 5
+        L"Config",  // 6
+        nullptr,    // 7 — unlockable; identity TBD, update when seen in game
+        nullptr,    // 8 — unlockable; identity TBD, update when seen in game
+        L"Save",    // 9
+        L"Quit",    // 10
+    };
+    static const uint8_t kMenuMax = 10;  // highest valid main-menu index
+
+    uint8_t last_cursor = 0xFF;  // 0xFF = no valid cursor seen yet
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            last_cursor = 0xFF;
+            continue;
+        }
+
+        // Only the field-map game state can show the main menu.
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        if (field_id == 0) {
+            last_cursor = 0xFF;
+            continue;
+        }
+
+        const uint8_t curr =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
+
+        if (curr == last_cursor) continue;
+
+        // Values outside 0–kMenuMax mean the byte is being used for
+        // something else (sub-menu state, battle, etc.). Reset sentinel so
+        // we re-announce if we return to a valid main-menu position.
+        if (curr > kMenuMax) {
+            last_cursor = 0xFF;
+            continue;
+        }
+
+        last_cursor = curr;
+
+        const wchar_t* label = kMenuLabels[curr];
+        if (!label) {
+            // Cursor landed on an unlockable slot not yet identified.
+            char dbg[80];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] MENU cursor=%u (unlockable slot, no label)", curr);
+            Log::Write(dbg);
+            continue;
+        }
+
+        char dbg[80];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] MENU cursor=%u (%ls)", curr, label);
+        Log::Write(dbg);
+        TTS::Speak(label, /*interrupt=*/true);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Background initialization thread.
 //
 // This thread handles Config/TTS/Hook init outside the loader lock.
@@ -255,27 +366,38 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     // Safe here because 200ms have passed and the loader lock is long released.
     TTS::Init();
 
-    // Spawn the title screen cursor polling thread immediately after TTS is ready.
-    // Must happen before the Install() loop below: the title screen is visible
-    // before the field module loads (which is what Install() waits for), so
-    // delaying until after Install() would miss the initial title screen.
+    // Create the shared stop event used by both TitleCursorThread and
+    // MenuCursorThread. It is a manual-reset event: one SetEvent() in
+    // Proxy::Shutdown() wakes both threads simultaneously.
     //
-    // The stop event is created first; TitleCursorThread blocks on it for its
-    // sleep, allowing Proxy::Shutdown() to wake and join it cleanly.
-    // The thread handle is saved (not closed here) so Shutdown() can wait on it.
-    g_title_stop_event = CreateEvent(nullptr, /*bManualReset=*/TRUE,
-                                     /*bInitialState=*/FALSE, nullptr);
-    if (g_title_stop_event) {
+    // Both threads must start before the Install() loop below, because the
+    // title screen and main menu are reachable before the field module loads.
+    g_cursor_stop_event = CreateEvent(nullptr, /*bManualReset=*/TRUE,
+                                      /*bInitialState=*/FALSE, nullptr);
+    if (g_cursor_stop_event) {
         g_title_thread = CreateThread(nullptr, 0, TitleCursorThread, nullptr, 0, nullptr);
         if (g_title_thread) {
             Log::Write("[FF7Access] Title cursor polling thread started.");
         } else {
             Log::Write("[FF7Access] Warning: could not start title cursor thread.");
-            CloseHandle(g_title_stop_event);
-            g_title_stop_event = nullptr;
+        }
+
+        g_menu_thread = CreateThread(nullptr, 0, MenuCursorThread, nullptr, 0, nullptr);
+        if (g_menu_thread) {
+            Log::Write("[FF7Access] Menu cursor polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start menu cursor thread.");
+        }
+
+        // If both threads failed to start, release the event now since
+        // Shutdown() will find no threads to join and would still try to
+        // close it. Leave it open if at least one thread is running.
+        if (!g_title_thread && !g_menu_thread) {
+            CloseHandle(g_cursor_stop_event);
+            g_cursor_stop_event = nullptr;
         }
     } else {
-        Log::Write("[FF7Access] Warning: could not create title cursor stop event.");
+        Log::Write("[FF7Access] Warning: could not create cursor stop event.");
     }
 
     // Poll until both conditions are met (checked inside FF7Addr::Resolve()):
@@ -357,15 +479,25 @@ void Shutdown()
     // has already terminated all threads, so WaitForSingleObject returns
     // immediately (the handle is in signaled state). On explicit FreeLibrary
     // the thread wakes from WaitForSingleObject within 150ms and exits normally.
-    if (g_title_stop_event) SetEvent(g_title_stop_event);
+    // Signal both cursor threads. The shared event is manual-reset so both
+    // TitleCursorThread and MenuCursorThread wake from their 150ms waits.
+    if (g_cursor_stop_event) SetEvent(g_cursor_stop_event);
+
+    // Join each thread individually. Both exit within 150ms of the signal.
     if (g_title_thread) {
         WaitForSingleObject(g_title_thread, 500);
         CloseHandle(g_title_thread);
         g_title_thread = nullptr;
     }
-    if (g_title_stop_event) {
-        CloseHandle(g_title_stop_event);
-        g_title_stop_event = nullptr;
+    if (g_menu_thread) {
+        WaitForSingleObject(g_menu_thread, 500);
+        CloseHandle(g_menu_thread);
+        g_menu_thread = nullptr;
+    }
+
+    if (g_cursor_stop_event) {
+        CloseHandle(g_cursor_stop_event);
+        g_cursor_stop_event = nullptr;
     }
 
     if (s_real_version) {

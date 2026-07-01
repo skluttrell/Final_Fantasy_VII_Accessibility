@@ -148,6 +148,19 @@ constexpr uint32_t FIELD_ID = 0xCC15D0;
 // the polling thread guards against this by only speaking for values 0 or 1.
 constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
 
+// Main-menu cursor position. Valid while the in-game overlay menu is open.
+// Holds the 0-indexed row currently highlighted in the main menu list:
+//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit  6=Config
+//   7=???   8=???    (unlockable options, identities TBD — not yet seen)
+//   9=Save  10=Quit
+// Confirmed by ff7_menu_cursor_poll.py / ff7_menu_cursor_verify.py (2026-07-01):
+//   static BSS/data address in the 0xCC region alongside FIELD_ID; changes
+//   exactly once per Up/Down press in the main menu, wraps correctly.
+// When the menu is closed the byte retains its last value; the polling thread
+// gates on FIELD_ID != 0 and only announces on value-change to avoid false
+// positives in field gameplay.
+constexpr uint32_t MENU_CURSOR = 0x00CC1B42;
+
 // ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
 //

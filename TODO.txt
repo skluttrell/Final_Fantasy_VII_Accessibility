@@ -1,0 +1,63 @@
+FF7 Accessibility Mod — TODO / Minor Issues
+============================================
+
+These are low-priority items identified during development. Not bugs blocking
+current functionality; noted here for a future cleanup pass.
+
+
+[TTS] Controller-button Unicode glyphs in dialog text
+------------------------------------------------------
+Some field dialogs contain characters like 0xD6 (Û) and 0xD9 (Ù) in FF7's
+custom encoding. These map to controller button icons (e.g., Cancel button,
+Direction pad) rather than alphabetic characters. Example dialog:
+
+  "Run by holding [CANCEL] while using the [DIRECTION] buttons."
+
+FF7's font renderer draws the appropriate button sprite; TTS sees a raw
+Unicode code point with no meaning. Currently spoken as garbage or silence.
+
+Fix ideas:
+  - In ff7_text.cpp's decode table, map these code points to short descriptive
+    strings (e.g., 0xD6 -> L"[Cancel]", 0xD9 -> L"[Dpad]").
+  - Cross-reference the FF7 font/glyph table to identify all such mappings.
+  - May also apply to other high-range characters in the custom encoding.
+
+
+[TTS] "New Game" spoken during company logo splash (~350ms after launch)
+------------------------------------------------------------------------
+TITLE_CURSOR (0x00DD6F24) is in BSS and is zero-initialized before the title
+screen module runs. TitleCursorThread's first poll fires at ~350ms while
+Eidos/Square Enix logos play; it reads 0 (= New Game) and announces it.
+
+The FIELD_ID gate (added in v1.9.1) prevents false positives during field
+gameplay, but cannot distinguish "splash screen" from "title screen" because
+FIELD_ID is 0 in both cases.
+
+After the spurious splash announce, last_cursor = 0. The real title screen
+also starts at cursor = 0, so no second announce fires — user must navigate
+once (Up/Down) to hear their position.
+
+Fix ideas:
+  - Find a reliable in-process "title screen is actually active" indicator
+    (separate from FIELD_ID). Possible candidates: a title-screen state
+    variable, a menu-system flag, or the presence of specific title-screen
+    assets in memory.
+  - Alternatively, delay TitleCursorThread's first poll until after the splash
+    duration (e.g., 5s) — crude but effective if splash length is fixed.
+  - Document as known limitation until a reliable indicator is found.
+
+
+[CONFIG] Auto-create default config file if missing
+----------------------------------------------------
+If the user places version.dll in the FF7 folder but forgets ffvii_accessibility.cfg,
+Config::Load() currently fails silently and the mod runs with all defaults
+(which is actually correct behavior). However, there is no config file for the
+user to edit to enable/disable features.
+
+Fix: in Config::Load(), after failing to open the file, write a default
+ffvii_accessibility.cfg to the same directory with all defaults and a header
+comment explaining each option. This gives the user an editable starting point
+without requiring them to find documentation.
+
+Implementation note: the DLL knows its own path via GetModuleHandleEx +
+GetModuleFileNameA (same pattern used in TTS::Init() to locate Tolk.dll).
