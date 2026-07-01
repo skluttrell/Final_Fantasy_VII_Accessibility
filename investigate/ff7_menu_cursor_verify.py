@@ -43,31 +43,36 @@ POLL_MS      = 100   # 100ms poll — fast enough to catch cursor moves
 # ── Edit these with your scan results ────────────────────────────────────────
 # Format: (address_int, "label_string")
 CANDIDATES = [
-    # From menu_poll_20260701_112615.log — Phase 1 static-BSS hits.
-    # 0x00CC1B42: count=17, last=8 (=QUIT). Strong cursor candidate.
-    #   0x00CC... is the same region as FIELD_ID (0xCC15D0) — this is stable BSS.
-    # 0x00CC1ABA: count=17, last=2. Possibly prior cursor pos or related state.
-    (0x00CC1B42, "CURSOR_CC1B42"),  # primary: last=8=QUIT, count matches presses
-    (0x00CC1ABA, "STATE_CC1ABA"),   # secondary: last=2, same count — may be related
+    # From menu_isolate_20260701_121926.log — nav-only static candidates.
+    #
+    # 0x009ADE34: count=22, last=0 (Item). Closest count to ~20 expected presses.
+    #   PRIMARY cursor candidate — isolated by subtracting menu-idle changes
+    #   from menu-navigation changes, so this address is NOT a field-script
+    #   variable; it only changes when the cursor moves in the main menu.
+    #
+    # 0x009ADE30: count=14, last=0. Four bytes before the primary. Could be the
+    #   high word of a WORD-sized cursor field, or a related index.
+    #
+    # 0x00DC1154: count=37, last=9 (Save). Higher count than expected for ~20
+    #   presses; may be a state counter rather than a direct cursor index.
+    #   Also appeared in the poll scan (count=20) — watch it in both contexts.
+    (0x009ADE34, "CURSOR_9ADE34"),  # primary: count=22, last=0=Item
+    (0x009ADE30, "NEAR_9ADE30"),    # nearby:  count=14, last=0
+    (0x00DC1154, "STATE_DC1154"),   # secondary: count=37, last=9=Save
 ]
 
 # Potential "menu is open" flag addresses.
 # These should read non-zero while inside the menu and zero in the field.
-MENU_FLAG_CANDIDATES = [
-    # 0x00DC1154: count=20, last=0 in Phase 2. Zero-at-rest is suspicious for
-    # a "menu open" flag; leaving this here to observe its behaviour.
-    (0x00DC1154, "FLAG_DC1154"),
-]
+# The isolate scan found no exclusive menu-open flag in Phase A vs Phase B
+# (Phase A was already inside the menu), so this list is empty for now.
+# A separate field-vs-menu scan would be needed to find a toggle flag.
+MENU_FLAG_CANDIDATES = []
 
 # Menu option labels by cursor index.
-# Without PHS (early game): 0–8 (Item through Quit).
-# With PHS (4+ party members): 0–9 (Item through Quit, PHS at 7).
-# The verify script reports the raw number AND this name, so you can see
-# which layout matches your current game state.
-# Confirmed from verify run 2026-07-01: Save=9, Quit=10.
-# Slots 7 and 8 exist in the cursor range but are hidden/unlockable options
-# not yet seen. Likely PHS (party swapping, unlocks when 4+ party members
-# are available) and one other. Update this table when they appear in game.
+# Confirmed layout (no PHS — early game with 3 party members):
+#   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit  6=Config
+#   7=???   8=???    (unlockable options — identity TBD)
+#   9=Save  10=Quit
 MENU_OPTION_NAMES = {
     0:  "Item",
     1:  "Magic",
@@ -181,13 +186,11 @@ def main():
         all_watched = CANDIDATES + MENU_FLAG_CANDIDATES
 
         speak_wait(
-            "Verifying main menu cursor candidates. "
-            "Open the main menu and move the cursor up and down between options. "
-            "I will speak the option name each time the value changes. "
-            "The correct cursor address will call out Item, Magic, Equip, and so on "
-            "each time you press up or down. "
-            "Also open and close the menu to test the menu-open flag candidates — "
-            "those should change when you open and close the menu overlay. "
+            "Verifying main menu cursor candidates from the isolate scan. "
+            "Open the main menu and move the cursor slowly, one step at a time. "
+            "I will speak the option name each time a candidate changes. "
+            "The correct cursor address will say Item, Magic, Equip, Status, "
+            "Order, Limit, Config, Save, Quit — one per button press. "
             "Press Control C when done."
         )
 

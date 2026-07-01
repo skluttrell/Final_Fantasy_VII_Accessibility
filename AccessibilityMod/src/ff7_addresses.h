@@ -153,13 +153,49 @@ constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
 //   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit  6=Config
 //   7=???   8=???    (unlockable options, identities TBD — not yet seen)
 //   9=Save  10=Quit
-// Confirmed by ff7_menu_cursor_poll.py / ff7_menu_cursor_verify.py (2026-07-01):
-//   static BSS/data address in the 0xCC region alongside FIELD_ID; changes
-//   exactly once per Up/Down press in the main menu, wraps correctly.
-// When the menu is closed the byte retains its last value; the polling thread
-// gates on FIELD_ID != 0 and only announces on value-change to avoid false
-// positives in field gameplay.
-constexpr uint32_t MENU_CURSOR = 0x00CC1B42;
+//
+// Confirmed by ff7_menu_cursor_isolate.py / ff7_menu_cursor_verify.py (2026-07-01):
+//   The isolate script took two snapshot passes both inside the already-open menu
+//   (so field scripts were frozen for both phases) — Phase A with cursor stationary,
+//   Phase B with cursor moving — then subtracted to find addresses that ONLY changed
+//   during cursor movement.  This eliminated all field-script variables and animation
+//   counters.  0x00DC1154 emerged as the sole high-confidence candidate (count=37,
+//   last=9=Save across two independent game launches with different PIDs).
+//
+// Earlier false candidate 0x00CC1B42 was a field-script variable: it changed during
+// field gameplay (triggering false TTS) and froze when the menu opened (so cursor
+// movement wasn't tracked).  0x00DC1154 does the opposite — stays constant during
+// field gameplay and changes exactly once per Up/Down press inside the menu.
+//
+// When the menu is closed the byte retains its last cursor position.  Gate all
+// TTS on MENU_OPEN (below) — do not use FIELD_ID for this purpose.
+constexpr uint32_t MENU_CURSOR = 0x00DC1154;
+
+// Overlay-active flag.  Set to 1 whenever a full-screen overlay is displayed
+// over the field, 0 during normal field gameplay, title screen, and world map.
+//
+// IMPORTANT — this flag covers MORE than just the main menu:
+//   - In-game main menu (Item / Magic / Equip … / Quit)  ← what we want
+//   - Post-battle results screen (EXP, AP, gil, treasure) ← also sets this
+//   The FIELD_ID gate in MenuCursorThread (field_id == 0 → skip) is what
+//   prevents false announces from the title screen; the post-battle screen
+//   occurs during the battle module where FIELD_ID is 0, so it is filtered
+//   by the same gate.  No separate handling is needed for the post-battle
+//   screen as long as the FIELD_ID gate remains in place.
+//
+// Confirmed by ff7_menu_open_scan.py (2026-07-01): symmetric A→B→A scan with
+// three snapshots (field closed → menu open → field closed) found 7 clean
+// 0→1→0 candidates.  0x00DC12DC is 0x188 bytes after MENU_CURSOR in the same
+// DC-region menu-state block, making it the most structurally coherent choice.
+// Other clean candidates (all verified 0→1→0): 0x00DC12F0, 0x00DC1328,
+// 0x00CFFB7C, 0x00CFFB8C, 0x00DC3D00, 0x00DC3D04.
+//
+// Used by MenuCursorThread to:
+//   (a) suppress the false "Item" announce that occurs at new-game load when
+//       MENU_CURSOR reads 0 from a BSS-zeroed address before any menu opens;
+//   (b) re-announce the current cursor position whenever the menu (re)opens,
+//       even if the cursor hasn't moved since the menu was last closed.
+constexpr uint32_t MENU_OPEN = 0x00DC12DC;
 
 // ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)

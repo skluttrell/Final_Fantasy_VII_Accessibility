@@ -279,33 +279,57 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
     };
     static const uint8_t kMenuMax = 10;  // highest valid main-menu index
 
-    uint8_t last_cursor = 0xFF;  // 0xFF = no valid cursor seen yet
+    uint8_t last_cursor    = 0xFF;  // 0xFF = no valid cursor announced yet
+    uint8_t last_menu_open = 0;     // tracks previous MENU_OPEN value
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
             break;
 
         if (!Config::Get().speak_menus) {
-            last_cursor = 0xFF;
+            last_cursor    = 0xFF;
+            last_menu_open = 0;
             continue;
         }
 
-        // Only the field-map game state can show the main menu.
+        // FIELD_ID is non-zero only in named field maps. It is 0 on the title
+        // screen, world map, and during battle. MENU_OPEN is set by the title
+        // screen overlay too, so without this gate MenuCursorThread would
+        // announce "Item" (MENU_CURSOR BSS default = 0) on the title screen.
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
         if (field_id == 0) {
-            last_cursor = 0xFF;
+            last_cursor    = 0xFF;
+            last_menu_open = 0;
             continue;
         }
+
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+
+        if (menu_open == 0) {
+            // Menu is closed. Reset so the next open re-announces position.
+            last_cursor    = 0xFF;
+            last_menu_open = 0;
+            continue;
+        }
+
+        // Menu is open. On the 0→1 transition, force last_cursor to 0xFF so
+        // the current cursor position is announced immediately even if it
+        // hasn't changed since the menu was last closed.
+        if (last_menu_open == 0) {
+            last_cursor = 0xFF;
+        }
+        last_menu_open = menu_open;
 
         const uint8_t curr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
 
         if (curr == last_cursor) continue;
 
-        // Values outside 0–kMenuMax mean the byte is being used for
-        // something else (sub-menu state, battle, etc.). Reset sentinel so
-        // we re-announce if we return to a valid main-menu position.
+        // Values outside 0–kMenuMax mean this byte is being used for
+        // something else. Reset sentinel so we re-announce if we return to a
+        // valid main-menu position.
         if (curr > kMenuMax) {
             last_cursor = 0xFF;
             continue;
@@ -315,7 +339,6 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 
         const wchar_t* label = kMenuLabels[curr];
         if (!label) {
-            // Cursor landed on an unlockable slot not yet identified.
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] MENU cursor=%u (unlockable slot, no label)", curr);
@@ -382,6 +405,12 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start title cursor thread.");
         }
 
+        // Confirmed cursor address: 0x00DC1154 (see ff7_addresses.h MENU_CURSOR).
+        // Found by ff7_menu_cursor_isolate.py (2026-07-01): both snapshot phases
+        // ran inside the already-open menu so field scripts were frozen, then we
+        // subtracted idle-phase changes from navigation-phase changes to isolate
+        // addresses that only move when the cursor moves.  Verified across two
+        // independent game launches with different PIDs.
         g_menu_thread = CreateThread(nullptr, 0, MenuCursorThread, nullptr, 0, nullptr);
         if (g_menu_thread) {
             Log::Write("[FF7Access] Menu cursor polling thread started.");
@@ -389,9 +418,6 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start menu cursor thread.");
         }
 
-        // If both threads failed to start, release the event now since
-        // Shutdown() will find no threads to join and would still try to
-        // close it. Leave it open if at least one thread is running.
         if (!g_title_thread && !g_menu_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
