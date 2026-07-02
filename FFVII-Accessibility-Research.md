@@ -105,6 +105,16 @@ or read at runtime from opcode parameters.
 | `world_opcode_message_sub_75EE86` | `0x75EE86` | FFNx naming convention (v2) |
 | `world_opcode_ask_sub_75EEBB` | `0x75EEBB` | FFNx naming convention (v2) |
 | `display_battle_action_text_42782A` | `0x42782A` | FFNx naming convention (v2) |
+| `TITLE_CURSOR` | `0x00DD6F24` | 0=New Game, 1=Continue — only valid on title screen; guard with FIELD_ID==0 |
+| `MENU_CURSOR` | `0x00DC1154` | Main menu row 0–10 (Item…Quit); constant during field play |
+| `MENU_OPEN` | `0x00DC12DC` | 1 when main menu or post-battle results active; must gate with FIELD_ID!=0 |
+| `CONFIG_ROW` | `0x00DC10F0` | Config sub-menu row 0–9 (Window color…Magic order); proxy gate: MENU_CURSOR==7 |
+| `CONFIG_SPEED_BATTLE` | `0x00DC0E10` | Row 5 Battle speed — raw byte, 0=Fast → 255=Slow |
+| `CONFIG_SPEED_MSG` | `0x00DC0E11` | Row 6 Battle message speed — raw byte, 0=Fast → 255=Slow |
+| `CONFIG_PACKED_CURSOR_ATB` | `0x00DC0E12` | Packed byte: bit 4=Cursor (0=Initial/1=Memory); bits 7:6=ATB (0=Active/1=Recommended/2=Wait) |
+| `CONFIG_PACKED_CAMERA_MAGIC` | `0x00DC0E13` | Packed byte: bit 0=Camera (0=Auto/1=Fixed); bits 4:2=Magic order index 0–5 (No.1–No.6) |
+| `CONFIG_SPEED_FIELD_MSG` | `0x00DC0E24` | Row 7 Field message speed — raw byte, 0=Fast → 255=Slow |
+| `QUIT_CURSOR` | `0x00DC0FA0` | 0=Yes, 1=No inside Quit confirmation dialog |
 
 ---
 
@@ -341,9 +351,130 @@ position 0.
 
 ---
 
-## 9. Current Status
+## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
-### Working (as of v1.7)
+### Overview
+
+Menu TTS does not use opcode hooks. The field script VM is frozen while any overlay is open, so
+there are no MESSAGE or ASK opcodes to intercept. Instead, we use background polling threads that
+read BSS addresses every 150ms and speak on changes. All threads share a manual-reset stop event
+(`g_cursor_stop_event`) so a single `SetEvent()` in `Shutdown()` wakes them all cleanly.
+
+### Address discovery methodology
+
+For each menu feature, we wrote a Python investigation script using `ctypes.ReadProcessMemory` over
+the full 0x00400000–0x00DE0000 BSS range:
+
+- **Isolate scan** (title cursor, menu cursor, config row, config values): take two snapshot passes
+  with the game in different states, subtract the idle-noise pass from the nav pass. Addresses that
+  only changed during active navigation are candidates.
+- **Symmetric toggle scan** (MENU_OPEN): three snapshots A→B→A (closed→open→closed). Candidates
+  are addresses that changed A→B and reverted B→C.
+- **Delta scan** (Sound sub-menu, not yet used in TTS): take a baseline snapshot, guide the user
+  through exactly N button presses via spoken countdown, take a second snapshot. Search for
+  addresses where `(snap_b - snap_a) == ±N`. Audio timers change by random amounts; the slider
+  changes by exactly N. Designed to filter out the audio subsystem noise that contaminates the
+  isolate scan when the Sound sub-menu is open.
+
+All scripts tee stdout to a timestamped log file automatically (Tee class wrapping sys.stdout).
+All instructions are spoken aloud via a fire-and-forget PowerShell SAPI subprocess so the terminal
+can stay in the background while FF7 is in focus.
+
+### Confirmed addresses (2026-07-01–02)
+
+| Address | Symbol | Discovery script |
+|---------|--------|-----------------|
+| `0x00DD6F24` | TITLE_CURSOR | ff7_title_poll.py + ff7_title_verify.py |
+| `0x00DC1154` | MENU_CURSOR | ff7_menu_cursor_isolate.py + ff7_menu_cursor_verify.py |
+| `0x00DC12DC` | MENU_OPEN | ff7_menu_open_scan.py |
+| `0x00DC10F0` | CONFIG_ROW | ff7_config_menu_scan.py + ff7_config_menu_verify.py |
+| `0x00DC0E10` | CONFIG_SPEED_BATTLE | ff7_config_values_scan.py + ff7_config_values_verify.py |
+| `0x00DC0E11` | CONFIG_SPEED_MSG | same |
+| `0x00DC0E12` | CONFIG_PACKED_CURSOR_ATB | same |
+| `0x00DC0E13` | CONFIG_PACKED_CAMERA_MAGIC | same |
+| `0x00DC0E24` | CONFIG_SPEED_FIELD_MSG | same |
+| `0x00DC0FA0` | QUIT_CURSOR | ff7_quit_dialog_scan.py |
+
+### Packed byte encodings
+
+**DC0E12** encodes two config rows in one byte:
+
+| Bits | Field | Values |
+|------|-------|--------|
+| 7:6 | ATB | 00=Active, 01=Recommended, 10=Wait |
+| 4 | Cursor | 0=Initial, 1=Memory |
+| 3:0 | Constant 0x5 | (other packed fields, not yet decoded) |
+
+Extraction: `cursor = (val >> 4) & 1`, `atb = (val >> 6) & 3`
+
+**DC0E13** encodes two config rows in one byte:
+
+| Bits | Field | Values |
+|------|-------|--------|
+| 4:2 | Magic order | 0=No.1, 1=No.2, 2=No.3, 3=No.4, 4=No.5, 5=No.6 |
+| 0 | Camera angle | 0=Auto, 1=Fixed |
+| 7:5, 3, 1 | Constant 0 | (unused at these rows) |
+
+Extraction: `camera = val & 1`, `magic_order = (val >> 2) & 7`
+
+**Magic order has 6 presets, not 4.** The config screen shows the selected preset's internal
+ordering (restore / attack / indirect) rather than a list of presets. Values cycle through
+0,4,8,12,16,20 (step=4, stored in bits 4:2) confirming 6 distinct choices (No.1–No.6).
+
+### False candidates and rejected approaches
+
+**QUIT_OPEN (0x00DC0FB1)**: Confirmed 0→1 when the Quit dialog opens, but does NOT return to 0
+when dismissed with No. Gating MenuCursorThread's quit-dialog handler on this flag caused it to
+loop in the handler indefinitely, silencing the main menu. Not used; QUIT_CURSOR is polled without
+a gate instead.
+
+**0x009A8729**: Top candidate for Battle message speed in the isolate scan (count=highest, last=0).
+Identified as a button-transient address — changes when any directional button is held, regardless
+of which row is active. The real address (DC0E11, rank 5 in the scan) was confirmed by the verify
+script showing DC0E11 changing exclusively during row 6.
+
+**Isolate scan for Sound sub-menu**: Opening the Sound sub-menu activates the audio subsystem,
+flooding the BSS region with constantly-changing timer and buffer state. The idle-phase baseline
+is contaminated, producing ~47 false candidates for Music volume. Requires a delta scan instead
+(ff7_sound_submenu_scan.py, not yet run).
+
+### Bug: stale MENU_OPEN at game start (v2.2 fix)
+
+The title screen uses the same overlay flag (MENU_OPEN=1) as the main menu. On the first field
+load after the title screen, that stale MENU_OPEN=1 persisted for exactly one poll cycle before
+clearing. This caused MenuCursorThread to fire its "re-announce on menu open" path, speaking "Item"
+(the BSS default of MENU_CURSOR=0) before the player had opened any menu.
+
+Fix: require `menu_open_streak >= 2` (two consecutive polls of MENU_OPEN=1) before trusting it.
+The stale title-screen value clears after one poll and never reaches streak=2.
+
+### Bug: false config row announce during main-menu navigation (v2.2 fix)
+
+Initializing `last_row = 0xFF` in ConfigMenuThread caused a false announce when the player scrolled
+quickly through the main menu and MENU_CURSOR briefly passed through 7 (the Config row). The
+MENU_CURSOR==7 gate fired, but CONFIG_ROW still held its retained value from the last config session
+(e.g., 0=Window color). Since `last_row` was 0xFF and CONFIG_ROW was 0, `curr != last_row` was
+true, and "Window color" was announced.
+
+Fix: initialize `last_row = 0` (matching the BSS default of CONFIG_ROW). Because `last_row` is
+never reset to 0xFF, it stays in sync with the retained CONFIG_ROW value throughout main-menu
+navigation. False announces are impossible.
+
+### Threading model
+
+Three persistent polling threads after v2.3:
+
+| Thread | Polls | Period | Stop signal |
+|--------|-------|--------|------------|
+| TitleCursorThread | TITLE_CURSOR | 150ms | g_cursor_stop_event |
+| MenuCursorThread | MENU_CURSOR, QUIT_CURSOR | 150ms | g_cursor_stop_event |
+| ConfigMenuThread | CONFIG_ROW + 5 value addrs | 150ms | g_cursor_stop_event |
+
+---
+
+## 10. Current Status
+
+### Working (as of v2.3)
 
 - All field story dialog (MESSAGE opcode 0x40) spoken via NVDA on dialog start and page advance
 - All field choice menus (ASK opcode 0x48) spoken with "Choose: " prefix
@@ -351,9 +482,16 @@ position 0.
 - Win=0 and win=1: state machine primary path (earlier, cleaner detection)
 - Win=2 and win=3: DLGID fallback path (two-frame delay, reliable in practice)
 - Voice acting (FFNx) and TTS coexist — hook chain passes through both
-- Config file: `speak_dialog`, `speak_choices`, `interrupt` toggles
+- Config file: `speak_dialog`, `speak_choices`, `interrupt`, `speak_menus` toggles
 - No duplicate speaks; no garbage TTS blocks
 - ASCII filter: printable ASCII only; word boundaries preserved
+- Title screen cursor TTS: "New Game" / "Continue" on each Up/Down press
+- Main menu cursor TTS: option name (Item/Magic/Equip/…/Quit) on each Up/Down press
+- Quit confirmation cursor TTS: "Yes" / "No"
+- Config sub-menu row TTS: row name on Up/Down + current value on row entry and Left/Right changes
+  - Toggle rows (Cursor, ATB, Camera, Magic order): option name spoken
+  - Slider rows (Battle speed, Battle message, Field message): numeric value spoken
+  - Rows 0/1/2 (Window color, Sound, Controller): row name only (value addresses not yet found)
 
 ### Known Issues / Limitations
 
@@ -362,24 +500,28 @@ position 0.
 | Apostrophe → space ("I'm" → "I m") | Moderate | Needs proper byte→char lookup table |
 | Other extended chars garbled (curly quotes, em-dash, etc.) | Moderate | Same lookup table |
 | Speaker detection broken when 3-byte window header precedes speaker token | Minor | Detect/skip 0xD0–0xDF at position 0 |
-| Dynamic token placeholders spoken literally ("[item name]") | Minor | Resolve tokens from script banks (v2) |
+| Dynamic token placeholders spoken literally ("[item name]") | Minor | Resolve tokens from script banks |
 | "X <" artifact occasionally in ASK output | Minor | ASK formatting codes not yet filtered |
+| Sound sub-menu (Music/FX sliders) not yet tracked | Moderate | Run ff7_sound_submenu_scan.py delta scan |
+| Config menu entry does not re-announce row if last session ended on row 0 | Minor | Need CONFIG_OPEN flag or entry detection |
 
-### Not Yet Implemented (Planned v2)
+### Not Yet Implemented
 
-| Feature | Hook Point |
-|---------|-----------|
+| Feature | Hook Point / Approach |
+|---------|----------------------|
+| Sound sub-menu value TTS (Music, FX sliders) | Delta scan (ff7_sound_submenu_scan.py) — addresses not yet confirmed |
 | ASK per-option TTS as cursor moves | `opcode_ask + 0x8E` → inner loop; needs FF7 original opcode_ask address |
+| Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
+| Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
 | Battle action text | `display_battle_action_text_42782A` |
 | Battle turn announcement | `battle_set_do_render_menu_call` |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
-| Main menu navigation | Text render function hook (general) or per-menu cursor index RE |
-| Name entry screen | Cheat Engine scan for cursor X/Y index |
+| Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |
 
 ---
 
-## 10. Remaining RE Work
+## 11. Remaining RE Work
 
 | Symbol | Needed For | How to Find |
 |--------|-----------|------------|
@@ -394,7 +536,7 @@ position 0.
 
 ---
 
-## 11. FF7 Text Encoding — Byte Lookup Table (Partial)
+## 12. FF7 Text Encoding — Byte Lookup Table (Partial)
 
 Confirmed mappings based on in-game observation:
 
@@ -416,7 +558,7 @@ Makou Reactor's character encoding documentation.
 
 ---
 
-## 12. Source Reference
+## 13. Source Reference
 
 - **`FFNx/src/voice.cpp`** — complete dialog + battle hook template; our hooks are a TTS-only subset
 - **`FFNx/src/externals_102_us.h`** — all hardcoded absolute addresses for 2013 Steam exe

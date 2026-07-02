@@ -225,6 +225,71 @@ constexpr uint32_t MENU_OPEN = 0x00DC12DC;
 //   is also 7 but CONFIG_ROW does not change.
 constexpr uint32_t CONFIG_ROW = 0x00DC10F0;
 
+// Config sub-menu setting value addresses.
+// Confirmed 2026-07-02 via ff7_config_values_scan.py (isolate scan, subtracted
+// idle noise from nav-phase changes to find row-exclusive addresses) and
+// ff7_config_values_verify.py (live per-address monitoring while navigating
+// each row with Left/Right).  All five live in the DC0E config struct.
+//
+// SLIDER ENCODING (DC0E10, DC0E11, DC0E24):
+//   Raw byte 0–255 where 0=fastest and 255=slowest.  The game displays this
+//   as a graphical bar; there is no separate "display value" address.
+//
+// PACKED BYTE ENCODING (DC0E12, DC0E13):
+//   Two settings share one byte.  Extract each field with bitwise ops (below).
+//   The remaining bits are constant during normal config navigation; they appear
+//   to be set by other config rows not yet decoded (Window color, Sound,
+//   Controller).  Mask only the bits documented here; do not treat the byte
+//   as a single index.
+
+// Row 5 — Battle speed slider.  Raw byte 0–255: 0=Fast, 255=Slow.
+// Exclusive to row 5: confirmed unchanged on all other rows during verify.
+constexpr uint32_t CONFIG_SPEED_BATTLE = 0x00DC0E10;
+
+// Row 6 — Battle message speed slider.  Raw byte 0–255: 0=Fast, 255=Slow.
+// Exclusive to row 6.
+constexpr uint32_t CONFIG_SPEED_MSG = 0x00DC0E11;
+
+// Rows 3+4 — packed byte encoding Cursor (bit 4) and ATB (bits 7:6).
+//
+//   Cursor  = (val >> 4) & 1
+//     0 = Initial   1 = Memory
+//
+//   ATB     = (val >> 6) & 3
+//     0 = Active    1 = Recommended    2 = Wait
+//
+// Verified: on row 3 (Cursor), bit 4 toggled between 0 and 1 while bits 7:6
+// were stable.  On row 4 (ATB), bits 7:6 stepped 00→01→10 while bit 4 was
+// stable.  Bits 3:0 held a constant 0x5 throughout (other packed fields).
+constexpr uint32_t CONFIG_PACKED_CURSOR_ATB = 0x00DC0E12;
+
+// Rows 8+9 — packed byte encoding Camera angle (bit 0) and Magic order (bits 4:2).
+//
+//   Camera angle = val & 1
+//     0 = Auto    1 = Fixed
+//
+//   Magic order  = (val >> 2) & 7
+//     0 = No.1   1 = No.2   2 = No.3   3 = No.4   4 = No.5   5 = No.6
+//
+// There are 6 magic order presets (not 4 as the config menu's visual layout
+// implies).  The menu shows the selected preset's internal ordering
+// (restore/attack/indirect), not the preset list itself.  Observed values
+// 0,4,8,12,16,20 during verify confirm all 6 are reachable (step = 4 = 2²,
+// so the index occupies bits 4:2, giving the clean (val>>2)&7 extraction).
+//
+// Verified: on row 8 (Camera), bit 0 toggled 12↔13 while bits 4:2 were
+// stable.  On row 9 (Magic), bits 4:2 stepped through all 6 values while
+// bit 0 was stable.  Bits 7:5 and bit 1 held 0 throughout.
+constexpr uint32_t CONFIG_PACKED_CAMERA_MAGIC = 0x00DC0E13;
+
+// Row 7 — Field message speed slider.  Raw byte 0–255: 0=Fast, 255=Slow.
+// Located at DC0E24 (not DC0E15/DC0E16): the DC0E10–DC0E13 block encodes
+// the toggle rows (3,4,8,9) and the two battle-related sliders (5,6), while
+// the field-message slider is stored 0x14 bytes further in the struct.
+// Exclusive to row 7 during verify; neighbors DC0E0F, DC0E14, DC0E15 were
+// unchanged across all rows.
+constexpr uint32_t CONFIG_SPEED_FIELD_MSG = 0x00DC0E24;
+
 // ---------------------------------------------------------------------------
 // Quit-confirmation dialog (sub-menu of the main menu)
 // ---------------------------------------------------------------------------

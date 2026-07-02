@@ -458,7 +458,12 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
 
     // Initialized to 0 (= Window color, same as the BSS value of CONFIG_ROW).
     // Never reset to 0xFF — see "FALSE-ANNOUNCE PREVENTION" note above.
-    uint8_t last_row = 0;
+    uint8_t  last_row   = 0;
+    // Last-announced extracted setting value for the current row. 0xFFFF = none
+    // announced yet (also used as the sentinel for rows with no value address).
+    // Reset to 0xFFFF whenever last_row changes so the new row's value is read
+    // and announced immediately.
+    uint16_t last_value = 0xFFFF;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
@@ -484,17 +489,102 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
         const uint8_t curr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_ROW);
 
-        if (curr == last_row) continue;
-
         if (curr > kConfigRowMax) continue;
 
-        last_row = curr;
+        const bool row_changed = (curr != last_row);
+        if (row_changed) {
+            last_row   = curr;
+            last_value = 0xFFFF;  // reset so the new row's value is announced
+        }
+
+        // Extract the display value for this row.
+        // new_value = 0xFFFF means no value tracking (rows 0, 1, 2).
+        // val_str holds the human-readable form for TTS.
+        uint16_t new_value = 0xFFFF;
+        wchar_t  val_str[32] = {};
+        switch (curr) {
+        case 3: {
+            // Cursor: bit 4 of CONFIG_PACKED_CURSOR_ATB (0=Initial, 1=Memory)
+            const uint8_t packed =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_PACKED_CURSOR_ATB);
+            new_value = (packed >> 4) & 1;
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE,
+                         L"%ls", new_value ? L"Memory" : L"Initial");
+            break;
+        }
+        case 4: {
+            // ATB: bits 7:6 of CONFIG_PACKED_CURSOR_ATB (0=Active, 1=Recommended, 2=Wait)
+            static const wchar_t* const kATB[] = { L"Active", L"Recommended", L"Wait" };
+            const uint8_t packed =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_PACKED_CURSOR_ATB);
+            new_value = (packed >> 6) & 3;
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE,
+                         L"%ls", new_value < 3 ? kATB[new_value] : L"unknown");
+            break;
+        }
+        case 5: {
+            // Battle speed: raw byte 0–255 (0=Fast, 255=Slow)
+            new_value = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_SPEED_BATTLE);
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"%u", new_value);
+            break;
+        }
+        case 6: {
+            // Battle message: raw byte 0–255 (0=Fast, 255=Slow)
+            new_value = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_SPEED_MSG);
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"%u", new_value);
+            break;
+        }
+        case 7: {
+            // Field message: raw byte 0–255 (0=Fast, 255=Slow)
+            new_value = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_SPEED_FIELD_MSG);
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"%u", new_value);
+            break;
+        }
+        case 8: {
+            // Camera angle: bit 0 of CONFIG_PACKED_CAMERA_MAGIC (0=Auto, 1=Fixed)
+            const uint8_t packed =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_PACKED_CAMERA_MAGIC);
+            new_value = packed & 1;
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE,
+                         L"%ls", new_value ? L"Fixed" : L"Auto");
+            break;
+        }
+        case 9: {
+            // Magic order: bits 4:2 of CONFIG_PACKED_CAMERA_MAGIC (0–5 → No.1–No.6)
+            const uint8_t packed =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_PACKED_CAMERA_MAGIC);
+            new_value = (packed >> 2) & 7;
+            _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"No. %u", new_value + 1u);
+            break;
+        }
+        default:
+            break;  // rows 0, 1, 2: new_value stays 0xFFFF, val_str stays empty
+        }
+
+        // Nothing changed: same row and same extracted value (or no value tracking).
+        if (!row_changed && new_value == last_value) continue;
+        last_value = new_value;
+
+        // Row navigation → "Row name, value" (or just row name for untracked rows).
+        // Left/Right within a row → just the value string.
+        wchar_t announce[64];
+        if (row_changed) {
+            if (val_str[0] != L'\0') {
+                _snwprintf_s(announce, _countof(announce), _TRUNCATE,
+                             L"%ls, %ls", kConfigRowLabels[curr], val_str);
+            } else {
+                _snwprintf_s(announce, _countof(announce), _TRUNCATE,
+                             L"%ls", kConfigRowLabels[curr]);
+            }
+        } else {
+            _snwprintf_s(announce, _countof(announce), _TRUNCATE, L"%ls", val_str);
+        }
 
         char dbg[80];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] CONFIG row=%u (%ls)", curr, kConfigRowLabels[curr]);
+            "[FF7Access] CONFIG row=%u (%ls)", curr, announce);
         Log::Write(dbg);
-        TTS::Speak(kConfigRowLabels[curr], /*interrupt=*/true);
+        TTS::Speak(announce, /*interrupt=*/true);
     }
 
     return 0;
