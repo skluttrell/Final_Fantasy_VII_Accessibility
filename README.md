@@ -24,6 +24,8 @@ Apostrophes and curly quotes come out as spaces in the spoken text ("I'm" become
 
 ---
 
+> **Version compatibility:** This mod targets the **2013 Steam release** of Final Fantasy VII (exe version 1.02 US). It uses hardcoded memory addresses specific to that build and will not work with the 2026 remake or any other version of the game.
+
 ## Requirements
 
 - Final Fantasy VII (2013 Steam Edition)
