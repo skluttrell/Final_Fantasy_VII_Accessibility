@@ -134,6 +134,7 @@ VERSION_FORWARD_FUNCS(MAKE_STUB)
 static HANDLE g_cursor_stop_event = nullptr;
 static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
+static HANDLE g_config_thread     = nullptr;
 
 // ---------------------------------------------------------------------------
 // Title screen cursor polling thread.
@@ -271,24 +272,38 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         L"Status",  // 3
         L"Order",   // 4
         L"Limit",   // 5
-        L"Config",  // 6
-        nullptr,    // 7 — unlockable; identity TBD, update when seen in game
+        nullptr,    // 6 — unlockable; identity TBD, update when seen in game
+        L"Config",  // 7
         nullptr,    // 8 — unlockable; identity TBD, update when seen in game
         L"Save",    // 9
         L"Quit",    // 10
     };
-    static const uint8_t kMenuMax = 10;  // highest valid main-menu index
+    static const uint8_t kMenuMax = 10;   // highest valid main-menu index
 
-    uint8_t last_cursor    = 0xFF;  // 0xFF = no valid cursor announced yet
-    uint8_t last_menu_open = 0;     // tracks previous MENU_OPEN value
+    // Quit confirmation dialog: 0=Yes  1=No  (No is the default on open).
+    static const wchar_t* const kQuitLabels[] = { L"Yes", L"No" };
+    static const uint8_t kQuitMax = 1;
+
+    uint8_t last_cursor      = 0xFF;  // main-menu cursor; 0xFF = none announced
+    uint8_t last_menu_open   = 0;
+    uint8_t last_quit_cursor = 0xFF;  // quit-dialog cursor; 0xFF = none announced
+    // Counts consecutive polls where MENU_OPEN=1. We require at least 2 before
+    // treating MENU_OPEN as a real menu open. This prevents a single stale
+    // MENU_OPEN=1 poll (the title-screen overlay briefly persisting into the
+    // first field-load poll) from triggering the re-announce logic and
+    // announcing "Item" (MENU_CURSOR BSS default = 0) before the player has
+    // done anything.
+    uint8_t menu_open_streak = 0;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
             break;
 
         if (!Config::Get().speak_menus) {
-            last_cursor    = 0xFF;
-            last_menu_open = 0;
+            last_cursor      = 0xFF;
+            last_menu_open   = 0;
+            last_quit_cursor = 0xFF;
+            menu_open_streak = 0;
             continue;
         }
 
@@ -299,37 +314,68 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
         if (field_id == 0) {
-            last_cursor    = 0xFF;
-            last_menu_open = 0;
+            last_cursor      = 0xFF;
+            last_menu_open   = 0;
+            last_quit_cursor = 0xFF;
+            menu_open_streak = 0;
             continue;
         }
 
+        // ── Main menu ────────────────────────────────────────────────────────
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
 
         if (menu_open == 0) {
-            // Menu is closed. Reset so the next open re-announces position.
-            last_cursor    = 0xFF;
-            last_menu_open = 0;
+            last_cursor      = 0xFF;
+            last_menu_open   = 0;
+            last_quit_cursor = 0xFF;
+            menu_open_streak = 0;
             continue;
         }
 
-        // Menu is open. On the 0→1 transition, force last_cursor to 0xFF so
-        // the current cursor position is announced immediately even if it
-        // hasn't changed since the menu was last closed.
+        // Require MENU_OPEN=1 for 2 consecutive polls before treating this as
+        // a real menu open. A stale title-screen or post-battle MENU_OPEN=1
+        // clears after one poll, so it never reaches streak >= 2.
+        menu_open_streak++;
+        if (menu_open_streak < 2) continue;
+
+        // On the 0→1 transition of MENU_OPEN, force last_cursor to 0xFF so
+        // the current position is announced immediately on re-open.
+        // This fires on the 2nd consecutive poll of MENU_OPEN=1, when
+        // last_menu_open is still 0 from the previous menu-close reset.
         if (last_menu_open == 0) {
             last_cursor = 0xFF;
         }
         last_menu_open = menu_open;
 
+        // ── Quit confirmation cursor (runs in parallel, no priority block) ──
+        // QUIT_CURSOR tracks Yes (0) / No (1) while the Quit dialog is visible.
+        // We intentionally do NOT gate this on a QUIT_OPEN flag: the initial
+        // candidate (0x00DC0FB1) did not reliably return to 0 when the dialog
+        // was dismissed with No, which caused the main menu to stop announcing.
+        // Tracking QUIT_CURSOR in parallel here — without any continue — keeps
+        // the main menu cursor logic running at all times.
+        const uint8_t qcurr =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::QUIT_CURSOR);
+        if (qcurr != last_quit_cursor) {
+            if (qcurr <= kQuitMax) {
+                last_quit_cursor = qcurr;
+                char qdbg[80];
+                _snprintf_s(qdbg, sizeof(qdbg), _TRUNCATE,
+                    "[FF7Access] QUIT cursor=%u (%ls)", qcurr, kQuitLabels[qcurr]);
+                Log::Write(qdbg);
+                TTS::Speak(kQuitLabels[qcurr], /*interrupt=*/true);
+            } else {
+                last_quit_cursor = 0xFF;
+            }
+        }
+
+        // ── Main menu cursor ─────────────────────────────────────────────────
         const uint8_t curr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
 
         if (curr == last_cursor) continue;
 
-        // Values outside 0–kMenuMax mean this byte is being used for
-        // something else. Reset sentinel so we re-announce if we return to a
-        // valid main-menu position.
         if (curr > kMenuMax) {
             last_cursor = 0xFF;
             continue;
@@ -351,6 +397,104 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             "[FF7Access] MENU cursor=%u (%ls)", curr, label);
         Log::Write(dbg);
         TTS::Speak(label, /*interrupt=*/true);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Config sub-menu cursor polling thread.
+//
+// Polls FF7Addr::CONFIG_ROW (0x00DC10F0) and announces the highlighted Config
+// row by name whenever the cursor moves.
+//
+// CONFIG_ROW values (confirmed 2026-07-02 via isolate scan + verify):
+//   0=Window color  1=Sound         2=Controller  3=Cursor
+//   4=ATB           5=Battle speed  6=Battle msg  7=Field msg
+//   8=Camera angle  9=Magic order
+//
+// GATE — CONFIG_OPEN PROXY:
+//   No dedicated "config sub-menu open" flag was found.  All symmetric-toggle
+//   candidates from ff7_config_menu_scan.py Phase C fired on any main-menu
+//   open event, identical to the existing MENU_OPEN (0x00DC12DC).  We gate
+//   on MENU_CURSOR == 7 (the Config row in the main menu) as a proxy:
+//     - In the config sub-menu: MENU_CURSOR is frozen at 7 and CONFIG_ROW
+//       changes with Up/Down presses.  Thread tracks and announces.
+//     - On the Config row of the main menu (before pressing Confirm): MENU_CURSOR
+//       is also 7 but Up/Down moves the MAIN MENU cursor, not CONFIG_ROW.
+//       CONFIG_ROW doesn't change → thread is active but stays silent. ✓
+//     - On any other main-menu row: MENU_CURSOR ≠ 7 → thread skips. ✓
+//
+// FALSE-ANNOUNCE PREVENTION (no 0xFF sentinel):
+//   last_row is initialized to 0 (matching the BSS default of CONFIG_ROW) and
+//   is NEVER reset to 0xFF.  Keeping last_row persistent across menu opens
+//   prevents a false announce when MENU_CURSOR passes through 7 during main-
+//   menu navigation: CONFIG_ROW retains its last config-session value, which
+//   always equals last_row (since last_row only updates when we announce), so
+//   they are always in sync when the player has not entered the sub-menu.
+//
+//   The one accepted limitation: if the player last visited config ending on
+//   row 0 (Window color), re-entering config will not announce the initial
+//   row because CONFIG_ROW resets to 0 = last_row.  The player can press
+//   Up or Down once to hear their position.  See TODO.txt (re-announce entry).
+//
+// Gated by Config::Get().speak_menus.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
+{
+    static const wchar_t* const kConfigRowLabels[] = {
+        L"Window color",    // 0
+        L"Sound",           // 1
+        L"Controller",      // 2
+        L"Cursor",          // 3
+        L"ATB",             // 4
+        L"Battle speed",    // 5
+        L"Battle message",  // 6
+        L"Field message",   // 7
+        L"Camera angle",    // 8
+        L"Magic order",     // 9
+    };
+    static const uint8_t kConfigRowMax = 9;
+
+    // Initialized to 0 (= Window color, same as the BSS value of CONFIG_ROW).
+    // Never reset to 0xFF — see "FALSE-ANNOUNCE PREVENTION" note above.
+    uint8_t last_row = 0;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) continue;
+
+        // Field must be active — config sub-menu only reachable from a field map.
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        if (field_id == 0) continue;
+
+        // Main menu (and therefore config sub-menu) requires MENU_OPEN.
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        if (menu_open == 0) continue;
+
+        // Proxy gate for config sub-menu: MENU_CURSOR must be 7 (Config row).
+        const uint8_t menu_cursor =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
+        if (menu_cursor != 7) continue;
+
+        const uint8_t curr =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_ROW);
+
+        if (curr == last_row) continue;
+
+        if (curr > kConfigRowMax) continue;
+
+        last_row = curr;
+
+        char dbg[80];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] CONFIG row=%u (%ls)", curr, kConfigRowLabels[curr]);
+        Log::Write(dbg);
+        TTS::Speak(kConfigRowLabels[curr], /*interrupt=*/true);
     }
 
     return 0;
@@ -418,7 +562,19 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start menu cursor thread.");
         }
 
-        if (!g_title_thread && !g_menu_thread) {
+        // Config sub-menu row tracking. Confirmed address: 0x00DC10F0 (see
+        // ff7_addresses.h CONFIG_ROW). Found by ff7_config_menu_scan.py (2026-07-02):
+        // isolate scan inside the config sub-menu subtracted idle background changes
+        // from navigation changes; 0x00DC10F0 was the sole candidate in row range 0–9.
+        // Verified by ff7_config_menu_verify.py: clean 0–9 sequential tracking.
+        g_config_thread = CreateThread(nullptr, 0, ConfigMenuThread, nullptr, 0, nullptr);
+        if (g_config_thread) {
+            Log::Write("[FF7Access] Config menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start config menu thread.");
+        }
+
+        if (!g_title_thread && !g_menu_thread && !g_config_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -519,6 +675,11 @@ void Shutdown()
         WaitForSingleObject(g_menu_thread, 500);
         CloseHandle(g_menu_thread);
         g_menu_thread = nullptr;
+    }
+    if (g_config_thread) {
+        WaitForSingleObject(g_config_thread, 500);
+        CloseHandle(g_config_thread);
+        g_config_thread = nullptr;
     }
 
     if (g_cursor_stop_event) {

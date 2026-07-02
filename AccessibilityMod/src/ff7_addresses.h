@@ -150,8 +150,10 @@ constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
 
 // Main-menu cursor position. Valid while the in-game overlay menu is open.
 // Holds the 0-indexed row currently highlighted in the main menu list:
-//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit  6=Config
-//   7=???   8=???    (unlockable options, identities TBD — not yet seen)
+//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit
+//   6=???   (unlockable, identity TBD)
+//   7=Config
+//   8=???   (unlockable, identity TBD)
 //   9=Save  10=Quit
 //
 // Confirmed by ff7_menu_cursor_isolate.py / ff7_menu_cursor_verify.py (2026-07-01):
@@ -196,6 +198,55 @@ constexpr uint32_t MENU_CURSOR = 0x00DC1154;
 //   (b) re-announce the current cursor position whenever the menu (re)opens,
 //       even if the cursor hasn't moved since the menu was last closed.
 constexpr uint32_t MENU_OPEN = 0x00DC12DC;
+
+// Config sub-menu row cursor. Holds the 0-indexed row currently highlighted
+// inside the Config sub-menu (accessible from main menu row 7):
+//   0=Window color  1=Sound      2=Controller   3=Cursor
+//   4=ATB           5=Battle speed  6=Battle message  7=Field message
+//   8=Camera angle  9=Magic order
+//
+// Confirmed by ff7_config_menu_scan.py (Phase A/B isolate scan, 2026-07-02):
+//   Both snapshot phases ran inside the already-open Config sub-menu (field
+//   script frozen for both).  Phase A idle-baseline (12s, cursor stationary)
+//   captured background noise; Phase B navigation (35s, Up/Down through all
+//   10 rows) captured row-change events.  0x00DC10F0 was the sole nav-only
+//   candidate in range 0–9 (count=33, last=8=Camera angle).
+//
+// Verified by ff7_config_menu_verify.py (2026-07-02): clean sequential count
+//   0→1→2→...→9→0→1→... in exact sync with Down presses, reverses cleanly
+//   with Up presses.  No false positives observed during field gameplay.
+//
+// NOTE — CONFIG_OPEN proxy: no dedicated "config sub-menu is open" flag was
+//   found.  All symmetric-toggle candidates from the Phase C scan fired when
+//   the MAIN MENU opened (identical to MENU_OPEN 0x00DC12DC).  ConfigMenuThread
+//   therefore gates on MENU_CURSOR == 7 (the Config row) as a proxy: while in
+//   the config sub-menu MENU_CURSOR is frozen at 7 and CONFIG_ROW changes;
+//   while on the Config row in the main menu (not yet in sub-menu) MENU_CURSOR
+//   is also 7 but CONFIG_ROW does not change.
+constexpr uint32_t CONFIG_ROW = 0x00DC10F0;
+
+// ---------------------------------------------------------------------------
+// Quit-confirmation dialog (sub-menu of the main menu)
+// ---------------------------------------------------------------------------
+
+// Yes/No cursor position inside the Quit confirmation dialog.
+//   0 = Yes   1 = No  (No is the default when the dialog opens)
+// Confirmed by ff7_quit_dialog_scan.py (2026-07-02): sole candidate from the
+// 4-snapshot scan (main menu on Quit → dialog/No → dialog/Yes → dialog/No).
+// Address is 0x20 bytes before MENU_OBJECTS (0x00DC0FC0), in the same DC0F
+// menu-state structure as QUIT_OPEN below.
+constexpr uint32_t QUIT_CURSOR = 0x00DC0FA0;
+
+// Candidate flag for "Quit confirmation dialog is visible."
+// Confirmed 0→1 when dialog opens (ff7_quit_dialog_scan.py, 2026-07-02),
+// but NOT confirmed to return to 0 when dialog is dismissed with No.
+// In practice it appears to stay at 1 after cancellation, which caused
+// MenuCursorThread to loop in the quit handler indefinitely, silencing
+// the main-menu cursor.  NOT currently used in MenuCursorThread for this
+// reason.  Left here for reference in case a future investigation finds a
+// reliable open/close flag for this dialog.
+// Other clean 0→1 candidate from same scan: 0x00DC0FB8.
+constexpr uint32_t QUIT_OPEN = 0x00DC0FB1;  // NOT USED — see note above
 
 // ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)

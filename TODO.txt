@@ -47,6 +47,33 @@ Fix ideas:
   - Document as known limitation until a reliable indicator is found.
 
 
+[TTS] Quit dialog — speak prompt text on every open
+----------------------------------------------------
+Currently the "Do you want to quit?" dialog speaks only the cursor position
+(Yes/No) when it first appears, with no context for what the dialog is asking.
+A blind player who re-opens the dialog after cancelling hears only "No" with no
+indication of what question is being answered.
+
+Fix: detect the dialog-open transition and prepend a short spoken prompt, e.g.
+"Quit game?" before the cursor position, every time the dialog appears.
+Requires a reliable QUIT_OPEN flag — current candidate 0x00DC0FB1 does not
+return to 0 after the dialog is cancelled (see ff7_addresses.h). A new scan
+comparing "main menu without dialog" → "dialog open" → "dialog dismissed to
+main menu" (a 3-way scan, not 2-way like the original) would isolate the flag.
+
+
+[TTS] Quit dialog — re-announce selected option on every dialog open
+---------------------------------------------------------------------
+When the Quit dialog is opened a second time (e.g., player pressed No then
+opens Quit again), the cursor defaults to No, but QUIT_CURSOR is already at 1
+(No) from the last session so last_quit_cursor matches and no announce fires.
+Player hears silence and must press Left then Right to hear "No".
+
+Fix: detect dialog re-open (requires QUIT_OPEN flag above, or detect
+MENU_CURSOR transitioning to 10 as a proxy) and reset last_quit_cursor to 0xFF
+at that moment so the default position is always announced.
+
+
 [CONFIG] Auto-create default config file if missing
 ----------------------------------------------------
 If the user places version.dll in the FF7 folder but forgets ffvii_accessibility.cfg,
