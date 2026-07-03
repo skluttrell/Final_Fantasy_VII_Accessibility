@@ -2,38 +2,47 @@
 """
 ff7_sound_submenu_scan.py — Find memory addresses for Sound sub-menu sliders.
 
-The standard isolate scan (used in ff7_config_values_scan.py) fails for the
-Sound sub-menu because opening that sub-menu activates the audio subsystem,
-flooding memory with constantly-changing timer and buffer state.  The idle
-baseline becomes contaminated and subtraction produces ~47 false candidates.
+WHY THE STANDARD BSS SCAN FAILS (and why this script scans FFNx DLL memory):
 
-This script uses a DELTA SCAN instead:
-  1. User is already inside the Sound sub-menu.
-  2. Script takes a baseline snapshot.
+  The standard isolate scan fails for the Sound sub-menu because opening it
+  activates the audio subsystem, flooding BSS memory with constantly-changing
+  timer and buffer state (~47 false candidates for Music).
+
+  The first delta-scan attempt (sound_scan_20260703_101953.log) returned zero
+  results despite pressing Left ×20.  Root cause: FF7's Sound config values are
+  NOT stored in the FF7 BSS (0x00400000–0x00DE0000).
+
+  When FF7 adjusts Music or FX volume it calls RegSetValueExA("MusicVolume",
+  value).  FFNx intercepts this (dotemuRegSetValueExA in common.cpp) and stores
+  the value in `external_music_volume` / `external_sfx_volume` — global long
+  variables in FFNx's AF3DN.P DLL, which loads at an address above 0x9FFFFF,
+  outside the FF7 BSS scan range.
+
+  This script finds AF3DN.P's loaded base address via module enumeration, then
+  runs the delta scan over both the FF7 BSS AND the FFNx DLL range.
+
+DELTA SCAN METHOD:
+  1. User is inside the Sound sub-menu with Music slider highlighted.
+  2. Script takes a baseline snapshot of both memory ranges.
   3. User presses Left exactly N times (announced via TTS).
-  4. Script takes a second snapshot.
-  5. Candidates = addresses whose byte value decreased by exactly N.
+  4. Script takes a second snapshot and searches for addresses whose byte value
+     decreased by exactly N.
 
-Because audio timers increment randomly, they will not decrease by exactly N
-on cue.  The slider value will.
+  Audio timers change by random amounts — they will not match exactly N.
+  The slider value will.  Values stored as longs (4 bytes): the low byte
+  changes by N, the upper bytes stay at 0 — caught by the byte-level scan.
 
-Runs the delta scan twice:
-  Pass A — Music volume slider
-  Pass B — FX volume slider
+ENCODING:
+  `external_music_volume` and `external_sfx_volume` are C `long` (4 bytes,
+  little-endian).  Both use a 0–100 scale (FFNx caps incoming writes at
+  0x64 = 100 in dotemuRegSetValueExA).  The Sound menu displays the value
+  directly (060 = stored byte 60, 100 = stored byte 100).
 
 HOW TO RUN:
-  1. In FF7, open the main menu → Config → Sound.
-     The Sound sub-menu should be open with the Music slider highlighted.
+  1. In FF7, open main menu → Config → Sound sub-menu (Music slider highlighted).
   2. Run this script.  Keep FF7 in focus — all instructions are spoken.
   3. When prompted, press Left exactly the number of times announced.
      Press at a normal pace (roughly one press per second).
-
-From the config screenshot:
-  Music volume displayed as 060.
-  FX volume displayed as 100.
-The delta scan presses Left 20 times, so we look for a decrease of 20.
-If the displayed value is near the bottom already, press Right instead and
-the script will look for an increase — follow the spoken instruction.
 """
 
 import ctypes
@@ -43,14 +52,17 @@ import sys
 import time
 import os
 
-PROCESS_NAME = "ff7_en.exe"
-SCAN_MIN     = 0x00400000
-SCAN_MAX     = 0x00DE0000
-DELTA_PRESSES = 20       # how many times to press Left (or Right)
-PRESS_INTERVAL = 0.8     # seconds between each prompted press (spoken countdown)
+PROCESS_NAME   = "ff7_en.exe"
+FFNX_MODULE    = "AF3DN.P"
+BSS_MIN        = 0x00400000
+BSS_MAX        = 0x00DE0000
+DELTA_PRESSES  = 20       # how many times to press Left
+PRESS_INTERVAL = 0.8      # seconds between each prompted press
 
 PROCESS_VM_READ  = 0x0010
 PROCESS_VM_QUERY = 0x0400
+TH32CS_SNAPMODULE   = 0x00000008
+TH32CS_SNAPMODULE32 = 0x00000010
 
 k32 = ctypes.windll.kernel32
 
@@ -109,6 +121,49 @@ def open_process(pid):
     return handle if handle else None
 
 
+def find_module_range(pid, module_name):
+    """
+    Find a loaded DLL's base address and size in a remote process via
+    CreateToolhelp32Snapshot + Module32First/Next.
+    Returns (base_addr: int, size: int) or (None, 0) if not found.
+    """
+    class MODULEENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize",        ctypes.c_ulong),
+            ("th32ModuleID",  ctypes.c_ulong),
+            ("th32ProcessID", ctypes.c_ulong),
+            ("GlblcntUsage",  ctypes.c_ulong),
+            ("ProccntUsage",  ctypes.c_ulong),
+            ("modBaseAddr",   ctypes.c_void_p),
+            ("modBaseSize",   ctypes.c_ulong),
+            ("hModule",       ctypes.c_void_p),
+            ("szModule",      ctypes.c_char * 256),
+            ("szExePath",     ctypes.c_char * 260),
+        ]
+
+    snap = k32.CreateToolhelp32Snapshot(
+        TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
+    if snap == ctypes.c_void_p(-1).value:
+        return None, 0
+
+    me = MODULEENTRY32()
+    me.dwSize = ctypes.sizeof(MODULEENTRY32)
+
+    base, size = None, 0
+    if k32.Module32First(snap, ctypes.byref(me)):
+        while True:
+            name = me.szModule.decode('ascii', errors='ignore')
+            if name.lower() == module_name.lower():
+                base = me.modBaseAddr
+                size = me.modBaseSize
+                break
+            if not k32.Module32Next(snap, ctypes.byref(me)):
+                break
+
+    k32.CloseHandle(snap)
+    return base, size
+
+
 def read_region(handle, base, size):
     buf  = ctypes.create_string_buffer(size)
     read = ctypes.c_size_t(0)
@@ -119,23 +174,8 @@ def read_region(handle, base, size):
     return bytes(buf)
 
 
-def countdown(seconds, message):
-    speak(message)
-    print(f"  {message}")
-    time.sleep(max(0, seconds - 3))
-    for n in (3, 2, 1):
-        speak(str(n))
-        print(f"\r  {n} …", end="", flush=True)
-        time.sleep(1)
-    speak("Go")
-    print()
-
-
 def guided_press_countdown(n_presses, direction):
-    """
-    Count down each individual press so the user knows exactly when to press.
-    Speaks "press" N times with a fixed interval between each.
-    """
+    """Speak 'press' N times so the user presses in sync."""
     print(f"  Press {direction} once for each 'press' call — {n_presses} total.")
     time.sleep(1.5)
     for i in range(1, n_presses + 1):
@@ -147,92 +187,118 @@ def guided_press_countdown(n_presses, direction):
     print("  Done. Hold still.")
 
 
-def delta_scan(handle, label, direction, n):
+def delta_scan_ranges(handle, ranges, label, direction, n):
     """
-    Take snapshot A, guide user through N presses of direction, take snapshot B.
-    Return list of (address, old_val, new_val) where the change = ±n.
+    Run the delta scan over a list of (base, size) memory ranges.
+    Returns list of (address, old_val, new_val) where byte changed by exactly ±n.
     """
-    scan_size = SCAN_MAX - SCAN_MIN
+    expected = -n if direction.lower() == "left" else n
 
+    # Snapshot A
     print()
-    print(f"  Taking baseline snapshot for {label} …")
-    snap_a = read_region(handle, SCAN_MIN, scan_size)
-    if snap_a is None:
-        print("  ERROR: Could not read memory.")
-        return []
-    print("  Baseline taken.")
+    print(f"  Taking baseline snapshots for {label} …")
+    snaps_a = []
+    for base, size in ranges:
+        snap = read_region(handle, base, size)
+        if snap is None:
+            print(f"  WARNING: could not read range 0x{base:08X}–0x{base+size:08X}")
+        snaps_a.append(snap)
+    print("  Baselines taken.")
     print()
 
-    # Guide the user through the presses
+    # Guide presses
     msg = (f"Press {direction} exactly {n} times on the {label} slider. "
            f"I will count each press.")
     speak(msg)
     print(f"  {msg}")
     time.sleep(2)
     guided_press_countdown(n, direction)
-
-    # Brief pause so the game can commit the writes
     time.sleep(0.5)
 
+    # Snapshot B
     print()
-    print(f"  Taking post-press snapshot …")
-    snap_b = read_region(handle, SCAN_MIN, scan_size)
-    if snap_b is None:
-        print("  ERROR: Could not read memory.")
-        return []
-    print("  Snapshot taken.")
+    print(f"  Taking post-press snapshots …")
+    snaps_b = []
+    for base, size in ranges:
+        snap = read_region(handle, base, size)
+        if snap is None:
+            print(f"  WARNING: could not read range 0x{base:08X}–0x{base+size:08X}")
+        snaps_b.append(snap)
+    print("  Snapshots taken.")
 
     # Find addresses where byte changed by exactly ±n
-    expected_signed = -n if direction.lower() == "left" else n
     results = []
-    for i in range(scan_size):
-        a = snap_a[i]
-        b = snap_b[i]
-        # Signed byte difference (handles wrap-around for 8-bit values)
-        diff = b - a
-        if diff > 127:
-            diff -= 256
-        elif diff < -128:
-            diff += 256
-        if diff == expected_signed:
-            results.append((SCAN_MIN + i, a, b))
+    for (base, size), snap_a, snap_b in zip(ranges, snaps_a, snaps_b):
+        if snap_a is None or snap_b is None:
+            continue
+        for i in range(size):
+            a = snap_a[i]
+            b = snap_b[i]
+            diff = b - a
+            if diff > 127:
+                diff -= 256
+            elif diff < -128:
+                diff += 256
+            if diff == expected:
+                results.append((base + i, a, b))
 
     return results
 
 
-def print_delta_results(results, label, direction, n):
-    dc_results = [(a, old, new) for a, old, new in results
-                  if 0x00DC0000 <= a <= 0x00DCFFFF]
-    other      = [(a, old, new) for a, old, new in results
-                  if not (0x00DC0000 <= a <= 0x00DCFFFF)]
+def print_delta_results(results, label, direction, n, ffnx_base, ffnx_size):
+    ffnx_end = (ffnx_base or 0) + (ffnx_size or 0)
+
+    def in_ffnx(a):
+        return ffnx_base is not None and ffnx_base <= a < ffnx_end
+
+    def in_dc(a):
+        return 0x00DC0000 <= a <= 0x00DCFFFF
+
+    ffnx_cands = [(a, o, nv) for a, o, nv in results if in_ffnx(a)]
+    dc_cands   = [(a, o, nv) for a, o, nv in results if in_dc(a)]
+    other      = [(a, o, nv) for a, o, nv in results
+                  if not in_ffnx(a) and not in_dc(a)]
 
     print()
     print(f"  DELTA RESULTS — {label} (press {direction} ×{n})")
-    print(f"  Total addresses that changed by exactly {'-' if direction.lower()=='left' else '+'}{n}: {len(results)}")
+    print(f"  Total addresses that changed by exactly "
+          f"{'-' if direction.lower()=='left' else '+'}{n}: {len(results)}")
     print()
 
-    if dc_results:
-        print(f"  DC block candidates ({len(dc_results)}) — PREFERRED:")
-        print(f"  {'Address':<14} {'Before':>8}  {'After':>8}")
-        print(f"  {'-'*13}  {'------'}  {'------'}")
-        for addr, old, new in dc_results:
+    hdr = f"  {'Address':<14} {'Before':>8}  {'After':>8}"
+    sep = f"  {'-'*13}  {'------'}  {'------'}"
+
+    if ffnx_cands:
+        print(f"  FFNx (AF3DN.P) candidates ({len(ffnx_cands)}) — PREFERRED:")
+        print(hdr); print(sep)
+        for addr, old, new in ffnx_cands:
+            offset = addr - ffnx_base
+            print(f"  0x{addr:08X}  {old:8d}  {new:8d}  (+0x{offset:X} from AF3DN.P base)")
+    else:
+        print("  (no FFNx candidates)")
+
+    print()
+    if dc_cands:
+        print(f"  DC-block BSS candidates ({len(dc_cands)}):")
+        print(hdr); print(sep)
+        for addr, old, new in dc_cands:
             print(f"  0x{addr:08X}  {old:8d}  {new:8d}")
     else:
-        print("  (no DC block candidates)")
+        print("  (no DC-block BSS candidates)")
 
     print()
     if other:
         print(f"  Other candidates ({len(other)}):")
-        print(f"  {'Address':<14} {'Before':>8}  {'After':>8}")
-        print(f"  {'-'*13}  {'------'}  {'------'}")
+        print(hdr); print(sep)
         for addr, old, new in other[:10]:
             print(f"  0x{addr:08X}  {old:8d}  {new:8d}")
         if len(other) > 10:
             print(f"  … and {len(other) - 10} more")
     else:
-        print("  (no non-DC candidates)")
+        print("  (no other candidates)")
 
-    return dc_results if dc_results else other
+    # Best = FFNx first, then DC, then other
+    return ffnx_cands or dc_cands or other
 
 
 def main():
@@ -247,14 +313,14 @@ def main():
     try:
         print(f"Output saving to: {log_path}")
         print()
-        print("FF7 Sound Sub-menu Scan (delta method)")
-        print(f"Presses Left ×{DELTA_PRESSES} and searches for addresses that decreased by exactly {DELTA_PRESSES}.")
+        print("FF7 Sound Sub-menu Scan (delta method — FF7 BSS + FFNx DLL range)")
+        print(f"Presses Left ×{DELTA_PRESSES} and searches for byte change of "
+              f"exactly −{DELTA_PRESSES}.")
         print()
         print("SETUP:")
         print("  Open main menu → Config (row 7) → Sound (row 1, press Confirm).")
         print("  The Sound sub-menu should be open with the Music slider highlighted.")
-        print(f"  Make sure the Music volume is at least {DELTA_PRESSES} above minimum")
-        print(f"  (screenshot showed 060, so current value needs to be ≥{DELTA_PRESSES}).")
+        print(f"  Make sure the Music volume is at least {DELTA_PRESSES} above minimum.")
         print()
 
         speak("Sound sub-menu scan ready. "
@@ -275,6 +341,26 @@ def main():
             print("ERROR: OpenProcess failed.")
             return
 
+        # Locate FFNx DLL in the FF7 process
+        ffnx_base, ffnx_size = find_module_range(pid, FFNX_MODULE)
+        if ffnx_base is not None:
+            print(f"FFNx (AF3DN.P): base=0x{ffnx_base:08X}  size=0x{ffnx_size:X} "
+                  f"({ffnx_size // 1024} KB)")
+        else:
+            print("WARNING: AF3DN.P not found in process — scanning BSS only.")
+            print("         (FFNx may not be installed; the slider might be in BSS.)")
+
+        # Build list of scan ranges: BSS + FFNx DLL (if found)
+        ranges = [(BSS_MIN, BSS_MAX - BSS_MIN)]
+        if ffnx_base is not None:
+            ranges.append((ffnx_base, ffnx_size))
+
+        print()
+        print("Scan ranges:")
+        for base, size in ranges:
+            print(f"  0x{base:08X}–0x{base+size:08X}  ({size // 1024} KB)")
+        print()
+
         speak("Connected. Switch to F F 7 now. Hold the Music slider still.")
         print("Connected. Switch to FF7. Hold Music slider still.")
         time.sleep(2)
@@ -284,8 +370,11 @@ def main():
         print("=" * 60)
         print("  PASS A — Music volume slider")
         print("=" * 60)
-        music_results = delta_scan(handle, "Music volume", "Left", DELTA_PRESSES)
-        music_best    = print_delta_results(music_results, "Music volume", "Left", DELTA_PRESSES)
+        music_results = delta_scan_ranges(
+            handle, ranges, "Music volume", "Left", DELTA_PRESSES)
+        music_best = print_delta_results(
+            music_results, "Music volume", "Left", DELTA_PRESSES,
+            ffnx_base, ffnx_size)
 
         # ── Pass B: FX volume ─────────────────────────────────────────────
         speak("Music scan complete. Now navigate down to the FX slider. "
@@ -299,8 +388,11 @@ def main():
         print("=" * 60)
         print("  PASS B — FX volume slider")
         print("=" * 60)
-        fx_results = delta_scan(handle, "FX volume", "Left", DELTA_PRESSES)
-        fx_best    = print_delta_results(fx_results, "FX volume", "Left", DELTA_PRESSES)
+        fx_results = delta_scan_ranges(
+            handle, ranges, "FX volume", "Left", DELTA_PRESSES)
+        fx_best = print_delta_results(
+            fx_results, "FX volume", "Left", DELTA_PRESSES,
+            ffnx_base, ffnx_size)
 
         # ── Summary ───────────────────────────────────────────────────────
         print()
@@ -315,18 +407,27 @@ def main():
         print(f"  FX volume best candidate:    {best_addr(fx_best)}")
         print()
 
-        # Check if they match (some games store both in the same byte or adjacent bytes)
         if music_best and fx_best:
             ma = music_best[0][0]
             fa = fx_best[0][0]
-            print(f"  Address distance: 0x{abs(ma - fa):X} bytes apart")
-            if abs(ma - fa) <= 4:
+            dist = abs(ma - fa)
+            print(f"  Address distance: 0x{dist:X} bytes apart")
+            if dist <= 8:
                 print("  (adjacent — likely same config struct)")
         print()
+
+        if ffnx_base is not None:
+            print("NOTE: If candidates are in FFNx range, their addresses are dynamic")
+            print("  (AF3DN.P can relocate between launches).  The mod will need to")
+            print("  find the FFNx base at runtime and apply the offset.")
+
+        print()
         print("NEXT STEPS:")
-        print("  1. Verify these addresses with ff7_sound_verify.py (optional).")
-        print("  2. Add confirmed addresses to ff7_addresses.h as SOUND_MUSIC and SOUND_FX.")
-        print("  3. Implement Sound sub-menu TTS in a SoundMenuThread or extend ConfigMenuThread.")
+        print("  1. Run ff7_sound_verify.py to confirm addresses track correctly.")
+        print("  2. If in FFNx range: record +offset from AF3DN.P base.")
+        print("     Resolve at DLL init time via GetModuleHandleA(\"AF3DN.P\") + offset.")
+        print("  3. Add to ff7_addresses.h as SOUND_MUSIC_VOL and SOUND_FX_VOL.")
+        print("  4. Extend ConfigMenuThread to speak volume on Sound sub-menu navigation.")
 
         speak("Sound scan complete. Check terminal for results.")
 

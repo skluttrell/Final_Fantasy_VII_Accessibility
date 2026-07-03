@@ -290,6 +290,23 @@ constexpr uint32_t CONFIG_PACKED_CAMERA_MAGIC = 0x00DC0E13;
 // unchanged across all rows.
 constexpr uint32_t CONFIG_SPEED_FIELD_MSG = 0x00DC0E24;
 
+// Sound sub-menu cursor.  Tracks which volume slider is highlighted inside
+// the Sound sub-menu (Config row 1 → Confirm to enter):
+//   0 = Music volume slider highlighted
+//   1 = FX volume slider highlighted
+//
+// Confirmed by ff7_sound_cursor_scan.py (2026-07-03): two-pass delta scan
+// run twice (Down Music→FX expects +1, Up FX→Music expects -1 — 4 total
+// transitions).  Sole confident candidate: appeared in the intersection of
+// all 4 transitions.  DC-block address, 0x5C bytes below CONFIG_ROW
+// (0x00DC10F0) in the same DC10xx menu-state structure.
+//
+// Value when Sound sub-menu is NOT open is not confirmed; the cursor byte
+// likely retains its last position (Music=0 or FX=1) after closing.
+// ConfigMenuThread resets last_sound_cursor on Sound-row exit so the first
+// observation after re-entry is always silent, preventing spurious announces.
+constexpr uint32_t SOUND_CURSOR = 0x00DC108C;
+
 // ---------------------------------------------------------------------------
 // Quit-confirmation dialog (sub-menu of the main menu)
 // ---------------------------------------------------------------------------

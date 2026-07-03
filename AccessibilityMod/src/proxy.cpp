@@ -137,6 +137,170 @@ static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
 
 // ---------------------------------------------------------------------------
+// Sound sub-menu volume cache.
+//
+// Written by HookDotemuRegSetValueExA (called on FF7's thread when the player
+// presses Left/Right in the Sound sub-menu); read by ConfigMenuThread to
+// include the volume in Up/Down cursor-navigation announcements.
+//
+// 0xFF = not yet seen from a live slider press.  When unknown, ConfigMenuThread
+// omits the volume from the navigation announce (just "Music volume" / "FX
+// volume") so TTS never speaks a stale or fabricated number.
+//
+// uint8_t reads/writes are atomically word-teared on x86, so no lock is
+// needed for this best-effort UI-hint purpose.  volatile prevents the compiler
+// from caching the value in a register across the two threads.
+// ---------------------------------------------------------------------------
+static volatile uint8_t g_sound_music_vol = 0xFF;
+static volatile uint8_t g_sound_fx_vol    = 0xFF;
+
+// IAT hook plumbing for AF3DN.P:dotemuRegSetValueExA.
+// g_iat_dotemu_entry is saved so Proxy::Shutdown() can restore the original
+// pointer without re-walking the import table.
+typedef LONG (WINAPI *RegSetExA_fn)(HKEY, LPCSTR, DWORD, DWORD, const BYTE*, DWORD);
+static RegSetExA_fn      g_orig_dotemu_regset = nullptr;
+static IMAGE_THUNK_DATA* g_iat_dotemu_entry   = nullptr;
+
+// ---------------------------------------------------------------------------
+// dotemuRegSetValueExA IAT hook — Sound sub-menu Left/Right value TTS.
+//
+// FF7 (2013 Steam) calls AF3DN.P:dotemuRegSetValueExA instead of the real
+// Win32 RegSetValueExA for all registry writes (AF3DN.P is the DotEmu/FFNx
+// proxy that intercepts these calls).  FF7 imports this function statically,
+// so its IAT entry can be patched to reroute through our handler.
+//
+// WHEN IT SPEAKS:
+//   Only when MENU_OPEN is set AND CONFIG_ROW==1 (the Sound row in the Config
+//   sub-menu is active).  This is the case when the player is inside the Sound
+//   sub-menu pressing Left/Right.  All other registry writes (startup, save,
+//   etc.) have MENU_OPEN=0 or CONFIG_ROW≠1 and are forwarded silently.
+//
+// VALUE CACHING:
+//   Updates g_sound_music_vol / g_sound_fx_vol on every matching call so
+//   ConfigMenuThread can include the volume in Up/Down cursor announces.
+//
+// REGISTRY KEY NAMES:
+//   "MusicVolume" — music volume slider (byte 0=silence, 127=maximum)
+//   "SFXVolume"   — FX volume slider    (same scale)
+//   Exact names from the classic FF7 registry layout under
+//   HKLM\SOFTWARE\Square Soft, Inc\Final Fantasy VII\1.00\.
+// ---------------------------------------------------------------------------
+static LONG WINAPI HookDotemuRegSetValueExA(
+    HKEY        hKey,
+    LPCSTR      lpValueName,
+    DWORD       Reserved,
+    DWORD       dwType,
+    const BYTE* lpData,
+    DWORD       cbData)
+{
+    if (lpValueName && lpData && cbData >= 1 && Config::Get().speak_menus) {
+        const uint8_t menu_open  =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        const uint8_t config_row =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_ROW);
+
+        if (menu_open && config_row == 1) {
+            const uint8_t vol = lpData[0];
+            const bool is_music = (strcmp(lpValueName, "MusicVolume") == 0);
+            const bool is_fx    = (!is_music && strcmp(lpValueName, "SFXVolume") == 0);
+
+            if (is_music || is_fx) {
+                if (is_music) g_sound_music_vol = vol;
+                else          g_sound_fx_vol    = vol;
+
+                wchar_t buf[16];
+                _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"%u", vol);
+
+                char dbg[80];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] SOUND %s vol=%u",
+                    is_music ? "Music" : "FX", vol);
+                Log::Write(dbg);
+                TTS::Speak(buf, /*interrupt=*/true);
+            }
+        }
+    }
+    return g_orig_dotemu_regset(hKey, lpValueName, Reserved, dwType, lpData, cbData);
+}
+
+// ---------------------------------------------------------------------------
+// SetupSoundIATHook — patch FF7's IAT to intercept dotemuRegSetValueExA.
+//
+// Walks the IMAGE_IMPORT_DESCRIPTOR table of ff7_en.exe, locates the
+// AF3DN.P section, then finds the IAT slot for dotemuRegSetValueExA and
+// replaces its function pointer with HookDotemuRegSetValueExA.
+//
+// Saves the original pointer in g_orig_dotemu_regset and the IAT entry
+// address in g_iat_dotemu_entry so Proxy::Shutdown() can restore it.
+//
+// Called once from InitThread after TTS::Init() (Log and TTS must be ready
+// because the hook itself calls both).  Must run after DllMain returns (no
+// loader lock) but before the player can enter the Sound sub-menu.
+// ---------------------------------------------------------------------------
+static void SetupSoundIATHook()
+{
+    HMODULE exe = GetModuleHandleA("ff7_en.exe");
+    if (!exe) {
+        Log::Write("[FF7Access] IAT hook: ff7_en.exe module not found");
+        return;
+    }
+
+    const BYTE* base = reinterpret_cast<const BYTE*>(exe);
+    const IMAGE_DOS_HEADER* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const IMAGE_NT_HEADERS* nt  =
+        reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    const IMAGE_DATA_DIRECTORY& dir =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!dir.VirtualAddress) {
+        Log::Write("[FF7Access] IAT hook: import directory not found");
+        return;
+    }
+
+    const IMAGE_IMPORT_DESCRIPTOR* desc =
+        reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress);
+
+    for (; desc->Name; ++desc) {
+        const char* dll_name =
+            reinterpret_cast<const char*>(base + desc->Name);
+        if (_stricmp(dll_name, "AF3DN.P") != 0) continue;
+
+        const IMAGE_THUNK_DATA* orig =
+            reinterpret_cast<const IMAGE_THUNK_DATA*>(base + desc->OriginalFirstThunk);
+        IMAGE_THUNK_DATA* thunk =
+            reinterpret_cast<IMAGE_THUNK_DATA*>(const_cast<BYTE*>(base) + desc->FirstThunk);
+
+        for (; orig->u1.AddressOfData; ++orig, ++thunk) {
+            if (IMAGE_SNAP_BY_ORDINAL(orig->u1.Ordinal)) continue;
+
+            const IMAGE_IMPORT_BY_NAME* by_name =
+                reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(
+                    base + orig->u1.AddressOfData);
+            if (strcmp(reinterpret_cast<const char*>(by_name->Name),
+                       "dotemuRegSetValueExA") != 0) continue;
+
+            g_orig_dotemu_regset = reinterpret_cast<RegSetExA_fn>(thunk->u1.Function);
+            g_iat_dotemu_entry   = thunk;
+
+            DWORD old_protect;
+            VirtualProtect(thunk, sizeof(ULONG_PTR), PAGE_READWRITE, &old_protect);
+            thunk->u1.Function = reinterpret_cast<ULONG_PTR>(HookDotemuRegSetValueExA);
+            VirtualProtect(thunk, sizeof(ULONG_PTR), old_protect, &old_protect);
+
+            Log::Write("[FF7Access] IAT hook: dotemuRegSetValueExA patched");
+            return;
+        }
+
+        // Found AF3DN.P in the import table but dotemuRegSetValueExA was not
+        // in its name list.  Either it is imported by ordinal (unlikely) or
+        // the function name differs between FFNx versions.
+        Log::Write("[FF7Access] IAT hook: AF3DN.P found but dotemuRegSetValueExA not listed");
+        return;
+    }
+
+    Log::Write("[FF7Access] IAT hook: AF3DN.P not in ff7_en.exe import table");
+}
+
+// ---------------------------------------------------------------------------
 // Title screen cursor polling thread.
 //
 // Polls FF7Addr::TITLE_CURSOR (0x00DD6F24) and speaks "Continue" (value=1)
@@ -464,6 +628,11 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
     // Reset to 0xFFFF whenever last_row changes so the new row's value is read
     // and announced immediately.
     uint16_t last_value = 0xFFFF;
+    // Sound sub-menu cursor (SOUND_CURSOR 0x00DC108C): 0=Music, 1=FX, 0xFF=not observed.
+    // Reset to 0xFF when CONFIG_ROW leaves row 1 so the first read on re-entry
+    // is always silent (prevents spurious announce if the byte retained its last
+    // value while the Sound sub-menu was closed).
+    uint8_t  last_sound_cursor = 0xFF;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
@@ -561,6 +730,53 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
             break;  // rows 0, 1, 2: new_value stays 0xFFFF, val_str stays empty
         }
 
+        // ── Sound sub-menu cursor (Up/Down between Music and FX sliders) ─────
+        // Runs independently of the row-value check below so a cursor navigation
+        // that leaves CONFIG_ROW unchanged is still caught.
+        //
+        // Guards:
+        //   first_obs (last_sound_cursor==0xFF): silently establishes baseline
+        //     on the first poll after entering CONFIG_ROW==1, preventing a false
+        //     announce caused by the retained cursor byte from a prior session.
+        //   sc > 1: out-of-range — ignore; do not update sentinel so the next
+        //     in-range value triggers an announce.
+        //
+        // Volume inclusion: if the IAT hook has seen a slider change this session,
+        //   g_sound_{music,fx}_vol hold the last-spoken value and we append it.
+        //   If 0xFF (never seen), we announce the slider name only.
+        if (curr == 1) {
+            const uint8_t sc =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SOUND_CURSOR);
+            if (sc != last_sound_cursor && sc <= 1) {
+                const bool first_obs = (last_sound_cursor == 0xFF);
+                last_sound_cursor = sc;
+                if (!first_obs) {
+                    const wchar_t* slider_label =
+                        (sc == 0) ? L"Music volume" : L"FX volume";
+                    const uint8_t  cached_vol =
+                        (sc == 0) ? static_cast<uint8_t>(g_sound_music_vol)
+                                  : static_cast<uint8_t>(g_sound_fx_vol);
+                    wchar_t sannounce[64] = {};
+                    if (cached_vol != 0xFF) {
+                        _snwprintf_s(sannounce, _countof(sannounce), _TRUNCATE,
+                                     L"%ls, %u", slider_label,
+                                     static_cast<unsigned>(cached_vol));
+                    } else {
+                        _snwprintf_s(sannounce, _countof(sannounce), _TRUNCATE,
+                                     L"%ls", slider_label);
+                    }
+                    char sdbg[80];
+                    _snprintf_s(sdbg, sizeof(sdbg), _TRUNCATE,
+                        "[FF7Access] SOUND cursor=%u (%ls)", sc, sannounce);
+                    Log::Write(sdbg);
+                    TTS::Speak(sannounce, /*interrupt=*/true);
+                }
+            }
+        } else {
+            // Not on Sound row: reset so re-entry first-observation is silent.
+            last_sound_cursor = 0xFF;
+        }
+
         // Nothing changed: same row and same extracted value (or no value tracking).
         if (!row_changed && new_value == last_value) continue;
         last_value = new_value;
@@ -622,6 +838,12 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     // Initialize the Tolk screen reader library. Calls LoadLibrary("Tolk.dll").
     // Safe here because 200ms have passed and the loader lock is long released.
     TTS::Init();
+
+    // Patch FF7's IAT to intercept dotemuRegSetValueExA calls from AF3DN.P.
+    // Must run after TTS::Init() (the hook calls TTS::Speak and Log::Write)
+    // and after the loader lock is released (we call GetModuleHandleA and
+    // VirtualProtect).  The 200ms sleep above satisfies both requirements.
+    SetupSoundIATHook();
 
     // Create the shared stop event used by both TitleCursorThread and
     // MenuCursorThread. It is a manual-reset event: one SetEvent() in
@@ -742,6 +964,24 @@ void Init()
 
 void Shutdown()
 {
+    // Restore the IAT slot before stopping any threads.  If the hook is live
+    // while our code is being unloaded, any FF7 registry write between
+    // FreeLibrary and IAT restore would jump into freed memory and crash.
+    // Restoring first makes the window between "our code unloaded" and "IAT
+    // points at original" impossible.
+    if (g_iat_dotemu_entry && g_orig_dotemu_regset) {
+        DWORD old_protect;
+        VirtualProtect(g_iat_dotemu_entry, sizeof(ULONG_PTR),
+                       PAGE_READWRITE, &old_protect);
+        g_iat_dotemu_entry->u1.Function =
+            reinterpret_cast<ULONG_PTR>(g_orig_dotemu_regset);
+        VirtualProtect(g_iat_dotemu_entry, sizeof(ULONG_PTR),
+                       old_protect, &old_protect);
+        g_iat_dotemu_entry   = nullptr;
+        g_orig_dotemu_regset = nullptr;
+        Log::Write("[FF7Access] IAT hook: dotemuRegSetValueExA restored");
+    }
+
     // Signal and join TitleCursorThread before anything else tears down.
     // dllmain.cpp calls Proxy::Shutdown() first (before TTS::Shutdown and
     // Log::Shutdown), so by the time those run no background thread can be
