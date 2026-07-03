@@ -344,9 +344,9 @@ def main():
     finally:
         if handle:
             k32.CloseHandle(handle)
+        print(f"\nLog saved to: {log_path}")
         sys.stdout = real_stdout
         log_file.close()
-        print(f"\nLog saved to: {log_path}")
 
 
 if __name__ == '__main__':

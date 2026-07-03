@@ -114,6 +114,7 @@ or read at runtime from opcode parameters.
 | `CONFIG_PACKED_CURSOR_ATB` | `0x00DC0E12` | Packed byte: bit 4=Cursor (0=Initial/1=Memory); bits 7:6=ATB (0=Active/1=Recommended/2=Wait) |
 | `CONFIG_PACKED_CAMERA_MAGIC` | `0x00DC0E13` | Packed byte: bit 0=Camera (0=Auto/1=Fixed); bits 4:2=Magic order index 0–5 (No.1–No.6) |
 | `CONFIG_SPEED_FIELD_MSG` | `0x00DC0E24` | Row 7 Field message speed — raw byte, 0=Fast → 255=Slow |
+| `SOUND_CURSOR` | `0x00DC108C` | 0=Music slider highlighted, 1=FX slider highlighted; inside Sound sub-menu only |
 | `QUIT_CURSOR` | `0x00DC0FA0` | 0=Yes, 1=No inside Quit confirmation dialog |
 
 ---
@@ -370,17 +371,23 @@ the full 0x00400000–0x00DE0000 BSS range:
   only changed during active navigation are candidates.
 - **Symmetric toggle scan** (MENU_OPEN): three snapshots A→B→A (closed→open→closed). Candidates
   are addresses that changed A→B and reverted B→C.
-- **Delta scan** (Sound sub-menu, not yet used in TTS): take a baseline snapshot, guide the user
-  through exactly N button presses via spoken countdown, take a second snapshot. Search for
-  addresses where `(snap_b - snap_a) == ±N`. Audio timers change by random amounts; the slider
-  changes by exactly N. Designed to filter out the audio subsystem noise that contaminates the
-  isolate scan when the Sound sub-menu is open.
+- **Delta scan** (Sound sub-menu cursor, SOUND_CURSOR): take a baseline snapshot, guide the user
+  through exactly N button presses via a beep countdown, take a second snapshot. Search for
+  addresses where `(snap_b - snap_a) == ±N` (signed byte delta). Designed to filter out the audio
+  subsystem noise that contaminates the isolate scan when the Sound sub-menu is open. For the cursor
+  (0=Music / 1=FX), N=±1 suffices; two full Down+Up rounds × 2 intersected to one confident address.
+- **Beep countdown** (timing-critical scans): `winsound.Beep(freq, ms)` is **synchronous** — it
+  blocks until the tone finishes. This makes pre-snapshot timing deterministic unlike SAPI, which
+  fires asynchronously and returns immediately. Pattern: three 800 Hz warning tones (200ms each, 1s
+  period) then one 1400 Hz press tone (400ms); user presses ON the high beep; script waits SETTLE_S
+  (1.5s) after the high beep before snapshotting. An `input()` prompt + 3s pre-countdown delay lets
+  the user switch focus to FF7 before beeps start.
 
 All scripts tee stdout to a timestamped log file automatically (Tee class wrapping sys.stdout).
 All instructions are spoken aloud via a fire-and-forget PowerShell SAPI subprocess so the terminal
 can stay in the background while FF7 is in focus.
 
-### Confirmed addresses (2026-07-01–02)
+### Confirmed addresses (2026-07-01–03)
 
 | Address | Symbol | Discovery script |
 |---------|--------|-----------------|
@@ -393,6 +400,7 @@ can stay in the background while FF7 is in focus.
 | `0x00DC0E12` | CONFIG_PACKED_CURSOR_ATB | same |
 | `0x00DC0E13` | CONFIG_PACKED_CAMERA_MAGIC | same |
 | `0x00DC0E24` | CONFIG_SPEED_FIELD_MSG | same |
+| `0x00DC108C` | SOUND_CURSOR | ff7_sound_cursor_scan.py |
 | `0x00DC0FA0` | QUIT_CURSOR | ff7_quit_dialog_scan.py |
 
 ### Packed byte encodings
@@ -421,6 +429,44 @@ Extraction: `camera = val & 1`, `magic_order = (val >> 2) & 7`
 ordering (restore / attack / indirect) rather than a list of presets. Values cycle through
 0,4,8,12,16,20 (step=4, stored in bits 4:2) confirming 6 distinct choices (No.1–No.6).
 
+### Sound sub-menu investigation (2026-07-03)
+
+**Isolate scan failure**: Opening the Sound sub-menu activates the audio subsystem (FFNx/SoLoud
+sample streaming), flooding the BSS region with constantly-changing timer and buffer bytes. The
+idle-phase baseline is immediately contaminated, producing ~47 false candidates for Music volume.
+Ruled out the isolate scan approach entirely for this sub-menu.
+
+**Volume address scan via FFNx DLL range**: FFNx's `dotemuRegSetValueExA` (not a real Windows
+registry call — FF7 routes all `RegSetValueExA` calls through this FFNx function) stores
+`external_music_volume` and `external_sfx_volume` as global `long` variables deep in AF3DN.P's
+address space (~27MB into the DLL). To find them, `ff7_sound_submenu_scan.py` was extended with
+`CreateToolhelp32Snapshot`/`MODULEENTRY32` to enumerate AF3DN.P's actual load range and scan it
+alongside BSS. Found one Music candidate at +0x1DA2A68 from AF3DN.P base (Before=0, After=236).
+
+**Audio ring buffer false positive** (`ff7_sound_verify.py`): A live monitor polling ±32 bytes
+around the scan candidate at 200ms intervals revealed that the entire region is SoLoud's audio
+engine streaming ring buffer. Every byte churns with random values every 200ms regardless of any
+user input. The Before=0/After=236 result was a coincidence — the byte happened to be 0 at
+snapshot-A time and 236 at snapshot-B time while the ring buffer was operating. Confirmed false
+positive; the delta scan cannot find volume addresses because the audio engine fully saturates
+the surrounding region.
+
+**IAT hook attempt**: FF7 statically links `dotemuRegSetValueExA` from AF3DN.P. If the Import
+Address Table (IAT) of `ff7_en.exe` contains this function, patching the IAT entry would redirect
+all calls through our handler without touching AF3DN.P. `SetupSoundIATHook()` was implemented:
+it walks `ff7_en.exe`'s `IMAGE_IMPORT_DESCRIPTOR` table, finds the AF3DN.P section, walks
+`OriginalFirstThunk`/`FirstThunk` pairs matching `dotemuRegSetValueExA` by name, and patches
+`FirstThunk` with `VirtualProtect`. The hook installed without error ("patched" logged), but
+Left/Right presses produced no TTS. Most likely cause: FF7 calls `GetProcAddress` at runtime
+for this import rather than using the static IAT entry, so our patch is bypassed. TODO for v2.5.
+
+**Sound sub-menu cursor** (`ff7_sound_cursor_scan.py`): Delta scan for the cursor position byte
+(0=Music highlighted / 1=FX highlighted). Two full Down+Up rounds (4 total transitions): sole
+confident candidate = `0x00DC108C`, 0x5C bytes before `CONFIG_ROW` (0x00DC10F0) in the same
+DC10xx structure. First attempt with SAPI countdown failed — "press now" finished too late for
+the post-press settle window to capture valid data (Up-pass found zero results both rounds). Fixed
+by replacing SAPI with `winsound.Beep()` (synchronous), adding `input()` prompt + 3s delay.
+
 ### False candidates and rejected approaches
 
 **QUIT_OPEN (0x00DC0FB1)**: Confirmed 0→1 when the Quit dialog opens, but does NOT return to 0
@@ -433,10 +479,10 @@ Identified as a button-transient address — changes when any directional button
 of which row is active. The real address (DC0E11, rank 5 in the scan) was confirmed by the verify
 script showing DC0E11 changing exclusively during row 6.
 
-**Isolate scan for Sound sub-menu**: Opening the Sound sub-menu activates the audio subsystem,
-flooding the BSS region with constantly-changing timer and buffer state. The idle-phase baseline
-is contaminated, producing ~47 false candidates for Music volume. Requires a delta scan instead
-(ff7_sound_submenu_scan.py, not yet run).
+**0x6B852A68 (+0x1DA2A68 in AF3DN.P)**: Top candidate from the FFNx-range delta scan for Music
+volume. Appeared to change from 0 to 236 during the scan window. Confirmed false positive by
+`ff7_sound_verify.py`: the entire ±32-byte region is SoLoud's audio engine streaming ring buffer;
+all bytes churn with random values every 200ms independent of any Music slider input.
 
 ### Bug: stale MENU_OPEN at game start (v2.2 fix)
 
@@ -462,19 +508,25 @@ navigation. False announces are impossible.
 
 ### Threading model
 
-Three persistent polling threads after v2.3:
+Three persistent polling threads after v2.4:
 
 | Thread | Polls | Period | Stop signal |
 |--------|-------|--------|------------|
 | TitleCursorThread | TITLE_CURSOR | 150ms | g_cursor_stop_event |
 | MenuCursorThread | MENU_CURSOR, QUIT_CURSOR | 150ms | g_cursor_stop_event |
-| ConfigMenuThread | CONFIG_ROW + 5 value addrs | 150ms | g_cursor_stop_event |
+| ConfigMenuThread | CONFIG_ROW + 5 value addrs + SOUND_CURSOR | 150ms | g_cursor_stop_event |
+
+ConfigMenuThread handles SOUND_CURSOR as a separate polling block inside the same loop: when
+CONFIG_ROW==1 (Sound sub-menu open), it checks SOUND_CURSOR every iteration. The
+`last_sound_cursor` sentinel (initialized to 0xFF) suppresses the first-observation announce
+so re-entering the Sound row does not repeat the last slider name. Resets to 0xFF whenever
+CONFIG_ROW != 1.
 
 ---
 
 ## 10. Current Status
 
-### Working (as of v2.3)
+### Working (as of v2.4)
 
 - All field story dialog (MESSAGE opcode 0x40) spoken via NVDA on dialog start and page advance
 - All field choice menus (ASK opcode 0x48) spoken with "Choose: " prefix
@@ -492,6 +544,9 @@ Three persistent polling threads after v2.3:
   - Toggle rows (Cursor, ATB, Camera, Magic order): option name spoken
   - Slider rows (Battle speed, Battle message, Field message): numeric value spoken
   - Rows 0/1/2 (Window color, Sound, Controller): row name only (value addresses not yet found)
+- Sound sub-menu cursor TTS: "Music volume" or "FX volume" on Up/Down within the Sound sub-menu
+  (Config row 1 → Confirm). Announces slider name on each cursor change; if the cached volume is
+  known it is appended (e.g., "Music volume, 100"). Numeric value from Left/Right not yet functional.
 
 ### Known Issues / Limitations
 
@@ -502,14 +557,14 @@ Three persistent polling threads after v2.3:
 | Speaker detection broken when 3-byte window header precedes speaker token | Minor | Detect/skip 0xD0–0xDF at position 0 |
 | Dynamic token placeholders spoken literally ("[item name]") | Minor | Resolve tokens from script banks |
 | "X <" artifact occasionally in ASK output | Minor | ASK formatting codes not yet filtered |
-| Sound sub-menu (Music/FX sliders) not yet tracked | Moderate | Run ff7_sound_submenu_scan.py delta scan |
+| Sound sub-menu volume value (Left/Right) not announced | Moderate | IAT hook on dotemuRegSetValueExA not functional — likely GetProcAddress at runtime; TODO v2.5 |
 | Config menu entry does not re-announce row if last session ended on row 0 | Minor | Need CONFIG_OPEN flag or entry detection |
 
 ### Not Yet Implemented
 
 | Feature | Hook Point / Approach |
 |---------|----------------------|
-| Sound sub-menu value TTS (Music, FX sliders) | Delta scan (ff7_sound_submenu_scan.py) — addresses not yet confirmed |
+| Sound sub-menu volume value TTS (Left/Right) | IAT hook on `dotemuRegSetValueExA` implemented but non-functional (v2.4). Alt: hook `GetProcAddress` call for this fn, or find `external_music_volume`/`external_sfx_volume` in a stable AF3DN.P data section |
 | ASK per-option TTS as cursor moves | `opcode_ask + 0x8E` → inner loop; needs FF7 original opcode_ask address |
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |

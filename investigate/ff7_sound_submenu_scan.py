@@ -190,9 +190,14 @@ def guided_press_countdown(n_presses, direction):
 def delta_scan_ranges(handle, ranges, label, direction, n):
     """
     Run the delta scan over a list of (base, size) memory ranges.
-    Returns list of (address, old_val, new_val) where byte changed by exactly ±n.
+    Returns (results, failed_bases) where:
+      results      = list of (address, old_val, new_val) where byte changed by ±n
+      failed_bases = set of range base addresses where ReadProcessMemory failed
+                     (either snapshot A or B); these ranges are absent from results
+                     and must be distinguished from "scanned clean" in the output.
     """
     expected = -n if direction.lower() == "left" else n
+    failed_bases = set()
 
     # Snapshot A
     print()
@@ -202,6 +207,7 @@ def delta_scan_ranges(handle, ranges, label, direction, n):
         snap = read_region(handle, base, size)
         if snap is None:
             print(f"  WARNING: could not read range 0x{base:08X}–0x{base+size:08X}")
+            failed_bases.add(base)
         snaps_a.append(snap)
     print("  Baselines taken.")
     print()
@@ -223,6 +229,7 @@ def delta_scan_ranges(handle, ranges, label, direction, n):
         snap = read_region(handle, base, size)
         if snap is None:
             print(f"  WARNING: could not read range 0x{base:08X}–0x{base+size:08X}")
+            failed_bases.add(base)
         snaps_b.append(snap)
     print("  Snapshots taken.")
 
@@ -242,11 +249,14 @@ def delta_scan_ranges(handle, ranges, label, direction, n):
             if diff == expected:
                 results.append((base + i, a, b))
 
-    return results
+    return results, failed_bases
 
 
-def print_delta_results(results, label, direction, n, ffnx_base, ffnx_size):
+def print_delta_results(results, label, direction, n, ffnx_base, ffnx_size,
+                        failed_bases=None):
     ffnx_end = (ffnx_base or 0) + (ffnx_size or 0)
+    if failed_bases is None:
+        failed_bases = set()
 
     def in_ffnx(a):
         return ffnx_base is not None and ffnx_base <= a < ffnx_end
@@ -274,6 +284,8 @@ def print_delta_results(results, label, direction, n, ffnx_base, ffnx_size):
         for addr, old, new in ffnx_cands:
             offset = addr - ffnx_base
             print(f"  0x{addr:08X}  {old:8d}  {new:8d}  (+0x{offset:X} from AF3DN.P base)")
+    elif ffnx_base is not None and ffnx_base in failed_bases:
+        print("  (FFNx range read failed — not scanned; see WARNING above)")
     else:
         print("  (no FFNx candidates)")
 
@@ -370,11 +382,11 @@ def main():
         print("=" * 60)
         print("  PASS A — Music volume slider")
         print("=" * 60)
-        music_results = delta_scan_ranges(
+        music_results, music_failed = delta_scan_ranges(
             handle, ranges, "Music volume", "Left", DELTA_PRESSES)
         music_best = print_delta_results(
             music_results, "Music volume", "Left", DELTA_PRESSES,
-            ffnx_base, ffnx_size)
+            ffnx_base, ffnx_size, failed_bases=music_failed)
 
         # ── Pass B: FX volume ─────────────────────────────────────────────
         speak("Music scan complete. Now navigate down to the FX slider. "
@@ -388,11 +400,11 @@ def main():
         print("=" * 60)
         print("  PASS B — FX volume slider")
         print("=" * 60)
-        fx_results = delta_scan_ranges(
+        fx_results, fx_failed = delta_scan_ranges(
             handle, ranges, "FX volume", "Left", DELTA_PRESSES)
         fx_best = print_delta_results(
             fx_results, "FX volume", "Left", DELTA_PRESSES,
-            ffnx_base, ffnx_size)
+            ffnx_base, ffnx_size, failed_bases=fx_failed)
 
         # ── Summary ───────────────────────────────────────────────────────
         print()

@@ -264,6 +264,16 @@ static void SetupSoundIATHook()
             reinterpret_cast<const char*>(base + desc->Name);
         if (_stricmp(dll_name, "AF3DN.P") != 0) continue;
 
+        // Some PE tools (packers, bound-import writers) zero OriginalFirstThunk
+        // and keep only FirstThunk (the IAT).  Without the INT we cannot match
+        // by name — FirstThunk holds runtime addresses, not IMAGE_IMPORT_BY_NAME
+        // pointers.  Bail out cleanly rather than walking the MZ header.
+        if (!desc->OriginalFirstThunk) {
+            Log::Write("[FF7Access] IAT hook: AF3DN.P has no INT "
+                       "(OriginalFirstThunk==0), cannot match by name");
+            return;
+        }
+
         const IMAGE_THUNK_DATA* orig =
             reinterpret_cast<const IMAGE_THUNK_DATA*>(base + desc->OriginalFirstThunk);
         IMAGE_THUNK_DATA* thunk =
@@ -282,7 +292,12 @@ static void SetupSoundIATHook()
             g_iat_dotemu_entry   = thunk;
 
             DWORD old_protect;
-            VirtualProtect(thunk, sizeof(ULONG_PTR), PAGE_READWRITE, &old_protect);
+            if (!VirtualProtect(thunk, sizeof(ULONG_PTR), PAGE_READWRITE, &old_protect)) {
+                Log::Write("[FF7Access] IAT hook: VirtualProtect failed, skipping patch");
+                g_orig_dotemu_regset = nullptr;
+                g_iat_dotemu_entry   = nullptr;
+                return;
+            }
             thunk->u1.Function = reinterpret_cast<ULONG_PTR>(HookDotemuRegSetValueExA);
             VirtualProtect(thunk, sizeof(ULONG_PTR), old_protect, &old_protect);
 
@@ -398,8 +413,10 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 // main-menu option by name whenever the cursor moves.
 //
 // CURSOR INDEX → OPTION NAME:
-//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit  6=Config
-//   7=???   8=???   (unlockable, identity TBD — skipped until confirmed)
+//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit
+//   6=???   (unlockable, identity TBD — skipped until confirmed)
+//   7=Config
+//   8=???   (unlockable, identity TBD — skipped until confirmed)
 //   9=Save  10=Quit
 // Confirmed via ff7_menu_cursor_poll.py (2026-07-01): static BSS address in
 // the 0xCC region, verified clean cursor tracking with correct index range.
@@ -971,15 +988,18 @@ void Shutdown()
     // points at original" impossible.
     if (g_iat_dotemu_entry && g_orig_dotemu_regset) {
         DWORD old_protect;
-        VirtualProtect(g_iat_dotemu_entry, sizeof(ULONG_PTR),
-                       PAGE_READWRITE, &old_protect);
-        g_iat_dotemu_entry->u1.Function =
-            reinterpret_cast<ULONG_PTR>(g_orig_dotemu_regset);
-        VirtualProtect(g_iat_dotemu_entry, sizeof(ULONG_PTR),
-                       old_protect, &old_protect);
+        if (VirtualProtect(g_iat_dotemu_entry, sizeof(ULONG_PTR),
+                           PAGE_READWRITE, &old_protect)) {
+            g_iat_dotemu_entry->u1.Function =
+                reinterpret_cast<ULONG_PTR>(g_orig_dotemu_regset);
+            VirtualProtect(g_iat_dotemu_entry, sizeof(ULONG_PTR),
+                           old_protect, &old_protect);
+            Log::Write("[FF7Access] IAT hook: dotemuRegSetValueExA restored");
+        } else {
+            Log::Write("[FF7Access] IAT hook: VirtualProtect failed during restore");
+        }
         g_iat_dotemu_entry   = nullptr;
         g_orig_dotemu_regset = nullptr;
-        Log::Write("[FF7Access] IAT hook: dotemuRegSetValueExA restored");
     }
 
     // Signal and join TitleCursorThread before anything else tears down.
