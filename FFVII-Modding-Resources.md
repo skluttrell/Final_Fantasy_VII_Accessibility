@@ -255,10 +255,54 @@ Key source files in the FFNx repository relevant to the accessibility DLL projec
 
 ## 9. Notes on the 2013 vs 2026 Steam Release
 
-The 2013 Steam version (app ID 39140) is the version targeted by 7th Heaven and FFNx. A new re-release appeared on Steam in 2026 (new app ID). FFNx explicitly supports both.
+**Updated 2026-07-08 with confirmed details** (this section was originally a stub written before the 2026 release actually shipped).
 
-The 2013 version:
-- Custom C++/DirectX engine, no middleware framework (unlike Unity-based Pixel Remasters)
-- Loads `AF3DN.P` as graphics driver (FFNx replaces this)
-- DRM: Steam DRM only (no SecuROM after the 2013 update)
-- Save data: `%LOCALAPPDATA%\FINAL FANTASY VII Steam Edition\<SteamID64>\`
+### What the 2026 release is
+
+Square Enix released an "improved" re-release of the original Final Fantasy VII on Steam and GOG at the end of January/February 2026, priced $11.99 and **free for existing 2013 Edition owners**. The 2013 Steam version (app ID `39140`) was renamed **"FINAL FANTASY VII – 2013 Edition"** and pulled from new sales (existing owners keep permanent access). The new release is a **separate Steam app**, ID `3837340`, titled plain **"FINAL FANTASY VII"**, installing to its own folder (`Final Fantasy VII Steam Edition`, distinct from the 2013 install's `FINAL FANTASY VII` folder — both can coexist on the same machine).
+
+Native new features (built into the official release, **not** accessibility-related): 3x speed mode (battle/travel/events), a toggle to disable random encounters (story battles still forced), a battle-assist mode (auto-recovers HP/MP, maxes the Limit gauge), and autosave.
+
+Save data between the two versions is **not directly compatible** — a conversion/transfer step is needed (see 7th Heaven/FFNx guides below). No native TTS/screen-reader accessibility features exist in either version — an accessibility mod is still fully necessary for the 2026 release, same as 2013.
+
+### Install / folder structure (very different from 2013)
+
+The 2026 release ships as a wrapper around the classic engine, not a flat exe-in-a-folder like 2013:
+
+```
+Final Fantasy VII Steam Edition\        <- Steam install root
+  FFVII.exe                             <- new top-level launcher (QoL menu, etc.)
+  ff7\
+    resources\ff7_1.02\ff7_en           <- the actual classic engine binary (unmodified filename, no .exe extension)
+    workingdir\                         <- FFNx + the renamed engine binary run from HERE for modded play
+      data\...
+      save\...
+```
+
+Manual conversion steps (from FFNx's `docs/how_to_install.md`, current as of the vendored `FFNx/` copy in this repo, checkout 2026-05-21):
+1. Install the game via Steam/GOG/Windows Store normally.
+2. Download the latest `FFNx-Steam` release and extract it into `ff7/workingdir/` (next to the `data` folder).
+3. Copy `ff7/resources/ff7_1.02/ff7_en` into `ff7/workingdir/`, and **rename it to `ff7_en.exe`**.
+4. Copy `ff7/workingdir/data/lang-ja/kernel/window.bin` to `ff7/workingdir/data/kernel/windows.bin` (create folders as needed — a language-fallback fix).
+5. **Steam only**: create `ff7/workingdir/steam_appid.txt` containing `3837340`.
+6. Run `ff7_en.exe` directly (from `workingdir`) to play, modded — this **bypasses** the `FFVII.exe` launcher entirely.
+
+Modded save path: `...\Final Fantasy VII Steam Edition\ff7\workingdir\save`.
+
+### The single most important finding: the underlying engine appears unchanged
+
+FFNx's own version-detection code (`FFNx/src/common.h`) only distinguishes FF7 PC builds by **language** (`VERSION_FF7_102_US/FR/DE/SP`) — there is **no separate version constant for the 2026 rerelease**. The dynamic address-discovery chain (`ff7_find_externals`, anchored at the runtime `game_obj` pointer) treats the bundled `ff7_en` binary as just another `VERSION_FF7_102_US` build. FFNx's `Changelog.md` confirms the 2026-rerelease work was scoped to **platform/save-path/achievements fixes and a couple of specific crash fixes** ("Add support for Windows Store, GOG and Steam 2026 Rerelease", "Fix save path location...", "Fix crash for `junbin4`...") — not a new address table or engine rewrite.
+
+**Practical implication**: the `ff7_en` binary bundled in the 2026 release is very likely the same, or a byte-for-byte-close rebuild of, the classic "1.02 US" engine this project already spent three sessions reverse-engineering in the 2013 Steam version. The confirmed absolute addresses in `FFVII-Accessibility-Research.md` (and the FFVII-Access mod's `ff7_addresses.h`) have a real chance of carrying over unchanged, or close to it. **First thing to try once the 2026 release is installed and modded: drop the existing compiled 2013 `version.dll` into `ff7/workingdir/` (alongside FFNx and the renamed `ff7_en.exe`) and see if it just works**, before assuming any address re-discovery is needed.
+
+### Modding ecosystem status (as of 2026-07-08)
+
+- **FFNx**: officially supports FF7 Steam 2013, FF7 Steam 2026 Rerelease, FF7 GOG, FF7 Windows Store, FF8 Steam 2013, FF8 Steam 2026. The vendored copy in this repo (`FFNx/`, checkout 2026-05-21) already includes this support — no need to re-clone for basic reference.
+- **7th Heaven**: needs its "Canary" channel for 2026-release compatibility (as of the earliest post-launch guides, Feb 2026) — check current channel status when actually installing, this may have since graduated to stable.
+- A Cheat Engine table specifically for "Final Fantasy VII (Re-Release 2026)" exists on FearLessRevolution (`fearlessrevolution.com/viewtopic.php?t=38397`) — not fetchable via automated tools (403s bots), but worth a manual look if Cheat Engine ever becomes usable on this machine (it would not launch during the 2013 investigation — "This app won't run on your PC" — untested whether that's specific to the old install or a general machine issue).
+
+### Open questions to verify empirically once installed (not answered by research)
+
+- Executable bitness (32-bit vs 64-bit) — everything in the 2013 investigation assumed/confirmed 32-bit (WOW64 debugging quirks, `Wow64GetThreadContext` needed, etc.). If the bundled `ff7_en` is still 32-bit this all carries over directly; if not, some of the lower-level techniques (not the high-level architecture) need adjusting.
+- Whether the anti-debugging behavior that crashed the 2013 investigation's hardware-breakpoint attempt (see `project_ffvii_access` memory, "Battle command menu cursor" section, session 2) reproduces on the 2026 release's Steam wrapper — no evidence found either way in research; Denuvo/EasyAntiCheat were not found associated with this release (other modern FF7 titles like Remake/Rebirth confirmed to NOT use Denuvo), but the classic-engine executable may still carry the same lightweight Steam-DRM-level anti-debug behavior observed in 2013.
+- Whether confirmed 2013 addresses (MENU_CURSOR, TITLE_CURSOR, dialog rawptr table, etc.) actually match byte-for-byte, or are shifted by some constant/rebuild difference — the fastest way to know is direct testing once installed, not further research.

@@ -24,11 +24,17 @@ Apostrophes and curly quotes come out as spaces in the spoken text ("I'm" become
 
 ---
 
-> **Version compatibility:** This mod targets the **2013 Steam release** of Final Fantasy VII (exe version 1.02 US). It uses hardcoded memory addresses specific to that build and will not work with the 2026 remake or any other version of the game.
+> **Version compatibility:** This mod uses hardcoded memory addresses discovered against the **2013
+> Steam release** of Final Fantasy VII (exe version 1.02 US). Confirmed 2026-07-08: it also works
+> unmodified against the **2026 Steam/GOG rerelease** of the original game — that release bundles the
+> same underlying engine build, just in a different folder layout (see below). This does **not** cover
+> Final Fantasy VII Remake / Rebirth (the separate Unreal Engine action-RPG trilogy) — those are
+> unrelated games built on a completely different engine.
 
 ## Requirements
 
-- Final Fantasy VII (2013 Steam Edition)
+- Final Fantasy VII: either the **2013 Steam Edition** or the **2026 Steam/GOG rerelease** (plain
+  "FINAL FANTASY VII" on Steam) of the original game, with FFNx installed
 - A screen reader: **NVDA** (recommended), **JAWS**, or Windows **Narrator / SAPI**
 - The **Tolk** screen reader library (free — download instructions below)
 
@@ -38,15 +44,20 @@ Apostrophes and curly quotes come out as spaces in the spoken text ("I'm" become
 
 1. Download the latest release and extract the zip.
 
-2. Copy these files into your **FF7 install folder** (the folder that contains `FF7.exe`):
+2. Copy these four files into the correct folder for your version:
    ```
    version.dll
    Tolk.dll
    nvdaControllerClient32.dll
    ffvii_accessibility.cfg
    ```
+   - **2013 Steam Edition**: the folder containing `FF7.exe` (your game install root).
+   - **2026 Steam/GOG rerelease**: `ff7\workingdir\`, alongside FFNx and the renamed `ff7_en.exe` —
+     **not** the top-level game folder (that's a separate .NET launcher, not the game engine). See
+     `FFVII-2026-Project.md` for full 2026 setup steps if you haven't installed FFNx there yet.
 
-3. Launch the game normally, either through Steam or 7th Heaven. Nothing else to configure.
+3. Launch the game normally — 2013: through Steam or 7th Heaven; 2026: run `ff7_en.exe` directly from
+   `ff7\workingdir\` (this bypasses the new launcher, which is expected). Nothing else to configure.
 
 To uninstall, delete those four files.
 
