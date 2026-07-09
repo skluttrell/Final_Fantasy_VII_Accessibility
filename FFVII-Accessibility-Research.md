@@ -84,8 +84,32 @@ OPCODE_MSG_UPDATE_LOOP = 0x630D50
   +0x12  absolute ref  → opcode_message_loop_code (uint8_t[], 24-byte stride per window)
 ```
 
+Additional chains resolved STATICALLY against the exe file on disk for v2.6
+(`investigate/ff7_wall_nav_static.py`, 2026-07-09). Static file analysis avoids
+FFNx's runtime trampolines entirely — the on-disk bytes are pure Square code and
+the binary has no ASLR, so file-derived VAs are runtime VAs. Where FFNx's `ff7.h`
+carries an address comment it doubles as a cross-check (all matched exactly):
+
+```
+FIELD_INIT_EVENT = 0x60BACF
+  +0x20  absolute ref  → modules_global_object            = 0xCC0D88  (ff7.h comment ✓)
+  +0x1C  absolute ref  → field_global_object_ptr          = 0xCBF9D8
+
+execute_opcode_table[0xB1]  → opcode_canm1_canm2          = 0x614E3E
+  +0xC1  absolute ref  → field_event_data_ptr             = 0xCC0B60  (ff7.h comment ✓)
+
+FIELD_LOOP = 0x63C17F   (FFNx: field_loop_sub_63C17F)
+  +0x5DD relative CALL → field_update_models_positions    = 0x6342C6
+    +0x45D absolute ref → field_player_model_id           = 0xCC162C
+    +0x25  absolute ref → field_n_models                  = 0xCFF73E
+
+SUB_40B27B = 0x40B27B
+  +0x25  absolute ref  → word_CC1638 (movie-playing word) = 0xCC1638  (FFNx name ✓)
+```
+
 All other symbols are either hardcoded fixed addresses (confirmed from `externals_102_us.h` and `ff7.h`)
-or read at runtime from opcode parameters.
+or read at runtime from opcode parameters. See §14 for a region-organized map of
+every confirmed address — the clustering itself is a discovery tool.
 
 ### Confirmed Absolute Addresses (2013 Steam / 1.02 US)
 
@@ -116,6 +140,20 @@ or read at runtime from opcode parameters.
 | `CONFIG_SPEED_FIELD_MSG` | `0x00DC0E24` | Row 7 Field message speed — raw byte, 0=Fast → 255=Slow |
 | `SOUND_CURSOR` | `0x00DC108C` | 0=Music slider highlighted, 1=FX slider highlighted; inside Sound sub-menu only |
 | `QUIT_CURSOR` | `0x00DC0FA0` | 0=Yes, 1=No inside Quit confirmation dialog |
+| `FIELD_ID` | `0x00CC15D0` | s16, non-zero on named field maps, 0 on title/world. **Does NOT zero during battle** (live-corrected 2026-07-09; earlier belief wrong) |
+| `G_ACTIVE_ACTOR_ID` | `0x00BE1170` | u8 slot of last-acting battle actor (0–2 party, 4–9 enemy); never resets between battles (v2.5) |
+| `G_BATTLE_MODEL_STATE` | `0x00BE1178` | Per-actor battle array, stride 0x1AEC; commandID u8 at +0x23 (v2.5) |
+| `G_SMALL_BATTLE_MODEL_STATE` | `0x00BF23B8` | Stride 0x74; its +0x3E "actionIdx" is BOGUS (animation counter) — do not use |
+| `KERNEL2_REQUEST_BASE` | `0x00DC38E8` | pending/section/idx DWORDs written by sub_6D71FA (0x6D71FA); partially verified |
+| `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** — PSX comments identify unnamed PC fields |
+| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 9=menu**. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
+| `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
+| `FIELD_BGMOVIE_FLAG` | `0x00CC0DC2` | +0x3A, u8. Movie is background-only (player walkable) |
+| `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
+| `FIELD_EVENT_DATA_PTR` | `0x00CC0B60` | → per-model array, stride 0x88: model_pos 3×i32 at +0x0C, movement_speed u16 at +0x76. Observed target: static 0xCC1670 |
+| `FIELD_PLAYER_MODEL_ID` | `0x00CC162C` | u16 player index into event-data array (player ≠ always model 0) |
+| `FIELD_N_MODELS` | `0x00CFF73E` | u16 model count on current field |
+| `FIELD_MOVIE_PLAYING` | `0x00CC1638` | u16 nonzero while movie plays on field. FFNx movie test: `word && !BGMOVIE_flag` |
 
 ---
 
@@ -625,3 +663,155 @@ Makou Reactor's character encoding documentation.
 - [FF7 Field Script Opcodes](https://wiki.ffrtt.ru/index.php/FF7/Field/Script/Opcodes) — opcode reference
 - [FF7 Savemap](https://wiki.ffrtt.ru/index.php/FF7/Savemap) — save file layout (live addresses derived from base 0xDBFD38)
 - [Tolk](https://github.com/ndarilek/tolk) — screen reader abstraction library
+
+---
+
+## 14. Memory Region Map — Running Analysis
+
+Every address this project has confirmed, organized spatially instead of by feature.
+The clustering is itself a discovery tool: FF7 statically allocates each engine
+module's globals in a contiguous block, so **a new unknown for module X is almost
+certainly within a few KB of module X's known addresses** — start every new scan
+there before falling back to full-memory delta scans. This section should be
+extended every time a new address is confirmed.
+
+Proven payoffs of cluster reasoning so far:
+- `FIELD_PLAYER_MODEL_ID` (0xCC162C) landed 0x5C bytes after `FIELD_ID` (0xCC15D0).
+- `SOUND_CURSOR`, `CONFIG_ROW`, `MENU_CURSOR` were all found within 0xD0 bytes of
+  each other after the first menu address anchored the region.
+- The `modules_global_object` struct at 0xCC0D88 matches the PSX decomp's struct
+  field-for-field (+0x28..+0x3B verified), so PSX decomp comments name PC bytes
+  that FFNx leaves as `field_XX` — this is how the UC control lock was found
+  without any scanning.
+
+### Code (.text): 0x401000 – 0x9FFFFF
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0x40B27B` | sub_40B27B | anchor for movie-playing word (+0x25) |
+| `0x41963C` | sub_41963C | real kernel2 lookup `(section, idx, 8)`; result → 0xDC208C |
+| `0x42782A` | display_battle_action_text | FFNx trampolines this — do not hook |
+| `0x60BACF` | field_init_event | PRIMARY ANCHOR: +0x80→execute_opcode, +0x20→modules_global_object, +0x1C→field_global_object_ptr |
+| `0x60C683` | execute_opcode | +0x10D → opcode table |
+| `0x614E3E` | opcode_canm1_canm2 (table[0xB1]) | +0xC1 → field_event_data_ptr |
+| `0x630D50` | opcode MESSAGE update loop | +0x12 → dialog state array |
+| `0x6310A1` | opcode ASK update loop | v2 hook target |
+| `0x6342C6` | field_update_models_positions | +0x45D→player_model_id, +0x25→n_models |
+| `0x63C17F` | field_loop | +0x5DD → field_update_models_positions |
+| `0x6D71FA` | kernel2 request writer | stores section/idx to 0xDC38E8; returns void; FFNx-trampolined |
+| `0x6D72E9` / `0x6D1CC0` | kernel2 request consumer / dispatcher | real CALL to 0x41963C at 0x6D72C6 |
+| `0x6E97E0` | build_dialog_window | |
+| `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
+
+Pattern: field module code sits in 0x60xxxx–0x6Exxxx, world map in 0x75xxxx,
+battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
+
+### Static data (.data): 0x900000 – 0x9Fxxxx
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0x9055A0` | execute_opcode_table | uint32[256] |
+| `0x9A8729`, `0x9A872A`, `0x9ADE30`, `0x9ADE34` | input-event/SFX pulse flags | pulse-and-reset on any d-pad press; REJECTED as cursor candidates |
+| `0x9A9484` | kernel2 section-8 name table? | stride 0x20; only low indices look valid — unresolved |
+| `0x9ADF0C` | kernel2 data pointer candidate | unverified (v2.5 TODO) |
+
+### Battle module block: 0xBE1170 – 0xBFxxxx
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xBE1170` | G_ACTIVE_ACTOR_ID | u8; never resets between battles |
+| `0xBE1178` | G_BATTLE_MODEL_STATE | stride 0x1AEC × 10 slots ≈ ends 0xBF1EF0 |
+| `0xBF23B8` | G_SMALL_BATTLE_MODEL_STATE | stride 0x74; starts right after the large array |
+| `0xBFC3E0–0xBFC5E0` | SFX/audio playback buffer | random churn; noise source in scans |
+
+The battle command-menu CURSOR is confirmed NOT in either known per-actor array
+(3 investigation sessions). PSX architecture says it lives in a small (0x240-byte)
+menu-widget struct selected by a "current widget" global — if that carried over,
+it is plausibly a separate small block somewhere in 0xBFxxxx–0xC0xxxx or the menu
+region below, not yet found.
+
+### Field module block: 0xCBF578 – 0xCC1B42
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xCBF578` | DIALOG_TEXT_PTRS[8] | authoritative dialog text pointers |
+| `0xCBF5E8` | field_script_ptr | section 0 pointer |
+| `0xCBF9D8` | field_global_object_ptr | → modules_global_object |
+| `0xCC0418` | current_dialog_message_speed | from ff7.h comment (unused by us so far) |
+| `0xCC0960` | field_entity_id_list | |
+| `0xCC0964` | current_entity_id | |
+| `0xCC0B60` | field_event_data_ptr | → 0xCC1670 (observed) |
+| `0xCC0CF8` | field_curr_script_position | WORD per entity |
+| `0xCC0D88` | **modules_global_object struct** | spans ≈0x138 bytes → 0xCC0EC0; see sub-map below |
+| `0xCC15D0` | FIELD_ID | does NOT zero in battle |
+| `0xCC162C` | FIELD_PLAYER_MODEL_ID | |
+| `0xCC1638` | FIELD_MOVIE_PLAYING word | |
+| `0xCC1670` | field_event_data array (static) | stride 0x88 per model |
+| `0xCC1B42` | field-script variable | FALSE cursor candidate (freezes when menu opens) |
+
+Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quotes):
+
+| Offset | Address | Field | Confirmed? |
+|--------|---------|-------|------------|
+| +0x01 | `0xCC0D89` | game_mode: 0=field, 2=battle, 9=menu (live) | ✓ live |
+| +0x02 | `0xCC0D8A` | battle_id | FFNx label only |
+| +0x04/06 | `0xCC0D8C/8E` | field_model_pos_x/y (u16) | FFNx label only |
+| +0x22 | `0xCC0DAA` | field_model_triangle_id | FFNx label only |
+| +0x26 | `0xCC0DAE` | previous_game_mode / PSX "movieState" | labels disagree |
+| +0x28 | `0xCC0DB0` | num_models | PSX+FFNx agree |
+| +0x2A | `0xCC0DB2` | field_model_id ("pc model id") | PSX+FFNx agree |
+| +0x2C/2E/30 | `0xCC0DB4…` | PSX: idle/walk/run animation ids | PSX only |
+| +0x32 | `0xCC0DBA` | UC player-control lock | ✓ live (v2.6 gate works) |
+| +0x33 | `0xCC0DBB` | PSX: "suspend walk animation" | PSX only |
+| +0x34 | `0xCC0DBC` | PSX: "menus disabled" (MENU opcode?) | PSX only — candidate for menu-availability TTS |
+| +0x36 | `0xCC0DBE` | PSX: "map jump disabled" | PSX only |
+| +0x37–0x3B | `0xCC0DBF–C3` | SCRLO / MPDSP / MVCAM / BGMOVIE / BTLON flags | PSX+FFNx agree |
+| +0x3C | `0xCC0DC4` | PSX: "encounter table id" | PSX only |
+| +0x44 | `0xCC0DCC` | midi_id | FFNx label only |
+| +0x4C–0x62 | `0xCC0DD4…` | fade type/adjustment/speed/rgb | FFNx labels |
+| +0x64 | `0xCC0DEC` | field_id (module copy — distinct from 0xCC15D0) | FFNx label only |
+| +0x68 | `0xCC0DF0` | current_key_input_status (u32) | ✓ live |
+| +0x6C | `0xCC0DF4` | previous_key_input_status | FFNx label only |
+
+### Savemap: 0xDBFD38 – ≈0xDC0E2C (0x10F4 bytes)
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDBFD38` | savemap base | live game state, persisted on save |
+| `0xDC0E10–0xDC0E24` | CONFIG_* value bytes | **these sit INSIDE the savemap range** — FF7 persists config in the save header region, which is why the sliders live here and not with the menu cursors |
+
+### Menu module block: 0xDC0FA0 – 0xDC38F0
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDC0FA0` | QUIT_CURSOR | |
+| `0xDC0FB1` | QUIT_OPEN | unreliable (never re-zeroes) — do not gate on it |
+| `0xDC0FC0` | menu_objects | FFNx externals |
+| `0xDC108C` | SOUND_CURSOR | |
+| `0xDC10F0` | CONFIG_ROW | |
+| `0xDC1154` | MENU_CURSOR | |
+| `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen |
+| `0xDC208C` | kernel2 lookup result ptr | written by sub_41963C |
+| `0xDC38E8` | KERNEL2_REQUEST struct | pending/section/idx |
+
+### Title / name-entry block: 0xDD46F8 – 0xDD6F24
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDD46F8` | name-entry cursor column | |
+| `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
+
+### Discovery techniques ranked by success rate (as of 2026-07-09)
+
+1. **Static chain resolution against the exe on disk** (v2.6): replicate FFNx
+   `ff7_data.h` chains on the file image; cross-check against `ff7.h` address
+   comments. Zero user effort, immune to FFNx trampolines. Best first move.
+2. **PSX decomp struct matching** (v2.6 UC lock): once a PC struct base is known,
+   align it with the PSX decomp's version and lift the PSX field comments.
+3. **Targeted isolate delta scan** (MENU_CURSOR, CONFIG_ROW, SOUND_CURSOR): two
+   snapshot phases inside the same frozen context, subtract.
+4. **Live change-monitor with the player narrating** (GAME_MODE values): passive
+   500ms change-logger, no staged phases; good for enum-value discovery.
+5. **Full-heap delta scans**: FAILED at scale (battle cursor, ~1.5M bytes of
+   background churn per quiet window). Use only inside frozen contexts.
+6. **Hardware-breakpoint debugging**: game self-terminates (anti-debug). Never retry.
