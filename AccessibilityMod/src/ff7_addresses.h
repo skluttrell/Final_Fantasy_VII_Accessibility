@@ -398,6 +398,82 @@ constexpr uint32_t OPCODE_ASK_UPDATE_LOOP = 0x6310A1;
 // Source: display_battle_action_text_42782A → address from name
 constexpr uint32_t DISPLAY_BATTLE_ACTION_TEXT = 0x42782A;
 
+// ---------------------------------------------------------------------------
+// SECTION 1c: Battle system addresses
+//
+// All confirmed by ff7_battle_action_scan.py Phase 1 (address derivation)
+// and Phase 2 (live monitor across 5 battles, 2026-07-05).  No ASLR; all
+// addresses are fixed for every run of the 2013 Steam exe.
+//
+// g_active_actor_id:
+//   A single byte holding the slot index of the actor whose turn is being
+//   processed.  Updated by display_battle_action_text_42782A (confirmed:
+//   derived from FUNC_ADDR+0x52 via a MOV ESI,[abs32] instruction).
+//   Party slots 0–2, enemy slots 4–9; slot 3 is never used.
+//   Initialises to 0 at process start and is NEVER reset between battles —
+//   it retains the last-acting slot indefinitely.  Use commandID==0 to
+//   distinguish "game just started / not in battle" from a real action.
+//
+// g_battle_model_state:
+//   Large per-actor state array.
+//   Element address: G_BATTLE_MODEL_STATE + actor_id * BATTLE_MODEL_STATE_STRIDE
+//   commandID (uint8_t) at element + BATTLE_COMMAND_ID_OFFSET:
+//     0x00 = idle (field map, between battles)
+//     0x01 = party Attack command
+//     0x14 = party Limit Break command
+//     0x20 = enemy AI attack opcode
+//   Other values exist for Magic, Item, etc.
+//
+// g_small_battle_model_state:
+//   Small per-actor state array with actionIdx.
+//   Element address: G_SMALL_BATTLE_MODEL_STATE + actor_id * BATTLE_SMALL_MODEL_STRIDE
+//   actionIdx (uint16_t) at element + BATTLE_ACTION_IDX_OFFSET: 0-based index
+//   into kernel2 section 8 (action/ability names).
+//
+// sub_6D71FA — kernel2 text REQUEST function (NOT a get-and-return):
+//   Confirmed by ff7_kernel2_scan.py (2026-07-05) hex dump of original file bytes.
+//   Disassembly of the 34-byte function body:
+//     PUSH EBP / MOV EBP,ESP
+//     MOV DWORD PTR [0x00DC38E8], 1    ; set request_pending flag
+//     MOVSX EAX, WORD PTR [EBP+8]      ; read section arg (sign-extend word)
+//     MOV [0x00DC38EC], EAX            ; store section
+//     MOVSX ECX, WORD PTR [EBP+0xC]   ; read idx arg
+//     MOV [0x00DC38F0], ECX            ; store idx
+//     POP EBP / RET
+//   The function does NOT return a char* — it queues a kernel2 lookup request
+//   in the global struct at 0x00DC38E8.  A separate game-engine pass reads the
+//   flag, performs the kernel2 lookup, and stores the result elsewhere.
+//   DO NOT call this function for direct text retrieval — it returns nothing.
+//
+//   The earlier "CALL to 0x016E4E3C" finding was a scanner false-positive:
+//   the 0xE8 byte at code offset +5 is the low byte of the address 0x00DC38E8
+//   embedded inside MOV [0x00DC38E8],1 — not a CALL opcode.
+//
+// KERNEL2_REQUEST_STRUCT at 0x00DC38E8 (sub_6D71FA writes here):
+//   +0x00  DWORD  request_pending  (1 = lookup queued, 0 = idle)
+//   +0x04  DWORD  section          (8 = battle action / ability names)
+//   +0x08  DWORD  idx              (0-based index into section 8)
+//
+// TODO: find the actual kernel2 section pointer array to implement direct
+// lookup.  Lead: 0x009ADF0C and sub_6892E5 (0x006892E5) referenced by
+// display_battle_action_text — see ff7_kernel2_scan.py investigation.
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t G_ACTIVE_ACTOR_ID          = 0x00BE1170;
+constexpr uint32_t G_BATTLE_MODEL_STATE        = 0x00BE1178;
+constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
+// GET_KERNEL_TEXT removed — 0x016E4E3C was a scanner false-positive; calling
+// 0x6D71FA (sub_6D71FA) is wrong because it stores params but returns void.
+// See KERNEL2_REQUEST_STRUCT below for the request-queue mechanism.
+constexpr uint32_t KERNEL2_REQUEST_BASE        = 0x00DC38E8; // struct: pending/section/idx
+constexpr uint32_t KERNEL2_CANDIDATE_PTR       = 0x009ADF0C; // ptr to kernel2 data (TBD)
+
+// Struct layout constants for the battle model state arrays.
+constexpr uint32_t BATTLE_MODEL_STATE_STRIDE  = 0x1AEC; // bytes per actor, large array
+constexpr uint32_t BATTLE_SMALL_MODEL_STRIDE  = 0x74;   // bytes per actor, small array
+constexpr uint32_t BATTLE_COMMAND_ID_OFFSET   = 0x23;   // commandID (uint8_t) in large elem
+constexpr uint32_t BATTLE_ACTION_IDX_OFFSET   = 0x3E;   // actionIdx (uint16_t) in small elem
+
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different
 // code paths. We patch those call sites to intercept world map dialog.

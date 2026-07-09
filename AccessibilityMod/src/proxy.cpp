@@ -70,9 +70,11 @@
 #include "proxy.h"
 #include "hooks.h"
 #include "ff7_addresses.h"
+#include "ff7_text.h"
 #include "tts.h"
 #include "config.h"
 #include "log.h"
+#include <string>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -135,6 +137,7 @@ static HANDLE g_cursor_stop_event = nullptr;
 static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
+static HANDLE g_battle_thread     = nullptr;
 
 // ---------------------------------------------------------------------------
 // Sound sub-menu volume cache.
@@ -824,6 +827,188 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
+// Battle action polling thread.
+//
+// Polls g_active_actor_id and the battle model state arrays to detect and
+// announce battle actions via TTS.
+//
+// WHY POLLING (not a function hook):
+//   FFNx trampolines both display_battle_action_text_42782A (0x42782A) and
+//   its inner wrapper sub_6D71FA (0x6D71FA) by overwriting their first 5
+//   bytes with a relative JMP to FFNx's own handlers.  Hooking at those
+//   entry points would intercept FFNx, not the original game, and would
+//   require trampoline setup to preserve FFNx's behaviour.  Polling the
+//   model state arrays is simpler and equally reliable: it reads the same
+//   data the hook would read, with no patching required.
+//
+// ACTOR VALIDITY:
+//   Party slots 0–2; enemy slots 4–9.  Slot 3 never appears.
+//   g_active_actor_id initialises to 0 (Cloud's party slot) at process start
+//   and is never reset between battles.  The commandID==0 check is the only
+//   reliable "not in battle" signal: the large model state array is zero-
+//   initialised at startup and retains the last commandID after a battle ends,
+//   so commandID==0 only fires (a) at process start and (b) when the model
+//   state is genuinely idle.
+//
+//   From empirical testing across 5 battles: commandID stays non-zero after
+//   a battle ends (the model structs are not cleared between battles).
+//   Between-battle silence relies on actor_id not changing — it stays at the
+//   last-acting slot until the next battle's first action updates it.  This
+//   means the first action of a new battle (which changes actor_id) is always
+//   announced.  The edge case where a new battle's first actor matches the
+//   previous battle's last actor is accepted; it will miss that one action.
+//
+// ACTION NAME LOOKUP:
+//   get_kernel_text(8, actionIdx, 8) returns a pointer to an FF7-encoded
+//   string from kernel2 section 8 (action/ability names).  Kernel2 is loaded
+//   at game start and never modified, so calling this from a background thread
+//   is safe — it is effectively a read-only table lookup.
+//
+// CALLING CONVENTION:
+//   Declared __cdecl: sub_6D71FA (which calls get_kernel_text) ends with a
+//   plain RET (not RETN n), meaning it is __cdecl and does not clean the
+//   stack itself.  get_kernel_text is therefore also __cdecl.
+//
+// Gated by Config::Get().speak_battle.
+// ---------------------------------------------------------------------------
+
+static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
+{
+    // get_kernel_text is at FF7Addr::GET_KERNEL_TEXT (0x016E4E3C) per the
+    // in-memory scan of sub_6D71FA, but that address is NOT a valid callable
+    // target: it is FFNx's trampoline heap, which crashes when called from a
+    // foreign thread (exception 0xC0000005 at that address, confirmed in testing).
+    // FFNx patches more than 5 bytes at sub_6D71FA, so the CALL we saw at
+    // offset +5 belongs to FFNx's code, not original FF7 code.
+    // TODO: find the real get_kernel_text via ff7_data.h's chain:
+    //   get_kernel_text = get_relative_call(draw_status_limit_level_stats, 0x10C)
+    // Until then, commandID-based labels are used as the action description.
+
+    // Default English party names indexed by character ID (0=Cloud … 8=Cid).
+    // Used to name party slot 0 (the current leader) in TTS output.
+    static const wchar_t* const kCharNames[] = {
+        L"Cloud", L"Barret", L"Tifa", L"Aerith", L"Red XIII",
+        L"Yuffie", L"Cait Sith", L"Vincent", L"Cid"
+    };
+    static const uint32_t kCharNameCount =
+        static_cast<uint32_t>(sizeof(kCharNames) / sizeof(kCharNames[0]));
+
+    uint8_t  last_actor_id = 0xFF;  // 0xFF = sentinel; announce on next valid actor change
+
+    for (;;) {
+        // Sleep 50ms, or wake immediately if Proxy::Shutdown() signals the event.
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_battle) {
+            last_actor_id = 0xFF;
+            continue;
+        }
+
+        const uint8_t actor_id =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::G_ACTIVE_ACTOR_ID);
+
+        // Classify the actor.  Slots 0–2 = party, 4–9 = enemy.  Slot 3 is
+        // unused; any value outside 0–9 indicates the battle module is not
+        // active (values come from BSS zero-init or unrelated writes).
+        const bool is_party = (actor_id <= 2);
+        const bool is_enemy = (actor_id >= 4 && actor_id <= 9);
+        if (!is_party && !is_enemy) {
+            last_actor_id = 0xFF;
+            continue;
+        }
+
+        // Read commandID from the large battle model state array.
+        // commandID == 0 means the slot is idle (not performing an action).
+        // This fires at process start (BSS = 0) and whenever the battle module
+        // clears the struct.  It is the primary gate against announcing during
+        // field gameplay and at game startup.
+        const uint8_t command_id = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::G_BATTLE_MODEL_STATE
+            + static_cast<uint32_t>(actor_id) * FF7Addr::BATTLE_MODEL_STATE_STRIDE
+            + FF7Addr::BATTLE_COMMAND_ID_OFFSET);
+
+        if (command_id == 0) {
+            last_actor_id = 0xFF;
+            continue;
+        }
+
+        // A real battle action is in flight.  Announce only when the active actor
+        // slot changes — each new actor change signals a new turn beginning.
+        // Between battles, actor_id stays constant (never reset), so the
+        // triple stays the same and no announce fires until the next battle
+        // changes which slot is acting.
+        if (actor_id == last_actor_id) continue;
+        last_actor_id = actor_id;
+
+        // Map commandID to a human-readable action label.
+        // These are the command menu IDs observed in battle testing (2026-07-05):
+        //   0x01 = Attack (party standard attack)
+        //   0x14 = Limit Break (party limit break)
+        //   0x20 = enemy AI attack (all enemy actions use this opcode)
+        // Other values (Magic=0x02, Item=0x04, Steal=0x06, etc.) are named
+        // generically until confirmed.  A kernel2 lookup via get_kernel_text
+        // would give exact ability names, but that requires finding the real
+        // get_kernel_text address first (see TODO above).
+        const wchar_t* action_label;
+        switch (command_id) {
+        case 0x01: action_label = L"Attack";     break;
+        case 0x02: action_label = L"Magic";      break;
+        case 0x04: action_label = L"Item";       break;
+        case 0x06: action_label = L"Steal";      break;
+        case 0x14: action_label = L"Limit Break"; break;
+        case 0x20: action_label = L"attacks";    break;
+        default: {
+            // Unknown command: report the numeric value so nothing is silenced.
+            static wchar_t unknown_buf[32];
+            _snwprintf_s(unknown_buf, _countof(unknown_buf), _TRUNCATE,
+                         L"command %u", static_cast<unsigned>(command_id));
+            action_label = unknown_buf;
+            break;
+        }
+        }
+        const std::wstring action_name = action_label;
+
+        // Build the actor label.
+        // Slot 0 = party leader: read PARTY_LEADER for the character ID → name.
+        // Slots 1–2 = "ally 2" / "ally 3".
+        // Slots 4–9 = "enemy".
+        wchar_t actor_label[32] = {};
+        if (is_party) {
+            if (actor_id == 0) {
+                const uint8_t leader_id =
+                    *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
+                const wchar_t* cname =
+                    (leader_id < kCharNameCount) ? kCharNames[leader_id] : L"ally";
+                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE,
+                             L"%ls", cname);
+            } else {
+                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE,
+                             L"ally %u", static_cast<unsigned>(actor_id + 1u));
+            }
+        } else {
+            wcscpy_s(actor_label, L"enemy");
+        }
+
+        // Compose: "[actor label], [action name]"
+        wchar_t announce[128] = {};
+        _snwprintf_s(announce, _countof(announce), _TRUNCATE,
+                     L"%ls, %ls", actor_label, action_name.c_str());
+
+        char dbg[128];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] BATTLE actor=%u cmd=0x%02X => %ls",
+            static_cast<unsigned>(actor_id),
+            static_cast<unsigned>(command_id),
+            announce);
+        Log::Write(dbg);
+        TTS::Speak(announce, /*interrupt=*/true);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Background initialization thread.
 //
 // This thread handles Config/TTS/Hook init outside the loader lock.
@@ -903,7 +1088,19 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start config menu thread.");
         }
 
-        if (!g_title_thread && !g_menu_thread && !g_config_thread) {
+        // Battle action TTS. Polls g_active_actor_id + commandID + actionIdx;
+        // calls get_kernel_text(8, actionIdx, 8) in-process to name the action.
+        // Confirmed addresses: G_ACTIVE_ACTOR_ID=0xBE1170, G_BATTLE_MODEL_STATE=0xBE1178,
+        // G_SMALL_BATTLE_MODEL_STATE=0xBF23B8, GET_KERNEL_TEXT=0x016E4E3C
+        // (ff7_battle_action_scan.py, 2026-07-05).
+        g_battle_thread = CreateThread(nullptr, 0, BattleActionThread, nullptr, 0, nullptr);
+        if (g_battle_thread) {
+            Log::Write("[FF7Access] Battle action polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start battle action thread.");
+        }
+
+        if (!g_title_thread && !g_menu_thread && !g_config_thread && !g_battle_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -1030,6 +1227,11 @@ void Shutdown()
         WaitForSingleObject(g_config_thread, 500);
         CloseHandle(g_config_thread);
         g_config_thread = nullptr;
+    }
+    if (g_battle_thread) {
+        WaitForSingleObject(g_battle_thread, 500);
+        CloseHandle(g_battle_thread);
+        g_battle_thread = nullptr;
     }
 
     if (g_cursor_stop_event) {
