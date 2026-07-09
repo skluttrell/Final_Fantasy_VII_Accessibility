@@ -4,6 +4,7 @@ AccessibilityMod/build/
 Braver/
 Echo/
 FFNx/
+PSX_decomps/
 Screenshots/
 tools/venv/
 nvdaControllerClient32.dll
@@ -14,3 +15,5 @@ ff7_investigate.log
 scratchpad_ff7text.cpp
 investigate/*.log
 investigate/**/*.log
+investigate/venv/
+investigate/__pycache__/
