@@ -474,6 +474,121 @@ constexpr uint32_t BATTLE_SMALL_MODEL_STRIDE  = 0x74;   // bytes per actor, smal
 constexpr uint32_t BATTLE_COMMAND_ID_OFFSET   = 0x23;   // commandID (uint8_t) in large elem
 constexpr uint32_t BATTLE_ACTION_IDX_OFFSET   = 0x3E;   // actionIdx (uint16_t) in small elem
 
+// ---------------------------------------------------------------------------
+// SECTION 1d: Field navigation addresses (wall-bump tone feature)
+//
+// All resolved statically from the exe on disk by
+// investigate/ff7_wall_nav_static.py (2026-07-09) using FFNx's own discovery
+// chains (FFNx/src/ff7_data.h), then confirmed live by
+// investigate/ff7_wall_nav_verify.py the same day:
+//   Phase A (walking freely):   wall predicate fired  0.0% of samples
+//   Phase B (pushing a wall):   wall predicate fired 98.4% of samples
+//   Phase C (standing still):   wall predicate fired  0.0% of samples
+//
+// modules_global_object (0xCC0D88):
+//   The field module's global state struct (FFNx ff7.h struct
+//   ff7_modules_global_object; its own source comment confirms 0xCC0D88).
+//   Static-chain provenance: get_absolute_value(field_init_event_60BACF, 0x20).
+//   We only read one member:
+//     +0x68  uint32_t current_key_input_status — the DIGESTED input bitmask
+//            the field engine consumes each frame (keyboard and controller
+//            already merged by the input layer). Bit layout confirmed live:
+//              0x1000 = Up, 0x2000 = Right, 0x4000 = Down, 0x8000 = Left
+//            (matches FFNx's ff7::world::input_key enum — the same digest
+//            format is shared across game modules).
+//
+// field_event_data_ptr (0xCC0B60):
+//   Global pointer to the array of per-model field_event_data structs
+//   (0x88 bytes each; layout from FFNx ff7.h). model_pos — the model's
+//   world position as 3 consecutive int32 (x, y, z) — is at +0x0C.
+//   Static-chain provenance: execute_opcode_table[0xB1] (CANM1 handler)
+//   → get_absolute_value(+0xC1); FFNx's own comment confirms 0xCC0B60.
+//   Live observation: the pointer held 0xCC1670 (static BSS, not heap),
+//   but we always re-read the pointer each poll anyway — the engine is the
+//   source of truth, and other fields could relocate the array.
+//
+// field_player_model_id (0xCC162C):
+//   uint16 index of the PLAYER's model within that array. The player is
+//   NOT always model 0 — fields load models in file order. This is the one
+//   address with no FFNx-comment cross-check; provenance is the chain
+//   field_loop_sub_63C17F +0x5DD relative call → field_update_models_positions
+//   → get_absolute_value(+0x45D), plus the live walk test above (position
+//   at this index tracked the player's movement exactly).
+//
+// field_n_models (0xCFF73E):
+//   uint16 count of models on the current field. Used only as a bounds
+//   sanity check before indexing the event-data array.
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t MODULES_GLOBAL_OBJECT   = 0x00CC0D88;
+constexpr uint32_t FIELD_KEY_INPUT_STATUS  = 0x00CC0DF0; // modules_global_object + 0x68
+constexpr uint32_t FIELD_EVENT_DATA_PTR    = 0x00CC0B60; // field_event_data**
+constexpr uint32_t FIELD_PLAYER_MODEL_ID   = 0x00CC162C; // uint16 player model index
+constexpr uint32_t FIELD_N_MODELS          = 0x00CFF73E; // uint16 model count
+
+// ---------------------------------------------------------------------------
+// Wall-bump false-positive gates (added after 2026-07-09 live testing showed
+// false tones during battles, FMVs, and control-locked scripted scenes).
+//
+// GAME_MODE (modules_global_object + 0x01, uint8):
+//   The active engine module. LIVE-CONFIRMED VALUES (ff7_wall_gate_snap.py,
+//   2026-07-09, two separate monitor sessions):
+//     0 = field play (walking, player control)
+//     2 = battle (flipped 0->2 exactly when a live battle started)
+//     9 = menu overlay open on a field
+//   WARNING: FFNx's ff7_game_modes enum (FIELD=1, BATTLE=2, MENU=5, ...)
+//   does NOT describe this byte — that enum belongs to a different variable
+//   (the graphics/game-object mode). Gating on ==1 (the enum's FIELD) made
+//   the tone never fire; only the live-observed values above can be trusted.
+//   Values during the pre-battle swirl, FMVs, world map, and game over are
+//   not yet observed; the movie/UC/FIELD_ID gates cover those independently.
+//   WHY NEEDED: when a random battle starts, the FIELD module freezes with
+//   current_key_input_status stuck at whatever direction the player was
+//   holding while walking, and the player position frozen — the wall
+//   predicate stays permanently true for the whole battle. FIELD_ID does NOT
+//   reliably zero during battle (live-tested 2026-07-09: tone continued all
+//   battle until the victory screen's MENU_OPEN=1 stopped it).
+//
+// FIELD_UC_LOCK (modules_global_object + 0x32, uint8):
+//   Player-control lock, written by field-script opcode UC. Nonzero =
+//   scripted scene has frozen the player; direction input is ignored, so a
+//   frozen position does not mean "wall".
+//   PROVENANCE: the PSX decompilation (PSX_decomps/ff7-decomp) implements
+//   opcode UC as `modules_global->unk32 = operand` with unk32 commented
+//   "character lock" at struct offset +0x32 (include/game.h). The PSX struct
+//   is a field-for-field match with the PC ff7_modules_global_object across
+//   +0x28..+0x3B — num_models(+0x28), pc model id(+0x2A), and the exact
+//   five-flag run scrlo/mpdsp/mvcam/bgmovie/btlon (+0x37..+0x3B) all align —
+//   so +0x32 carries over. (FFNx leaves this byte unnamed as field_32.)
+//
+// FIELD_MOVIE_PLAYING (0xCC1638, uint16) + FIELD_BGMOVIE_FLAG (+0x3A, uint8):
+//   FFNx's own is-a-movie-playing test (widescreen.cpp, renderer.cpp) is:
+//     *word_CC1638 && !modules_global_object->BGMOVIE_flag
+//   word_CC1638 is nonzero while a movie plays on a field; BGMOVIE_flag set
+//   means the movie is only a scrolling BACKGROUND (player retains control —
+//   e.g. moving-train fields), in which case wall tones must stay ENABLED.
+//   Statically verified 2026-07-09: get_absolute_value(sub_40B27B, 0x25)
+//   in the exe on disk = 0x00CC1638, matching FFNx's name for it.
+// ---------------------------------------------------------------------------
+constexpr uint32_t GAME_MODE            = 0x00CC0D89; // modules_global_object + 0x01
+constexpr uint8_t  GAME_MODE_FIELD      = 0;          // live-observed field-play value
+                                                      // (NOT FFNx's enum; see above)
+constexpr uint32_t FIELD_UC_LOCK        = 0x00CC0DBA; // modules_global_object + 0x32
+constexpr uint32_t FIELD_BGMOVIE_FLAG   = 0x00CC0DC2; // modules_global_object + 0x3A
+constexpr uint32_t FIELD_MOVIE_PLAYING  = 0x00CC1638; // word_CC1638 (FFNx name)
+
+// field_event_data struct layout (FFNx ff7.h).
+constexpr uint32_t FIELD_EVENT_DATA_STRIDE = 0x88; // sizeof(field_event_data)
+constexpr uint32_t FIELD_EVENT_MODEL_POS   = 0x0C; // vector3<int32> model_pos offset
+
+// Digested-input direction bits (current_key_input_status). Confirmed live
+// 2026-07-09: all four values observed individually during the Phase A walk.
+constexpr uint32_t KEY_DIR_UP    = 0x1000;
+constexpr uint32_t KEY_DIR_RIGHT = 0x2000;
+constexpr uint32_t KEY_DIR_DOWN  = 0x4000;
+constexpr uint32_t KEY_DIR_LEFT  = 0x8000;
+constexpr uint32_t KEY_DIR_ANY   = KEY_DIR_UP | KEY_DIR_RIGHT | KEY_DIR_DOWN | KEY_DIR_LEFT;
+
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different
 // code paths. We patch those call sites to intercept world map dialog.

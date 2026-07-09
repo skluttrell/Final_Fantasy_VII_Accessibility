@@ -52,4 +52,31 @@ bool Install();
  */
 void Uninstall();
 
+/*
+ * LastDialogActivityTick: GetTickCount() timestamp of the most recent
+ * MESSAGE or ASK hook invocation.
+ *
+ * WHY THIS EXISTS:
+ *   The field script VM calls the MESSAGE/ASK opcode handlers EVERY FRAME
+ *   while a dialog window is open, so "hook fired within the last ~250ms"
+ *   is a reliable any-dialog-open signal. This is deliberately used instead
+ *   of the opcode_message_loop_code state byte, which never changes for some
+ *   windows (win=2 observed — see hooks.cpp state machine notes) and would
+ *   miss those dialogs entirely.
+ *
+ *   Consumed by proxy.cpp's WallBumpThread: while a dialog is up the player
+ *   may hold a direction (habit, or navigating an ASK choice) while their
+ *   character is intentionally frozen — without this gate that state is
+ *   indistinguishable from being blocked by a wall and would false-beep.
+ *
+ * THREAD SAFETY:
+ *   Returns a DWORD (4-byte aligned, atomic on x86) written from the game's
+ *   main thread and read from background polling threads. GetTickCount()
+ *   wraps every 49.7 days; callers must compare with unsigned subtraction
+ *   ("now - last < window"), which handles wrap correctly.
+ *
+ * Returns 0 if no dialog hook has fired yet this session.
+ */
+unsigned long LastDialogActivityTick();
+
 } // namespace Hooks

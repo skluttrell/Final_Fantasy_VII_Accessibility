@@ -74,6 +74,38 @@ MENU_CURSOR transitioning to 10 as a proxy) and reset last_quit_cursor to 0xFF
 at that moment so the default position is always announced.
 
 
+[NAV] Wall-slide tone (angled wall contact gives no feedback)
+--------------------------------------------------------------
+The v2.6 wall-bump tone only fires on a DEAD STOP (direction held, position
+frozen). Hitting a wall at an angle stays silent because FF7's walkmesh
+redirects the player's FULL velocity along the wall — measured 2026-07-09
+(ff7_wall_slide_verify.py): sliding displacement per poll was IDENTICAL to
+free walking (median 32765 units/50ms in both; ratio exactly 1.00). So no
+displacement-magnitude threshold can ever detect sliding — the engine gives
+away no speed.
+
+What WOULD work: compare the COMMANDED direction (current_key_input_status
+direction bits) against the ACTUAL motion direction (atan2 of per-poll
+displacement). Free movement: they agree. Sliding: they diverge strongly.
+Complication: input is camera-relative, world position is world-absolute,
+and every field has its own camera orientation — mapping input to expected
+world direction needs either the field camera matrix (field file section 2)
+or empirical per-field calibration (learn the input→motion mapping while
+moving freely, flag sustained divergence as sliding).
+
+Useful measured constants (same session):
+  - displacement per 50ms poll = movement_speed * 32 / 20Hz-tick, exactly
+    proportional (walk speed=1024 → 32765/poll, run=4096 → 131062/poll)
+  - sliding occasionally hard-stops for 1-2 polls (p10 displacement was 0
+    in the slide phase) — those moments already trigger the existing
+    dead-stop tone, which is why angled contact sometimes chirps.
+
+User decision 2026-07-09: wanted as a DISTINCT tone (higher/softer than the
+220 Hz dead-stop tone) so "fully blocked" and "scraping along a wall" are
+distinguishable by ear. Deferred until the direction-mismatch approach is
+designed.
+
+
 [CONFIG] Auto-create default config file if missing
 ----------------------------------------------------
 If the user places version.dll in the FF7 folder but forgets ffvii_accessibility.cfg,

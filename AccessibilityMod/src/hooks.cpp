@@ -242,6 +242,15 @@ static WindowState s_window[8];
 // Whether our hooks are currently installed.
 static bool s_installed = false;
 
+// GetTickCount() timestamp of the most recent MESSAGE/ASK hook invocation.
+// The field VM calls these handlers every frame while a dialog window is
+// open, so recency of this tick is a reliable "some dialog is open" signal
+// (see Hooks::LastDialogActivityTick in hooks.h for why the state-byte array
+// cannot be used instead). DWORD write is atomic on x86 (4-byte aligned);
+// volatile stops the compiler caching it across the two threads involved
+// (game main thread writes, WallBumpThread reads).
+static volatile DWORD s_last_dialog_tick = 0;
+
 // ---------------------------------------------------------------------------
 // is_readable_ptr: Return true if ptr is a valid, readable memory address.
 //
@@ -336,6 +345,11 @@ static bool is_valid_dialog_rawptr(const char* raw_text)
 // ---------------------------------------------------------------------------
 static int __cdecl hook_message()
 {
+    // Stamp dialog activity FIRST, unconditionally — even the OOB-window and
+    // config-disabled paths mean a dialog opcode is executing this frame, and
+    // WallBumpThread must stay silent for all of them.
+    s_last_dialog_tick = GetTickCount();
+
     // Log on the first call ever — confirms the hook is reached and active.
     static bool s_first_call_logged = false;
     if (!s_first_call_logged) {
@@ -525,6 +539,10 @@ static int __cdecl hook_message()
 // ---------------------------------------------------------------------------
 static int __cdecl hook_ask(int unk)
 {
+    // Stamp dialog activity (same rationale as hook_message): an ASK choice
+    // window is open this frame, so wall-bump tones must be suppressed.
+    s_last_dialog_tick = GetTickCount();
+
     // window_id is at ASK parameter index 1. Source: FFNx voice.cpp line 462.
     const uint8_t window_id = FF7Addr::get_opcode_param_byte(1);
     // dialog_id is at ASK parameter index 2. Source: FFNx voice.cpp line 463.
@@ -668,6 +686,13 @@ void Uninstall()
     }
 
     s_installed = false;
+}
+
+// See hooks.h for full rationale. Reading a volatile DWORD is atomic on x86;
+// 0 means no dialog opcode has executed yet this session.
+unsigned long LastDialogActivityTick()
+{
+    return s_last_dialog_tick;
 }
 
 } // namespace Hooks

@@ -138,6 +138,7 @@ static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
 static HANDLE g_battle_thread     = nullptr;
+static HANDLE g_wallbump_thread   = nullptr;
 
 // ---------------------------------------------------------------------------
 // Sound sub-menu volume cache.
@@ -1009,6 +1010,258 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
+// Wall-bump tone polling thread.
+//
+// Vanilla FF7 has no footstep sounds, so a blind player gets zero audio
+// feedback about whether the character is actually moving. This thread plays
+// a short low tone whenever the player is PUSHING AGAINST A WALL: a movement
+// direction is held but the character's world position is not changing.
+//
+// THE SIGNAL (verified live by ff7_wall_nav_verify.py, 2026-07-09):
+//   - current_key_input_status (0xCC0DF0) carries the digested directional
+//     input (0xF000 mask) the field engine consumes each frame.
+//   - The player model's world position is field_event_data array element
+//     [FIELD_PLAYER_MODEL_ID], model_pos at +0x0C (3 consecutive int32).
+//   - Predicate "direction held AND position unchanged for 3 consecutive
+//     50ms polls" fired 98.4% of samples while pushing a wall, 0.0% while
+//     walking freely, and 0.0% while idle. Walking moves the position every
+//     engine frame (33ms at 30fps, faster under FFNx's 60fps interpolation),
+//     so at a 50ms poll interval free movement always changes the position
+//     between polls; three consecutive frozen polls (150ms) cannot happen
+//     while actually moving.
+//
+// FALSE-POSITIVE GATES (states where direction-held + frozen-position does
+// NOT mean "blocked by wall"; the first three were added after 2026-07-09
+// live testing found false tones in battles, FMVs, and scripted scenes):
+//   - GAME_MODE != 0: the field module is not the active engine module.
+//     Live-observed values (do NOT trust FFNx's enum here — see the
+//     GAME_MODE note in ff7_addresses.h): 0 = field play, 2 = battle,
+//     9 = menu. Battle is the critical case: entering a random battle
+//     while holding a direction freezes the field module with that
+//     direction stuck in current_key_input_status and the position frozen
+//     — without this gate the tone plays through the entire battle.
+//   - FIELD_UC_LOCK != 0: a field script locked player control (opcode UC)
+//     for a scripted scene; input is ignored so a frozen position is not
+//     a wall. Address derived from the PSX decomp's exact struct match —
+//     see ff7_addresses.h FIELD_UC_LOCK provenance note.
+//   - FIELD_MOVIE_PLAYING && !BGMOVIE: a full-screen movie (FMV) is
+//     playing. Background movies (BGMOVIE set — e.g. scenery outside a
+//     train window) leave the player walkable and stay tone-enabled.
+//   - FIELD_ID == 0: title screen / world map. (NOT sufficient for battle,
+//     despite earlier belief — live-tested: it keeps its field value while
+//     a battle runs on top. Kept as defense in depth.)
+//   - MENU_OPEN != 0: main menu overlay open; arrow keys navigate the menu
+//     while the character is frozen underneath it.
+//   - Dialog/choice recently active (Hooks::LastDialogActivityTick within
+//     250ms): the MESSAGE/ASK hooks run every frame while any dialog window
+//     is open. Holding a direction there (habit, or navigating an ASK
+//     choice) must not beep. 250ms = several frames of slack past the last
+//     hook call, so the gate also covers the frame gap between dialog pages.
+//
+// THE TONE:
+//   Beep(220 Hz, 60 ms) — kernel32's synthesized tone through the default
+//   audio device. Chosen over TTS because a tone is instant, language-free,
+//   and doesn't interrupt any speech in progress. 220 Hz sits well below
+//   both the cue beeps used by investigation scripts (800/1400 Hz) and
+//   typical screen reader speech fundamentals, so it reads as a distinct
+//   "thud". Beep() blocks this thread for the 60ms duration — acceptable,
+//   since the next poll simply happens a frame later. Repeats every 300ms
+//   for as long as contact continues (continuous-but-not-frantic feedback).
+//
+// MEMORY SAFETY:
+//   Every poll re-reads the array pointer (the engine owns it; on this
+//   build it points into static BSS at 0xCC1670, but a field could in
+//   principle relocate it) and bounds-checks the player index against
+//   FIELD_N_MODELS. The computed element range is then verified readable
+//   via VirtualQuery before dereferencing — during field transitions the
+//   array contents are torn down and rebuilt, and a polling thread can
+//   catch any intermediate state.
+//
+// Gated by Config::Get().wall_bump_tone.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
+{
+    // 50ms polling: fast enough that a wall bump is reported within ~200ms
+    // (3 polls + tone start), slow enough to be free (5 memory reads/poll).
+    constexpr DWORD    kPollMs        = 50;
+    // 3 consecutive frozen-while-pushing polls (150ms) before the first tone.
+    // 1 would false-fire on the single frame between direction-press and the
+    // engine's first position update; 3 never fired during free walking in
+    // live verification.
+    constexpr uint32_t kConsecBlocked = 3;
+    constexpr DWORD    kBeepPeriodMs  = 300; // repeat rate while contact holds
+    constexpr DWORD    kBeepFreqHz    = 220; // low "thud", distinct from speech
+    constexpr DWORD    kBeepDurMs     = 60;
+    constexpr DWORD    kDialogQuietMs = 250; // dialog-hook recency window
+
+    int32_t  last_x = 0, last_y = 0, last_z = 0;
+    bool     have_last      = false;  // last_* hold a real previous sample
+    uint32_t blocked_streak = 0;      // consecutive dir-held+frozen polls
+    DWORD    last_beep_tick = 0;
+    // Packed snapshot of the gate values from the previous poll, logged on
+    // change (debug_log only). Live testing is the only way to validate gate
+    // behavior across battles/FMVs/cutscenes, and this trail lets a bug
+    // report's log show exactly which gate opened or failed to close.
+    uint32_t last_gates     = 0xFFFFFFFF;
+
+    for (;;) {
+        // Sleep kPollMs, or wake immediately if Proxy::Shutdown() signals.
+        if (WaitForSingleObject(g_cursor_stop_event, kPollMs) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().wall_bump_tone) {
+            have_last = false;
+            blocked_streak = 0;
+            continue;
+        }
+
+        // Gate 1: must be on a named field map. FIELD_ID is 0 on the title
+        // screen and world map. NOTE (live-tested 2026-07-09): FIELD_ID does
+        // NOT reliably zero during battle — the field stays loaded behind the
+        // battle module — so this gate alone is insufficient; see Gate 2.
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+
+        // Gate 2: the FIELD module must be the ACTIVE engine module.
+        // When a random battle starts, the field module freezes with
+        // current_key_input_status stuck at the direction the player was
+        // holding and the position frozen — the wall predicate would stay
+        // true for the entire battle (observed live: continuous tone until
+        // the victory screen). Live-observed values: 0 = field play,
+        // 2 = battle, 9 = menu (FFNx's enum does not apply to this byte).
+        const uint8_t game_mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+
+        // Gate 3: main menu overlay closed. Arrow keys navigate the menu
+        // while the character stands frozen underneath — not a wall.
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+
+        // Gate 4: player control not locked by a field script (opcode UC).
+        // Scripted scenes freeze the player while ignoring input; holding a
+        // direction there is not a wall. Offset provenance: PSX decomp
+        // struct match — see FIELD_UC_LOCK in ff7_addresses.h.
+        const uint8_t uc_lock =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::FIELD_UC_LOCK);
+
+        // Gate 5: no full-screen movie playing. FFNx's own test: movie word
+        // set AND BGMOVIE flag clear. A BACKGROUND movie (BGMOVIE set, e.g.
+        // scenery scrolling past a train window) leaves the player walkable,
+        // so wall tones stay enabled for those.
+        const uint16_t movie_word = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::FIELD_MOVIE_PLAYING);
+        const uint8_t bgmovie =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::FIELD_BGMOVIE_FLAG);
+        const bool movie_playing = (movie_word != 0) && (bgmovie == 0);
+
+        // Log gate transitions (debug_log builds only — Log::Write is a
+        // no-op otherwise). One line per change, never per poll.
+        const uint32_t gates =
+            (static_cast<uint32_t>(game_mode) << 24) |
+            (static_cast<uint32_t>(uc_lock)   << 16) |
+            (static_cast<uint32_t>(menu_open) <<  8) |
+            (movie_playing ? 2u : 0u) |
+            (field_id != 0 ? 1u : 0u);
+        if (gates != last_gates) {
+            last_gates = gates;
+            char dbg[128];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] WALL gates: mode=%u uc_lock=%u menu=%u movie=%u field=%d",
+                game_mode, uc_lock, menu_open,
+                movie_playing ? 1 : 0, static_cast<int>(field_id));
+            Log::Write(dbg);
+        }
+
+        if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
+            menu_open != 0 || uc_lock != 0 || movie_playing) {
+            have_last = false;
+            blocked_streak = 0;
+            continue;
+        }
+
+        // Gate 6: no dialog/choice window active within the last 250ms.
+        // Unsigned subtraction handles GetTickCount()'s 49.7-day wrap.
+        const DWORD now = GetTickCount();
+        if (now - Hooks::LastDialogActivityTick() < kDialogQuietMs) {
+            have_last = false;
+            blocked_streak = 0;
+            continue;
+        }
+
+        // Read the digested input; any of the four direction bits counts.
+        const uint32_t keys = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::FIELD_KEY_INPUT_STATUS);
+        const bool dir_held = (keys & FF7Addr::KEY_DIR_ANY) != 0;
+
+        // Locate the player's field_event_data element for this poll.
+        const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::FIELD_EVENT_DATA_PTR);
+        const uint16_t pmid = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::FIELD_PLAYER_MODEL_ID);
+        const uint16_t nmod = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::FIELD_N_MODELS);
+        // 0x401000 = below any mapped game data; pmid sanity-capped at 0x20
+        // (FF7 fields never approach 32 models) in case nmod itself is torn.
+        if (arr < 0x401000 || pmid >= nmod || pmid > 0x20) {
+            have_last = false;
+            blocked_streak = 0;
+            continue;
+        }
+        const uint8_t* elem = reinterpret_cast<const uint8_t*>(
+            arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+
+        // Verify the whole element is committed readable memory before
+        // dereferencing — a field transition can tear the array down between
+        // our pointer read and here. Check both ends: the 0x88-byte struct
+        // can straddle a page boundary.
+        MEMORY_BASIC_INFORMATION mbi = {};
+        const uint8_t* elem_end = elem + FF7Addr::FIELD_EVENT_DATA_STRIDE - 1;
+        bool readable = true;
+        for (const uint8_t* probe : { elem, elem_end }) {
+            if (VirtualQuery(probe, &mbi, sizeof(mbi)) == 0 ||
+                mbi.State != MEM_COMMIT ||
+                (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+                readable = false;
+                break;
+            }
+        }
+        if (!readable) {
+            have_last = false;
+            blocked_streak = 0;
+            continue;
+        }
+
+        // model_pos: 3 consecutive int32 (x, y, z) at +0x0C.
+        const int32_t* pos = reinterpret_cast<const int32_t*>(
+            elem + FF7Addr::FIELD_EVENT_MODEL_POS);
+        const int32_t x = pos[0], y = pos[1], z = pos[2];
+
+        // "Moved" on the very first valid sample: with no previous position
+        // to compare, assume motion so the streak stays at zero rather than
+        // beeping off one stale coordinate.
+        const bool moved = !have_last || x != last_x || y != last_y || z != last_z;
+        last_x = x; last_y = y; last_z = z;
+        have_last = true;
+
+        if (dir_held && !moved) {
+            blocked_streak++;
+        } else {
+            blocked_streak = 0;
+        }
+
+        if (blocked_streak >= kConsecBlocked &&
+            now - last_beep_tick >= kBeepPeriodMs) {
+            last_beep_tick = now;
+            // One-time log per contact episode would require more state; log
+            // nothing here — at 3+ beeps/second even debug logging would spam.
+            Beep(kBeepFreqHz, kBeepDurMs);
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Background initialization thread.
 //
 // This thread handles Config/TTS/Hook init outside the loader lock.
@@ -1100,7 +1353,19 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start battle action thread.");
         }
 
-        if (!g_title_thread && !g_menu_thread && !g_config_thread && !g_battle_thread) {
+        // Wall-bump navigation tone. Addresses resolved statically via FFNx's
+        // discovery chains (ff7_wall_nav_static.py) and the detection signal
+        // verified live (ff7_wall_nav_verify.py), both 2026-07-09 — see the
+        // WallBumpThread header comment and ff7_addresses.h SECTION 1d.
+        g_wallbump_thread = CreateThread(nullptr, 0, WallBumpThread, nullptr, 0, nullptr);
+        if (g_wallbump_thread) {
+            Log::Write("[FF7Access] Wall-bump tone polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start wall-bump thread.");
+        }
+
+        if (!g_title_thread && !g_menu_thread && !g_config_thread &&
+            !g_battle_thread && !g_wallbump_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -1232,6 +1497,11 @@ void Shutdown()
         WaitForSingleObject(g_battle_thread, 500);
         CloseHandle(g_battle_thread);
         g_battle_thread = nullptr;
+    }
+    if (g_wallbump_thread) {
+        WaitForSingleObject(g_wallbump_thread, 500);
+        CloseHandle(g_wallbump_thread);
+        g_wallbump_thread = nullptr;
     }
 
     if (g_cursor_stop_event) {

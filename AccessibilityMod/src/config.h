@@ -38,6 +38,15 @@ struct Settings {
     // Default: true.
     bool speak_menus = true;
 
+    // wall_bump_tone: If true, a short low tone plays while the player pushes
+    // against a wall or obstacle on a field map (direction held but the
+    // character is not moving). Vanilla FF7 has no footstep sounds, so without
+    // this there is no audio cue distinguishing "walking" from "stuck on a
+    // wall" — a blind player can walk against a wall indefinitely without
+    // knowing. The tone repeats every ~300ms for as long as contact continues.
+    // Default: true.
+    bool wall_bump_tone = true;
+
     // interrupt: If true, new TTS output interrupts currently-playing speech.
     // In menus and dialog, this gives faster, more responsive feedback.
     // Set to false if your screen reader handles queuing better than interruption.
