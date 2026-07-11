@@ -449,24 +449,90 @@ constexpr uint32_t DISPLAY_BATTLE_ACTION_TEXT = 0x42782A;
 //   the 0xE8 byte at code offset +5 is the low byte of the address 0x00DC38E8
 //   embedded inside MOV [0x00DC38E8],1 — not a CALL opcode.
 //
-// KERNEL2_REQUEST_STRUCT at 0x00DC38E8 (sub_6D71FA writes here):
-//   +0x00  DWORD  request_pending  (1 = lookup queued, 0 = idle)
-//   +0x04  DWORD  section          (8 = battle action / ability names)
-//   +0x08  DWORD  idx              (0-based index into section 8)
+// BATTLE_ACTOR_DATA struct at 0x00DC38E0 (v2.7, 2026-07-11).
+//   This is FFNx ff7.h's `struct battle_actor_data` — the "kernel2 request
+//   struct" of the earlier notes is actually its middle fields:
+//     +0x08  DWORD  formation_entry (0xDC38E8) — pending flag: 1 = flash
+//            message queued, cleared by the consumer within a frame or two
+//            (a 50ms poll usually reads 0; do NOT gate on catching the 1)
+//     +0x0C  DWORD  command_index   (0xDC38EC) — commandID of the action the
+//            CURRENT FLASH MESSAGE describes (2=Magic, 4=Item, 0x14=Limit,
+//            0x20=enemy attack, ...)
+//     +0x10  DWORD  action_index    (0xDC38F0) — ability index within that
+//            command's namespace (magic id, item id, formation attack slot)
+//   Written at flash-message display time by FFNx's replacement of
+//   display_battle_action_text_sub_6D71FA (FFNx battle.cpp) — or by the
+//   original sub_6D71FA without FFNx. Same addresses either way.
+//   LIVE-VERIFIED 2026-07-11: magic cast wrote (2, 30) = 'Ice'; Potion wrote
+//   (4, 0) = 'Potion'; enemy attacks wrote (0x20, 0/3) = 'Machine Gun' /
+//   'Tentacle'. The struct LAGS the actor-turn start by ~1-2s (it syncs when
+//   the flash text appears) and is NOT rewritten when the same flash content
+//   repeats — announce logic must tolerate both (see BattleActionThread).
 //
-// TODO: find the actual kernel2 section pointer array to implement direct
-// lookup.  Lead: 0x009ADF0C and sub_6892E5 (0x006892E5) referenced by
-// display_battle_action_text — see ff7_kernel2_scan.py investigation.
+// ACTION NAME RESOLUTION (v2.7) — how (command_index, action_index) becomes
+// text, replicated from dispatcher sub_6D1CC0 + get_kernel_text (=sub_41963C,
+// confirmed via FFNx chain: relative CALL at +0xF7 -> kernel2_get_text
+// 0x419457) by static disassembly (kernel2_consumer_disasm 2026-07-11):
+//
+//   branch = byte[0x6D70A8 + command_index]   (static .text table, cmds 0-0x20)
+//     branch 0/1: magic-names section, entry action_index      (cmd 0x02 Magic)
+//     branch 2:   action_index<16 ? summon-attack-names section
+//                 : magic-names section                        (cmd 0x03 Summon)
+//     branch 3/5: action_index<128 ? item-names section
+//                 : <256 ? weapon-names section [idx-128] : none (cmd 0x04 Item)
+//     branch 4:   game-built buffer at 0xDC3640                (cmd 0x07)
+//     branch 6:   magic-names section, entry action_index+72   (cmd 0x0D E.Skill)
+//     branch 7:   magic-names section, entry action_index+128;
+//                 action_index==0x7F means '????' (unnamed)    (cmd 0x14 Limit)
+//     branch 8:   ENEMY_ATTACK_NAME_TABLE + idx*0x20           (cmd 0x20 enemy)
+//     branch 9:   no flash text exists (Attack/Steal/...) — keep generic label
+//   The +56/+72/+128 biases and the section->branch mapping come from the
+//   exe's own static tables (0x7B74A0 bias, 0x7B74A8 file, 0x7B7488/8A/98
+//   item-namespace remap), read 2026-07-11 from the exe image.
+//
+//   Kernel-text section STORAGE: sections live in ONE heap block (address
+//   varies per run), each section = u16 entry-offset table followed by
+//   0xFF-terminated FF7-encoded strings; entry N is at base + u16[base+N*2],
+//   and u16[base+0] equals the table's byte size (offset of first string).
+//   The static scratch copy at 0x9A13C8 (offset table 0x9A7FC8) that
+//   get_kernel_text itself uses is EMPTY during battle (menu-module only),
+//   and the documented result pointer 0xDC208C is never written under FFNx
+//   (FFNx replaces the whole consumer path) — neither can be used.
+//   The DLL therefore locates each needed section ONCE by scanning its own
+//   process memory for the section's known first entries (signature), then
+//   validating with the u16[base]==distance rule:
+//     magic-names:  'Cure'|'Cure2'         (entries 0..55 spells,
+//                                            56..71 summon names,
+//                                            72..95 enemy skills,
+//                                            128+   limit breaks)
+//     item-names:   'Potion'|'Hi-Potion'   (entries 0..127)
+//     weapon-names: 'Buster Sword'          (thrown weapons, idx 128..255)
+//   ENGLISH-ONLY: signatures assume the English kernel2; on other languages
+//   the scan fails cleanly and v2.5 generic labels are used throughout.
 // ---------------------------------------------------------------------------
 
 constexpr uint32_t G_ACTIVE_ACTOR_ID          = 0x00BE1170;
 constexpr uint32_t G_BATTLE_MODEL_STATE        = 0x00BE1178;
 constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
-// GET_KERNEL_TEXT removed — 0x016E4E3C was a scanner false-positive; calling
-// 0x6D71FA (sub_6D71FA) is wrong because it stores params but returns void.
-// See KERNEL2_REQUEST_STRUCT below for the request-queue mechanism.
-constexpr uint32_t KERNEL2_REQUEST_BASE        = 0x00DC38E8; // struct: pending/section/idx
-constexpr uint32_t KERNEL2_CANDIDATE_PTR       = 0x009ADF0C; // ptr to kernel2 data (TBD)
+// GET_KERNEL_TEXT (the real one) is sub_41963C — but calling it is useless in
+// battle: it reads the menu-module scratch tables, which are empty then.
+// v2.7 reads the underlying heap sections directly instead (see above).
+constexpr uint32_t BATTLE_ACTOR_DATA           = 0x00DC38E0; // FFNx battle_actor_data
+constexpr uint32_t BATTLE_ACTOR_PENDING        = 0x00DC38E8; // +0x08 formation_entry
+constexpr uint32_t BATTLE_ACTOR_CMD_INDEX      = 0x00DC38EC; // +0x0C command_index
+constexpr uint32_t BATTLE_ACTOR_ACTION_INDEX   = 0x00DC38F0; // +0x10 action_index
+
+// Battle action-name dispatch table (static .text, byte per commandID 0-0x20).
+// byte[DISPATCH_BYTE_TABLE + cmd] = branch index; see resolution notes above.
+constexpr uint32_t BATTLE_DISPATCH_BYTE_TABLE  = 0x006D70A8;
+constexpr uint32_t BATTLE_DISPATCH_MAX_CMD     = 0x20;   // table covers 0x00-0x20
+
+// Enemy attack names for the CURRENT battle formation, loaded from scene.bin
+// at battle start. Fixed-stride table: entry = base + action_index * 0x20,
+// FF7-encoded, 0xFF-terminated/padded. Live-verified 2026-07-05/06/11
+// ('Machine Gun'/'Tonfa'/'Bite'/'Tentacle').
+constexpr uint32_t ENEMY_ATTACK_NAME_TABLE     = 0x009A9484;
+constexpr uint32_t ENEMY_ATTACK_NAME_STRIDE    = 0x20;
 
 // Struct layout constants for the battle model state arrays.
 constexpr uint32_t BATTLE_MODEL_STATE_STRIDE  = 0x1AEC; // bytes per actor, large array

@@ -75,6 +75,7 @@
 #include "config.h"
 #include "log.h"
 #include <string>
+#include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -828,63 +829,261 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
-// Battle action polling thread.
+// Battle action polling thread (v2.7: exact action names).
 //
-// Polls g_active_actor_id and the battle model state arrays to detect and
-// announce battle actions via TTS.
+// Polls g_active_actor_id and the battle model state arrays to detect battle
+// actions, then resolves the EXACT flash-message text ("Ice", "Potion",
+// "Machine Gun", "Braver") by replicating the game's own dispatcher — see the
+// v2.7 resolution notes in ff7_addresses.h (SECTION 1c) for the full data-flow
+// derivation (kernel2_consumer_disasm / action_name_final_verify, 2026-07-11).
 //
 // WHY POLLING (not a function hook):
-//   FFNx trampolines both display_battle_action_text_42782A (0x42782A) and
-//   its inner wrapper sub_6D71FA (0x6D71FA) by overwriting their first 5
-//   bytes with a relative JMP to FFNx's own handlers.  Hooking at those
-//   entry points would intercept FFNx, not the original game, and would
-//   require trampoline setup to preserve FFNx's behaviour.  Polling the
-//   model state arrays is simpler and equally reliable: it reads the same
-//   data the hook would read, with no patching required.
+//   FFNx trampolines display_battle_action_text_42782A (0x42782A) and
+//   sub_6D71FA (0x6D71FA).  Hooking those entry points would intercept FFNx,
+//   not the game.  Polling reads the same data with no patching.
 //
 // ACTOR VALIDITY:
 //   Party slots 0–2; enemy slots 4–9.  Slot 3 never appears.
-//   g_active_actor_id initialises to 0 (Cloud's party slot) at process start
-//   and is never reset between battles.  The commandID==0 check is the only
-//   reliable "not in battle" signal: the large model state array is zero-
-//   initialised at startup and retains the last commandID after a battle ends,
-//   so commandID==0 only fires (a) at process start and (b) when the model
-//   state is genuinely idle.
+//   g_active_actor_id initialises to 0 at process start and is never reset
+//   between battles; commandID==0 is the only reliable "not in battle" gate.
+//   The first action of a new battle is announced because actor_id changes;
+//   a new battle whose first actor equals the previous battle's last actor
+//   misses that one action (accepted).
 //
-//   From empirical testing across 5 battles: commandID stays non-zero after
-//   a battle ends (the model structs are not cleared between battles).
-//   Between-battle silence relies on actor_id not changing — it stays at the
-//   last-acting slot until the next battle's first action updates it.  This
-//   means the first action of a new battle (which changes actor_id) is always
-//   announced.  The edge case where a new battle's first actor matches the
-//   previous battle's last actor is accepted; it will miss that one action.
-//
-// ACTION NAME LOOKUP:
-//   get_kernel_text(8, actionIdx, 8) returns a pointer to an FF7-encoded
-//   string from kernel2 section 8 (action/ability names).  Kernel2 is loaded
-//   at game start and never modified, so calling this from a background thread
-//   is safe — it is effectively a read-only table lookup.
-//
-// CALLING CONVENTION:
-//   Declared __cdecl: sub_6D71FA (which calls get_kernel_text) ends with a
-//   plain RET (not RETN n), meaning it is __cdecl and does not clean the
-//   stack itself.  get_kernel_text is therefore also __cdecl.
+// ANNOUNCE TIMING (why announcements are two-phase):
+//   The turn STARTS when g_active_actor_id changes, but the flash-message
+//   struct (battle_actor_data 0xDC38E0) is only written ~1–2s later, when the
+//   flash text actually appears on screen.  Live-verified 2026-07-11:
+//   reading it at turn start yields the PREVIOUS action's values.  Also, the
+//   struct is NOT rewritten when the new flash content equals the old (e.g.
+//   the same enemy attack twice in a row), and never written at all for
+//   commands with no flash text (plain Attack).  Therefore:
+//     - commands with no flash text (dispatch branch 9) announce a generic
+//       label immediately at turn start;
+//     - name-bearing commands wait for the struct to CHANGE (flash appeared,
+//       resolve new values) or for a 2.5s timeout: on timeout, if the struct's
+//       command matches the current action's command the current values are
+//       resolved (repeated-flash case — values are still correct); otherwise
+//       fall back to the generic label.  A stale same-command struct from a
+//       DIFFERENT action can theoretically misname one enemy attack; accepted
+//       and documented in the research notes.
 //
 // Gated by Config::Get().speak_battle.
 // ---------------------------------------------------------------------------
 
+// Kernel2 text section base pointers, located at runtime.  The decompressed
+// kernel2 text lives in ONE heap allocation whose address changes per run;
+// each section is a u16 entry-offset table followed by 0xFF-terminated
+// FF7-encoded strings (entry N at base + u16[base + N*2]; u16[base] equals
+// the offset of entry 0, i.e. the table's own byte size).
+struct Kernel2Sections {
+    const uint8_t* magic;    // entries: 0-55 spells, 56-71 summons,
+                             //          72-95 enemy skills, 128+ limit breaks
+    const uint8_t* item;     // entries 0-127 item names
+    const uint8_t* weapon;   // entries 0-127 weapon names (thrown weapons)
+};
+static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr };
+
+// FF7-encode an ASCII signature (byte = char - 0x20; '|' stands for the 0xFF
+// string terminator).  Returns encoded length.
+static size_t EncodeSignature(const char* ascii, uint8_t* out, size_t cap)
+{
+    size_t n = 0;
+    for (; *ascii && n < cap; ++ascii)
+        out[n++] = (*ascii == '|') ? 0xFF : static_cast<uint8_t>(*ascii - 0x20);
+    return n;
+}
+
+// Find a section base inside one memory region: locate the signature (the
+// section's first strings), then walk BACKWARD looking for the offset-table
+// start: the u16 at the base equals the distance back to the first string.
+// This rule self-validates — a false positive requires u16[cand] to equal its
+// own distance to an accidental signature match, which live scans never hit.
+static const uint8_t* FindSectionBase(const uint8_t* region, size_t size,
+                                      const uint8_t* sig, size_t sig_len)
+{
+    if (size < sig_len)
+        return nullptr;
+    const uint8_t* end = region + size - sig_len;
+    for (const uint8_t* p = region; p <= end; ++p) {
+        p = static_cast<const uint8_t*>(memchr(p, sig[0], end - p + 1));
+        if (!p)
+            return nullptr;
+        if (memcmp(p, sig, sig_len) != 0)
+            continue;
+        const size_t max_back = static_cast<size_t>(p - region);
+        for (uint32_t back = 2; back <= 0x800 && back <= max_back; back += 2) {
+            const uint8_t* cand = p - back;
+            uint16_t first_off;
+            memcpy(&first_off, cand, sizeof(first_off));
+            if (first_off == back)
+                return cand;
+        }
+    }
+    return nullptr;
+}
+
+// Scan this process's committed private read-write memory for the kernel2
+// text sections.  Runs from our own polling thread INSIDE the game process,
+// so all reads are direct pointer reads.  Called lazily on the first battle
+// action and retried (rate-limited) while any section is missing — kernel2
+// is decompressed during startup and stays resident for the process lifetime,
+// so one successful scan is permanent.
+//
+// ENGLISH-ONLY: the signatures are the English section heads.  On a non-
+// English kernel2 the scan finds nothing and every action falls back to the
+// v2.5 generic labels — degraded, never wrong.
+static void ScanKernel2Sections()
+{
+    uint8_t sig_magic[24], sig_item[24], sig_weapon[24];
+    const size_t len_magic  = EncodeSignature("Cure|Cure2|",        sig_magic,  sizeof(sig_magic));
+    const size_t len_item   = EncodeSignature("Potion|Hi-Potion|",  sig_item,   sizeof(sig_item));
+    const size_t len_weapon = EncodeSignature("Buster Sword|",      sig_weapon, sizeof(sig_weapon));
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    uintptr_t addr = 0x00400000;
+    while (addr < 0x7FFF0000 && (!g_k2.magic || !g_k2.item || !g_k2.weapon)) {
+        if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
+            break;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        // Only committed, private (heap — excludes the exe/DLL images, whose
+        // .data contains battle-menu inventory copies that would false-match),
+        // plain read-write pages.  Guard pages (stack tips) are excluded by
+        // the exact protection match.
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
+            mbi.Protect == PAGE_READWRITE) {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(base);
+            if (!g_k2.magic)  g_k2.magic  = FindSectionBase(p, mbi.RegionSize, sig_magic,  len_magic);
+            if (!g_k2.item)   g_k2.item   = FindSectionBase(p, mbi.RegionSize, sig_item,   len_item);
+            if (!g_k2.weapon) g_k2.weapon = FindSectionBase(p, mbi.RegionSize, sig_weapon, len_weapon);
+        }
+        addr = base + mbi.RegionSize;
+    }
+
+    char dbg[160];
+    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+        "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p",
+        g_k2.magic, g_k2.item, g_k2.weapon);
+    Log::Write(dbg);
+}
+
+// Decode entry `entry` of a kernel2 text section into `out`.
+// Returns false (leaving generic-label fallback to the caller) when the
+// section is missing, the entry is out of table bounds, or the text is
+// empty/blank — never returns a wrong or garbage name.
+static bool SectionEntryText(const uint8_t* base, uint32_t entry, std::wstring& out)
+{
+    if (!base || entry >= 0xE0)   // 0xE0 = the game's own entry-index guard
+        return false;
+    uint16_t tab_size;
+    memcpy(&tab_size, base, sizeof(tab_size));
+    if ((entry + 1) * 2 > tab_size)   // offset word must lie inside the table
+        return false;
+    uint16_t off;
+    memcpy(&off, base + entry * 2, sizeof(off));
+    // Sanity: strings live after the table; sections are a few KB at most.
+    if (off < tab_size || off > 0x8000)
+        return false;
+    const uint8_t* text = base + off;
+    // Limit break names begin with an F8+parameter colour code (2 bytes,
+    // e.g. F8 02 "Braver").  The dialog decoder treats 0xF8 as a single-byte
+    // button-icon token (correct for dialog), which would leave the colour
+    // parameter byte to decode as a stray character — skip both here.
+    if (text[0] == 0xF8)
+        text += 2;
+    if (text[0] == 0xFF)
+        return false;
+    out = FF7Text::Decode(reinterpret_cast<const char*>(text));
+    for (wchar_t c : out)
+        if (c != L' ')
+            return true;
+    return false;   // blank/whitespace-only entry (padding) — treat as no name
+}
+
+// Resolve (command_index, action_index) from the flash-message struct into the
+// exact display name, replicating dispatcher sub_6D1CC0's branch table.
+// Branch semantics derived by static disassembly and live-verified 2026-07-11
+// (Ice / Potion / Machine Gun / Tentacle).  Returns false for commands with
+// no flash text (branch 9) or any resolution failure.
+static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
+{
+    if (cmd > FF7Addr::BATTLE_DISPATCH_MAX_CMD)
+        return false;
+    const uint8_t branch = *reinterpret_cast<const uint8_t*>(
+        FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + cmd);
+    switch (branch) {
+    case 0:   // section 0 (unused cmd 0x00)
+    case 1:   // cmd 0x02 Magic: spell names are magic entries 0-55
+        return SectionEntryText(g_k2.magic, idx, out);
+    case 2:   // cmd 0x03 Summon.  The game uses the separate summon-attack-
+              // name file for idx<16, but its heap copy has no locatable
+              // signature; magic entries 56-71 hold the identical summon
+              // names ('Choco/Mog'…'Knights of Round', verified live), so
+              // use those.  idx>=16 falls through to the magic file as the
+              // game itself does.
+        if (idx < 16)
+            return SectionEntryText(g_k2.magic, idx + 56, out);
+        return SectionEntryText(g_k2.magic, idx, out);
+    case 3:   // cmd 0x04 Item
+    case 5:   // cmd 0x08 (item variant)
+        if (idx < 128)
+            return SectionEntryText(g_k2.item, idx, out);
+        if (idx < 256)   // thrown weapons share the item id space at 128+
+            return SectionEntryText(g_k2.weapon, idx - 128, out);
+        return false;    // armor/accessory ids never flash in battle
+    case 4: { // cmd 0x07: the game composes this name into a fixed buffer
+        const char* buf = reinterpret_cast<const char*>(0x00DC3640);
+        if (static_cast<uint8_t>(buf[0]) == 0xFF || buf[0] == 0)
+            return false;
+        out = FF7Text::Decode(buf);
+        return !out.empty();
+    }
+    case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'…)
+        return SectionEntryText(g_k2.magic, idx + 72, out);
+    case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'…)
+        if (idx == 0x7F)   // the game's '????' sentinel for unnamed limits
+            return false;
+        return SectionEntryText(g_k2.magic, idx + 128, out);
+    case 8: { // cmd 0x20 enemy attack: per-formation table from scene.bin
+        if (idx >= 64)     // formation attack slots are small indices (0-31)
+            return false;
+        const char* entry = reinterpret_cast<const char*>(
+            FF7Addr::ENEMY_ATTACK_NAME_TABLE + idx * FF7Addr::ENEMY_ATTACK_NAME_STRIDE);
+        if (static_cast<uint8_t>(entry[0]) == 0xFF)
+            return false;
+        out = FF7Text::Decode(entry);
+        for (wchar_t c : out)
+            if (c != L' ')
+                return true;
+        return false;
+    }
+    default:  // branch 9 (Attack/Steal/… — no flash text) or unknown
+        return false;
+    }
+}
+
+// Generic command labels — the v2.5 fallback, used when no exact name exists
+// (plain Attack, Steal) or resolution fails (non-English kernel2, timeouts).
+static const wchar_t* GenericActionLabel(uint8_t command_id, wchar_t* buf, size_t buf_count)
+{
+    switch (command_id) {
+    case 0x01: return L"Attack";
+    case 0x02: return L"Magic";
+    case 0x03: return L"Summon";
+    case 0x04: return L"Item";
+    case 0x06: return L"Steal";
+    case 0x0D: return L"Enemy Skill";
+    case 0x14: return L"Limit Break";
+    case 0x20: return L"attacks";
+    default:
+        _snwprintf_s(buf, buf_count, _TRUNCATE, L"command %u",
+                     static_cast<unsigned>(command_id));
+        return buf;
+    }
+}
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
-    // get_kernel_text is at FF7Addr::GET_KERNEL_TEXT (0x016E4E3C) per the
-    // in-memory scan of sub_6D71FA, but that address is NOT a valid callable
-    // target: it is FFNx's trampoline heap, which crashes when called from a
-    // foreign thread (exception 0xC0000005 at that address, confirmed in testing).
-    // FFNx patches more than 5 bytes at sub_6D71FA, so the CALL we saw at
-    // offset +5 belongs to FFNx's code, not original FF7 code.
-    // TODO: find the real get_kernel_text via ff7_data.h's chain:
-    //   get_kernel_text = get_relative_call(draw_status_limit_level_stats, 0x10C)
-    // Until then, commandID-based labels are used as the action description.
-
     // Default English party names indexed by character ID (0=Cloud … 8=Cid).
     // Used to name party slot 0 (the current leader) in TTS output.
     static const wchar_t* const kCharNames[] = {
@@ -894,7 +1093,36 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     static const uint32_t kCharNameCount =
         static_cast<uint32_t>(sizeof(kCharNames) / sizeof(kCharNames[0]));
 
-    uint8_t  last_actor_id = 0xFF;  // 0xFF = sentinel; announce on next valid actor change
+    uint8_t last_actor_id = 0xFF;   // 0xFF = sentinel; announce on next valid actor change
+
+    // Rate limiter for kernel2 section re-scans while sections are missing.
+    ULONGLONG next_scan_tick = 0;
+
+    // Pending flash-message wait state (see ANNOUNCE TIMING above).
+    bool      pending           = false;
+    uint8_t   pending_cmd       = 0;      // model-state commandID of the pending turn
+    uint32_t  pending_s0_cmd    = 0;      // struct snapshot at turn start
+    uint32_t  pending_s0_idx    = 0;
+    ULONGLONG pending_deadline  = 0;
+    wchar_t   pending_actor[32] = {};
+
+    // Announce helper: "[actor], [name-or-generic]".  Written as a lambda so
+    // both the immediate path and the deferred flash path share it.
+    const auto announce = [](const wchar_t* actor_label, uint8_t command_id,
+                             const std::wstring* exact_name) {
+        wchar_t generic_buf[32];
+        const wchar_t* action = exact_name ? exact_name->c_str()
+            : GenericActionLabel(command_id, generic_buf, _countof(generic_buf));
+        wchar_t msg[128] = {};
+        _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls, %ls", actor_label, action);
+        char dbg[160];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] BATTLE cmd=0x%02X %ls => %ls",
+            static_cast<unsigned>(command_id),
+            exact_name ? L"named" : L"generic", msg);
+        Log::Write(dbg);
+        TTS::Speak(msg, /*interrupt=*/true);
+    };
 
     for (;;) {
         // Sleep 50ms, or wake immediately if Proxy::Shutdown() signals the event.
@@ -903,27 +1131,25 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 
         if (!Config::Get().speak_battle) {
             last_actor_id = 0xFF;
+            pending = false;
             continue;
         }
 
         const uint8_t actor_id =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::G_ACTIVE_ACTOR_ID);
 
-        // Classify the actor.  Slots 0–2 = party, 4–9 = enemy.  Slot 3 is
-        // unused; any value outside 0–9 indicates the battle module is not
-        // active (values come from BSS zero-init or unrelated writes).
+        // Classify the actor.  Slots 0–2 = party, 4–9 = enemy.  Anything else
+        // means the battle module is not active.
         const bool is_party = (actor_id <= 2);
         const bool is_enemy = (actor_id >= 4 && actor_id <= 9);
         if (!is_party && !is_enemy) {
             last_actor_id = 0xFF;
+            pending = false;
             continue;
         }
 
-        // Read commandID from the large battle model state array.
-        // commandID == 0 means the slot is idle (not performing an action).
-        // This fires at process start (BSS = 0) and whenever the battle module
-        // clears the struct.  It is the primary gate against announcing during
-        // field gameplay and at game startup.
+        // commandID == 0 → slot idle (process start / model state cleared):
+        // the primary not-in-battle gate.
         const uint8_t command_id = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::G_BATTLE_MODEL_STATE
             + static_cast<uint32_t>(actor_id) * FF7Addr::BATTLE_MODEL_STATE_STRIDE
@@ -931,49 +1157,53 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 
         if (command_id == 0) {
             last_actor_id = 0xFF;
+            pending = false;
             continue;
         }
 
-        // A real battle action is in flight.  Announce only when the active actor
-        // slot changes — each new actor change signals a new turn beginning.
-        // Between battles, actor_id stays constant (never reset), so the
-        // triple stays the same and no announce fires until the next battle
-        // changes which slot is acting.
-        if (actor_id == last_actor_id) continue;
+        // Current flash-message struct values (see ff7_addresses.h §1c).
+        const uint32_t flash_cmd =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::BATTLE_ACTOR_CMD_INDEX);
+        const uint32_t flash_idx =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::BATTLE_ACTOR_ACTION_INDEX);
+
+        // ── Phase 2: a name-bearing action is waiting for its flash text ──
+        if (pending) {
+            const bool changed = (flash_cmd != pending_s0_cmd) || (flash_idx != pending_s0_idx);
+            const bool synced  = ((flash_cmd & 0xFF) == pending_cmd);
+            const bool timed_out = GetTickCount64() >= pending_deadline;
+            if ((changed && synced) || (timed_out && synced)) {
+                // Flash appeared (or the same flash content repeated, in which
+                // case the unchanged values already describe this action).
+                std::wstring name;
+                const bool ok = ResolveActionName(flash_cmd & 0xFF,
+                                                  flash_idx & 0xFFFF, name);
+                announce(pending_actor, pending_cmd, ok ? &name : nullptr);
+                pending = false;
+            } else if (timed_out) {
+                // No flash and the struct still describes something else:
+                // fall back to the generic label rather than risk a wrong name.
+                announce(pending_actor, pending_cmd, nullptr);
+                pending = false;
+            }
+            // While pending and not resolved, fall through only to detect a
+            // NEW actor turn below (which flushes the pending announce).
+        }
+
+        // ── Phase 1: new turn detection ──
+        if (actor_id == last_actor_id)
+            continue;
         last_actor_id = actor_id;
 
-        // Map commandID to a human-readable action label.
-        // These are the command menu IDs observed in battle testing (2026-07-05):
-        //   0x01 = Attack (party standard attack)
-        //   0x14 = Limit Break (party limit break)
-        //   0x20 = enemy AI attack (all enemy actions use this opcode)
-        // Other values (Magic=0x02, Item=0x04, Steal=0x06, etc.) are named
-        // generically until confirmed.  A kernel2 lookup via get_kernel_text
-        // would give exact ability names, but that requires finding the real
-        // get_kernel_text address first (see TODO above).
-        const wchar_t* action_label;
-        switch (command_id) {
-        case 0x01: action_label = L"Attack";     break;
-        case 0x02: action_label = L"Magic";      break;
-        case 0x04: action_label = L"Item";       break;
-        case 0x06: action_label = L"Steal";      break;
-        case 0x14: action_label = L"Limit Break"; break;
-        case 0x20: action_label = L"attacks";    break;
-        default: {
-            // Unknown command: report the numeric value so nothing is silenced.
-            static wchar_t unknown_buf[32];
-            _snwprintf_s(unknown_buf, _countof(unknown_buf), _TRUNCATE,
-                         L"command %u", static_cast<unsigned>(command_id));
-            action_label = unknown_buf;
-            break;
+        // A newer turn started while the previous one was still waiting for
+        // its flash: announce the old one generically now so it isn't lost.
+        if (pending) {
+            announce(pending_actor, pending_cmd, nullptr);
+            pending = false;
         }
-        }
-        const std::wstring action_name = action_label;
 
-        // Build the actor label.
-        // Slot 0 = party leader: read PARTY_LEADER for the character ID → name.
-        // Slots 1–2 = "ally 2" / "ally 3".
-        // Slots 4–9 = "enemy".
+        // Build the actor label.  Slot 0 = party leader (name from savemap);
+        // slots 1–2 = "ally N"; slots 4–9 = "enemy".
         wchar_t actor_label[32] = {};
         if (is_party) {
             if (actor_id == 0) {
@@ -981,8 +1211,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
                 const wchar_t* cname =
                     (leader_id < kCharNameCount) ? kCharNames[leader_id] : L"ally";
-                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE,
-                             L"%ls", cname);
+                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE, L"%ls", cname);
             } else {
                 _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE,
                              L"ally %u", static_cast<unsigned>(actor_id + 1u));
@@ -991,19 +1220,37 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             wcscpy_s(actor_label, L"enemy");
         }
 
-        // Compose: "[actor label], [action name]"
-        wchar_t announce[128] = {};
-        _snwprintf_s(announce, _countof(announce), _TRUNCATE,
-                     L"%ls, %ls", actor_label, action_name.c_str());
+        // Lazily locate the kernel2 sections on first use; retry at most
+        // once per minute while any is missing (non-English installs never
+        // succeed — the rate limit keeps the scans from wasting cycles).
+        if ((!g_k2.magic || !g_k2.item || !g_k2.weapon) &&
+            GetTickCount64() >= next_scan_tick) {
+            ScanKernel2Sections();
+            next_scan_tick = GetTickCount64() + 60000;
+        }
 
-        char dbg[128];
-        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] BATTLE actor=%u cmd=0x%02X => %ls",
-            static_cast<unsigned>(actor_id),
-            static_cast<unsigned>(command_id),
-            announce);
-        Log::Write(dbg);
-        TTS::Speak(announce, /*interrupt=*/true);
+        // Does this command have flash text at all?  Branch 9 commands
+        // (plain Attack, Steal, …) never write the flash struct — announce
+        // their generic label immediately with no wait.
+        uint8_t branch = 9;
+        if (command_id <= FF7Addr::BATTLE_DISPATCH_MAX_CMD)
+            branch = *reinterpret_cast<const uint8_t*>(
+                FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + command_id);
+        const bool name_possible = (branch != 9) &&
+            (g_k2.magic != nullptr || branch == 8 || branch == 4);
+
+        if (!name_possible) {
+            announce(actor_label, command_id, nullptr);
+            continue;
+        }
+
+        // Defer the announce until the flash text appears (Phase 2 above).
+        pending          = true;
+        pending_cmd      = command_id;
+        pending_s0_cmd   = flash_cmd;
+        pending_s0_idx   = flash_idx;
+        pending_deadline = GetTickCount64() + 2500;
+        wcscpy_s(pending_actor, actor_label);
     }
 
     return 0;
@@ -1341,11 +1588,14 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start config menu thread.");
         }
 
-        // Battle action TTS. Polls g_active_actor_id + commandID + actionIdx;
-        // calls get_kernel_text(8, actionIdx, 8) in-process to name the action.
-        // Confirmed addresses: G_ACTIVE_ACTOR_ID=0xBE1170, G_BATTLE_MODEL_STATE=0xBE1178,
-        // G_SMALL_BATTLE_MODEL_STATE=0xBF23B8, GET_KERNEL_TEXT=0x016E4E3C
-        // (ff7_battle_action_scan.py, 2026-07-05).
+        // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
+        // turn detection, then the flash-message struct (battle_actor_data,
+        // 0xDC38E0) for the exact action, resolving names from the kernel2
+        // text sections located by in-process signature scan.  Confirmed
+        // addresses: G_ACTIVE_ACTOR_ID=0xBE1170, G_BATTLE_MODEL_STATE=0xBE1178,
+        // BATTLE_ACTOR_CMD_INDEX=0xDC38EC, BATTLE_ACTOR_ACTION_INDEX=0xDC38F0,
+        // BATTLE_DISPATCH_BYTE_TABLE=0x6D70A8, ENEMY_ATTACK_NAME_TABLE=0x9A9484
+        // (action_name_final_verify.py live run, 2026-07-11).
         g_battle_thread = CreateThread(nullptr, 0, BattleActionThread, nullptr, 0, nullptr);
         if (g_battle_thread) {
             Log::Write("[FF7Access] Battle action polling thread started.");

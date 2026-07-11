@@ -143,8 +143,12 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_ID` | `0x00CC15D0` | s16, non-zero on named field maps, 0 on title/world. **Does NOT zero during battle** (live-corrected 2026-07-09; earlier belief wrong) |
 | `G_ACTIVE_ACTOR_ID` | `0x00BE1170` | u8 slot of last-acting battle actor (0–2 party, 4–9 enemy); never resets between battles (v2.5) |
 | `G_BATTLE_MODEL_STATE` | `0x00BE1178` | Per-actor battle array, stride 0x1AEC; commandID u8 at +0x23 (v2.5) |
-| `G_SMALL_BATTLE_MODEL_STATE` | `0x00BF23B8` | Stride 0x74; its +0x3E "actionIdx" is BOGUS (animation counter) — do not use |
-| `KERNEL2_REQUEST_BASE` | `0x00DC38E8` | pending/section/idx DWORDs written by sub_6D71FA (0x6D71FA); partially verified |
+| `G_SMALL_BATTLE_MODEL_STATE` | `0x00BF23B8` | Stride 0x74; its +0x3E "actionIdx" climbs like an animation counter when polled continuously, but AT FLASH TIME it holds the real ability id (FFNx passes it to the flash writer) — only sample it via the flash struct below |
+| `BATTLE_ACTOR_DATA` | `0x00DC38E0` | FFNx ff7.h `battle_actor_data`; the old "KERNEL2_REQUEST" reading was its middle: +0x08 formation_entry (pending pulse), **+0x0C command_index (0xDC38EC), +0x10 action_index (0xDC38F0)** — written at FLASH TIME (~1–2s after turn start), not rewritten for repeated identical flashes (v2.7, live-verified 2026-07-11: Ice/Potion/Machine Gun/Tentacle) |
+| `BATTLE_DISPATCH_BYTE_TABLE` | `0x006D70A8` | Static .text: byte[table+cmd] = flash-name branch for cmd 0x00–0x20; jump table at 0x6D7080. Branch→source: 0/1=magic names; 2=summon; 3/5=item namespace; 4=buffer 0xDC3640; 6=magic+72 (E.Skill); 7=magic+128 (Limit, 0x7F='????'); 8=enemy attack table; 9=no flash text (v2.7) |
+| `ENEMY_ATTACK_NAME_TABLE` | `0x009A9484` | Current formation's enemy attack names from scene.bin, stride 0x20, FF7-encoded (v2.5 candidate → CONFIRMED v2.7; 'Machine Gun'/'Tonfa'/'Bite'/'Tentacle') |
+| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). ⚠ Useless in battle: reads menu-module scratch (0x9A13C8 via u16 table 0x9A7FC8) which is EMPTY during battle. v2.7 reads the heap text sections directly instead |
+| `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) — but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** — PSX comments identify unnamed PC fields |
 | `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 9=menu**. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
 | `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
@@ -388,6 +392,37 @@ position 0.
   "The hell you all doin'!?" (win=3 id=13, caught via DLGID two-frame delay path).
 - DIAG logging reduced to one summary line. Diagnostic SAMEID branch removed after confirmation.
 
+### v2.7 (2026-07-11) — Battle action TTS: exact names replace generic labels
+
+Investigation chain (all scripts + logs in `investigate/`):
+1. `ff7_kernel2_result_verify.py`: the doc'd result pointer 0xDC208C stays 0 through
+   every battle action — FFNx replaces the whole flash-text consumer path, so the
+   original `mov [0xDC208C], eax` stores never execute. Dead end confirmed live.
+2. FFNx source (battle.cpp/voice.cpp): the "kernel2 request struct" is actually FFNx's
+   `battle_actor_data` (0xDC38E0) — command_index/action_index written at FLASH time.
+3. `ff7_kernel2_consumer_disasm.py` + `ff7_kernel2_dispatch_map.py`: full static
+   derivation of dispatcher sub_6D1CC0's cmd→branch→section mapping, get_kernel_text
+   (=sub_41963C) internals, and the bias tables (magic file entries: 0–55 spells,
+   56–71 summons, 72–95 E.Skills, 128+ limits).
+4. `ff7_kernel2_table_probe.py`: get_kernel_text's static scratch (0x9A13C8) is ALL
+   ZERO in battle — explains why blanks came back; the text really lives in a heap
+   block (`ff7_name_memory_scan.py`), with NO stable static anchor
+   (`ff7_kernel2_anchor_chain.py` / `ff7_kernel2_section_ptrs.py`).
+5. `ff7_action_name_final_verify.py`: signature-scan + walk-back rule
+   (`u16[base] == distance-to-first-string`) locates magic/item/weapon sections;
+   live battle resolved 'Tentacle', 'Machine Gun', 'Potion', 'Ice' — all exact.
+
+Implementation (BattleActionThread v2.7 in proxy.cpp):
+- Turn detection unchanged (actor change + commandID≠0).
+- Name-bearing commands defer the announce until battle_actor_data changes (flash
+  appeared) or 2.5s timeout; struct-cmd must match model-cmd or the generic v2.5
+  label is used — degraded, never wrong. Branch-9 commands (plain Attack, Steal)
+  announce generic labels immediately (they never flash).
+- Kernel2 sections found by one in-process signature scan (lazy, retry ≤1/min).
+  English-only signatures; other languages fall back to generic labels entirely.
+- Limit names carry a leading F8+param colour code — skipped locally (the dialog
+  decoder's single-byte 0xF8 handling is correct for dialog, wrong for these).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -585,6 +620,10 @@ CONFIG_ROW != 1.
 - Sound sub-menu cursor TTS: "Music volume" or "FX volume" on Up/Down within the Sound sub-menu
   (Config row 1 → Confirm). Announces slider name on each cursor change; if the cached volume is
   known it is appended (e.g., "Music volume, 100"). Numeric value from Left/Right not yet functional.
+- Battle action TTS with exact names (v2.7): "Cloud, Ice" / "Cloud, Potion" / "enemy, Machine Gun" —
+  the flash-message text — for Magic/Summon/Item/E.Skill/Limit/enemy attacks; generic labels
+  ("Attack", "Steal") for commands with no flash text, and as fallback on any resolution failure.
+  Wall-bump navigation tone (v2.6) on dead-stop wall contact during field play.
 
 ### Known Issues / Limitations
 
@@ -606,7 +645,6 @@ CONFIG_ROW != 1.
 | ASK per-option TTS as cursor moves | `opcode_ask + 0x8E` → inner loop; needs FF7 original opcode_ask address |
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
-| Battle action text | `display_battle_action_text_42782A` |
 | Battle turn announcement | `battle_set_do_render_menu_call` |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
@@ -623,8 +661,7 @@ CONFIG_ROW != 1.
 | Name entry grid cursor X/Y | Name entry screen | Cheat Engine: value changes as keyboard grid cursor moves |
 | ATB gauge offset in `battle_context` | "Whose turn" announcement timing | Within `battle_context->actor_vars`; ~2 bytes per actor |
 | `battle_set_do_render_menu_call` address | Battle menu entry hook | Relative call chain from battle init |
-| `update_display_text_queue` address | Battle text queue | Relative call from battle render loop |
-| `get_kernel_text` address | Battle action name lookup | Relative call from `display_battle_action_text_42782A` |
+| `update_display_text_queue` / `add_text_to_display_queue` addresses | Battle MESSAGE text TTS ("Cloud gained a level", enemy dialogue) — distinct from the v2.7 action-name flash | FFNx chains: `add_text_to_display_queue = get_relative_call(battle_sub_42CBF9, 0x1C7)`; queue array = `get_absolute_value(add_text, 0x25)`, 64×6-byte entries {s16 buffer_idx, s16, u8 wait, u8 frames}; text = kernel2 battle-text section entry buffer_idx (accessors 0x419442 / 0x41D2E5 for idx≥256) |
 | FF7 byte 0x5F–0xDF → correct Unicode | Extended character lookup table | FF7 font texture / Makou Reactor character table |
 
 ---
@@ -689,7 +726,12 @@ Proven payoffs of cluster reasoning so far:
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0x40B27B` | sub_40B27B | anchor for movie-playing word (+0x25) |
-| `0x41963C` | sub_41963C | real kernel2 lookup `(section, idx, 8)`; result → 0xDC208C |
+| `0x41963C` | sub_41963C = **get_kernel_text** (FFNx external, confirmed via kernel2_get_text call at +0xF7) | `(section, idx, 8)`; result → 0xDC208C; reads menu scratch 0x9A13C8 — EMPTY in battle |
+| `0x419457` | kernel2_get_text | `base = 0x9A13C8 + u16[0x9A7FC8 + file*2]; text = base + u16[base+idx*2]` |
+| `0x6D1CC0` | flash-name dispatcher | branch tables 0x6D7080 (jump) / 0x6D70A8 (byte, per cmd 0x00–0x20); per-branch sections in §4 |
+| `0x6D70F1` | enemy-attack name copier | branch 4 (cmd 0x07) → buffer 0xDC3640 |
+| `0x7B7488/8A/98` | item-namespace remap tables | idx<128→items, <256→weapons(−128), <288→armor, <384→accessory |
+| `0x7B74A0` / `0x7B74A8` | section bias / section→file tables | biases {0,56,72,128} map sections 0–3 into ONE magic-names file: 0–55 spells, 56–71 summons, 72–95 E.Skills, 128+ limits |
 | `0x42782A` | display_battle_action_text | FFNx trampolines this — do not hook |
 | `0x60BACF` | field_init_event | PRIMARY ANCHOR: +0x80→execute_opcode, +0x20→modules_global_object, +0x1C→field_global_object_ptr |
 | `0x60C683` | execute_opcode | +0x10D → opcode table |
@@ -712,8 +754,10 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 |---------|--------|-------|
 | `0x9055A0` | execute_opcode_table | uint32[256] |
 | `0x9A8729`, `0x9A872A`, `0x9ADE30`, `0x9ADE34` | input-event/SFX pulse flags | pulse-and-reset on any d-pad press; REJECTED as cursor candidates |
-| `0x9A9484` | kernel2 section-8 name table? | stride 0x20; only low indices look valid — unresolved |
-| `0x9ADF0C` | kernel2 data pointer candidate | unverified (v2.5 TODO) |
+| `0x9A13C8` / `0x9A7FC8` | kernel2 text scratch + u16 offset table | menu-module staging; **ALL ZERO during battle** (probed live 2026-07-11) — battle code never populates it |
+| `0x9A9484` | ENEMY_ATTACK_NAME_TABLE | CONFIRMED (was "section-8 table?"): current formation's attack names from scene.bin, stride 0x20; = get_kernel_text section 9 (`ret 0x9A9484 + idx*0x20`) |
+| `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
+| *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon/etc. name sections resident for process lifetime; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists — the only exe-static pointers into the block are font tables (0xCFF3F8 cluster) |
 
 ### Battle module block: 0xBE1170 – 0xBFxxxx
 
@@ -791,8 +835,9 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC10F0` | CONFIG_ROW | |
 | `0xDC1154` | MENU_CURSOR | |
 | `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen |
-| `0xDC208C` | kernel2 lookup result ptr | written by sub_41963C |
-| `0xDC38E8` | KERNEL2_REQUEST struct | pending/section/idx |
+| `0xDC208C` | kernel2 lookup result ptr | written after every consumer CALL to 0x41963C — but consumer is FFNx-replaced, so **never written in practice**; observed 0 always (2026-07-11) |
+| `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
+| `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |
 
 ### Title / name-entry block: 0xDD46F8 – 0xDD6F24
 
