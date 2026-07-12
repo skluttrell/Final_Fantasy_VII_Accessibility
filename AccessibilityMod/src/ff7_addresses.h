@@ -143,10 +143,12 @@ constexpr uint32_t FIELD_ID = 0xCC15D0;
 // Confirmed by ff7_title_poll.py / ff7_title_verify.py (2026-06-30):
 //   single address in 0xDD segment, changed exactly once per Up/Down press,
 //   verified as clean 0↔1 toggle in sync with cursor movement.
-// Located 0x2B2C bytes after NAME_ENTRY_CHAR_INDEX (0xDD46F8) in the same
-// DD-segment menu-module block. (That address was originally believed to be
-// the name-entry cursor column per an Echo mod hext patch; live scanning on
-// 2026-07-12 disproved the label — see the name-entry section below.)
+// Located 0x282C bytes after NAME_ENTRY_CHAR_INDEX (0xDD46F8) in the same
+// DD-segment menu-module block. (Earlier versions of this comment said
+// 0x2B2C — bad arithmetic carried since v1.9; 0xDD6F24 - 0xDD46F8 = 0x282C.
+// 0xDD46F8 itself was also mislabeled "name-entry cursor column" per an Echo
+// mod hext patch; live scanning on 2026-07-12 disproved that label — see the
+// name-entry section below.)
 // During field/menu/battle modes this address holds unrelated BSS data —
 // the polling thread guards against this by only speaking for values 0 or 1.
 constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
@@ -186,10 +188,16 @@ constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
 //   panel encoding is found, panel navigation is silent. See TODO.txt.
 // ---------------------------------------------------------------------------
 
-// Grid cursor column (0-9). u32; adjacent X/Y pair with NAME_ENTRY_ROW.
+// Grid cursor column (0-9) and row (0-6): adjacent 4-byte-spaced X/Y pair.
+//
+// READ THESE AS u8 (the low byte only). The 4-byte spacing suggests DWORD
+// slots, but every piece of confirming evidence is byte-level: the scan's
+// diff only ever saw the LOW byte of each slot change, and the verify
+// scripts read single bytes. The three high bytes of each slot are
+// UNVERIFIED — if they held constant nonzero data, a u32 read would fail
+// the grid bound check (row<7 && col<10) on every poll and silently
+// disable the feature. A u8 read matches exactly what was verified.
 constexpr uint32_t NAME_ENTRY_COL = 0x00DD4538;
-
-// Grid cursor row (0-6). u32.
 constexpr uint32_t NAME_ENTRY_ROW = 0x00DD453C;
 
 // The name being edited, FF7-encoded (char = byte + 0x20 for the printable

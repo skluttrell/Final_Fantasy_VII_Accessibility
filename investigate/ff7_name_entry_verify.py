@@ -3,14 +3,21 @@
 ff7_name_entry_verify.py — Confirm the corrected name-entry addresses live,
 decode the side panel, and hunt the screen-active gate flag.
 
-CONTEXT (results of ff7_name_entry_scan.py, 2026-07-12):
+CONTEXT (final results of the 2026-07-12 session, POST-corrections — this
+script's own first run refined two of the scan's initial findings):
   ROW cursor    0x00DD453C  CONFIRMED live (rows matched typed letters)
-  COLUMN cursor 0x00DD4538  found by scan but never spoken from live —
-                            the scan's live phase mistakenly polled the old
-                            Echo-mod anchor 0xDD46F8, which turned out to be
-                            DEAD (never changed once during Left/Right).
-  NAME buffer   0x00DD45F5  CONFIRMED live (position 0: full delete emptied
-                            it, first re-added letter landed at F5)
+  COLUMN cursor 0x00DD4538  CONFIRMED live by this script (full A-J walk
+                            spoken correctly; the scan's live phase had
+                            mistakenly polled the Echo-mod anchor 0xDD46F8,
+                            which never changes during navigation — it is
+                            the character-being-named index, 0=Cloud
+                            1=Barret, NAME_ENTRY_CHAR_INDEX in the mod)
+  NAME buffer   0x00DD45F0  CONFIRMED live — the scan reported 0xDD45F5, but
+                            that was only the first byte that CHANGED; the
+                            default name 'Cloud' masked F0-F4 until the
+                            Cloud->Barret handoff rewrote the whole string
+  Screen active 0x00DD46FC  1 while a naming screen is open; GAME_MODE
+                            (0xCC0D89) reads 6 there — the v2.8 mod gate
   Caret         none found  (candidates were 0->32->0 press pulses, likely
                             SFX triggers; length comes from the 0xFF-
                             terminated buffer instead)
@@ -43,11 +50,18 @@ import winsound
 
 PROCESS_NAME = "ff7_en.exe"
 
-ROW_ADDR    = 0x00DD453C   # confirmed
-COL_ADDR    = 0x00DD4538   # to verify now
-BUF_ADDR    = 0x00DD45F5   # confirmed, 0xFF-terminated, max 12ish
-OLD_ANCHOR  = 0x00DD46F8   # dead during grid nav — side-panel suspect
-GAME_MODE   = 0x00CC0D89   # u8: 0=field 2=battle 9=menu (live-observed)
+ROW_ADDR    = 0x00DD453C   # confirmed (grid row 0-6)
+COL_ADDR    = 0x00DD4538   # confirmed (grid column 0-9)
+# TRUE buffer base, confirmed by this script's own first run: the scan had
+# reported 0xDD45F5, but that was only the first byte that CHANGED during
+# type/delete — the default name 'Cloud' masked F0-F4 until the Cloud->Barret
+# screen handoff rewrote the whole string and exposed the real base.
+BUF_ADDR    = 0x00DD45F0   # FF7-encoded, 0xFF-terminated, cap 12
+BUF_CAP     = 12
+CHAR_INDEX  = 0x00DD46F8   # which character is being named: 0=Cloud 1=Barret
+                           # (the Echo mod's "cursor column" label was WRONG —
+                           # this never changes during grid navigation)
+GAME_MODE   = 0x00CC0D89   # u8: 0=field 2=battle 6=NAME ENTRY 9=menu (live)
 
 # Whole name-entry state window — every byte change here gets logged.
 WIN_LO = 0x00DD4400
@@ -69,6 +83,7 @@ GRID = [
 CHAR_SPOKEN = {
     ",": "comma", ".": "period", "+": "plus", "-": "minus",
     ":": "colon", ";": "semicolon", "'": "apostrophe", '"': "quote",
+    " ": "space",   # keep in sync with ff7_name_entry_scan.py's copy
 }
 
 
@@ -111,6 +126,10 @@ class Tee:
 
 
 def speak_wait(text):
+    # Everything spoken is also printed so it lands in the tee'd log — the
+    # instructions define the test protocol the logged byte-changes must be
+    # correlated against later (project rule: all spoken text is logged).
+    print(f"[SPOKEN] {text}")
     safe = text.replace("'", "''")
     try:
         subprocess.run(
@@ -171,13 +190,13 @@ def snapshot_window(handle):
 def diff_window(label, prev, curr, t0):
     """Log every changed byte in the DD window: addr, old -> new.
     Cursor/buffer addresses are annotated so the log reads itself."""
-    known = {ROW_ADDR: "ROW", COL_ADDR: "COL", OLD_ANCHOR: "OLD_ANCHOR"}
+    known = {ROW_ADDR: "ROW", COL_ADDR: "COL", CHAR_INDEX: "CHAR_INDEX"}
     changes = []
     for i in range(len(curr)):
         if curr[i] != prev[i]:
             addr = WIN_LO + i
             tag = known.get(addr, "")
-            if BUF_ADDR <= addr < BUF_ADDR + 16:
+            if BUF_ADDR <= addr < BUF_ADDR + BUF_CAP:
                 tag = f"BUF+{addr - BUF_ADDR}"
             changes.append((addr, prev[i], curr[i], tag))
     for addr, old, new, tag in changes:
@@ -215,7 +234,7 @@ def main():
               f"(known: 0=field 2=battle 9=menu)")
         print(f"row={read_byte(handle, ROW_ADDR)} "
               f"col={read_byte(handle, COL_ADDR)} "
-              f"old_anchor={read_byte(handle, OLD_ANCHOR)}")
+              f"char_index={read_byte(handle, CHAR_INDEX)}")
 
         # ---- Phase 1+2: live grid + side panel -----------------------------
         speak_wait(
@@ -245,10 +264,17 @@ def main():
             diff_window("live", prev_win, curr_win, t0)
             prev_win = curr_win
 
-            row = read_byte(handle, ROW_ADDR)
-            col = read_byte(handle, COL_ADDR)
-            raw = read_bytes(handle, BUF_ADDR, 16)
-            name = decode_ff7_name(raw) if raw is not None else None
+            # ROW/COL/BUF all live inside the just-snapshotted window — slice
+            # it instead of issuing three more ReadProcessMemory calls.  This
+            # both drops 30 redundant syscalls/second and guarantees the
+            # spoken cursor/name and the diff_window log describe the SAME
+            # instant (separate reads milliseconds later can disagree with
+            # the snapshot during fast navigation — one-frame skew is exactly
+            # what this tooling exists to catch, so it must not inject any).
+            row  = curr_win[ROW_ADDR - WIN_LO]
+            col  = curr_win[COL_ADDR - WIN_LO]
+            raw  = curr_win[BUF_ADDR - WIN_LO : BUF_ADDR - WIN_LO + BUF_CAP]
+            name = decode_ff7_name(raw)
 
             if row is not None and col is not None and \
                (row != last_row or col != last_col):

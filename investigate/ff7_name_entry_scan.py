@@ -11,11 +11,23 @@ WHY ONE SCRIPT DOES EVERYTHING:
   no separate verify run needed unless something surprises us.
 
 WHAT WE ALREADY KNOW (anchor / built-in validation):
-  0xDD46F8 = name-entry grid cursor COLUMN (0–9), sourced from the Echo mod's
-  hext patch '01 - Disable Name Change.txt'.  Phase C (Left/Right presses)
-  must re-discover this exact address.  If it does, the methodology is proven
-  and the OTHER phases' results can be trusted.  If it doesn't, stop and
-  distrust everything.
+  0xDD4538 = name-entry grid cursor COLUMN (0-9), LIVE-CONFIRMED 2026-07-12
+  by this script's first run + ff7_name_entry_verify.py.  Phase C (Left/Right
+  presses) must re-discover this exact address.  If it does, the methodology
+  is proven and the OTHER phases' results can be trusted.  If it doesn't,
+  stop and distrust everything.
+
+  HISTORY — THE ORIGINAL ANCHOR WAS WRONG: the first run of this script used
+  0xDD46F8 as the anchor ("cursor column" per the Echo mod's hext patch
+  '01 - Disable Name Change.txt') and its validation phase FAILED — correctly.
+  0xDD46F8 never changes during grid navigation; it is actually the
+  character-being-named index (0=Cloud, 1=Barret; NAME_ENTRY_CHAR_INDEX in
+  ff7_addresses.h).  Do not trust third-party hext labels as anchors without
+  live confirmation.
+
+  Other confirmed facts from that session (full story in ff7_addresses.h):
+    0xDD453C = grid ROW (0-6)      0xDD45F0 = name buffer (FF7-enc, 0xFF-term)
+    0xDD46FC = screen-active flag  GAME_MODE (0xCC0D89) == 6 on this screen
 
 WHAT WE ARE HUNTING:
   1. ROW cursor (screenshot shows 7 grid rows: A–J / K–T / U–Z,.+- /
@@ -83,18 +95,19 @@ import sys
 import time
 import os
 import winsound
-import struct
 
 PROCESS_NAME = "ff7_en.exe"
 
 # Static BSS/data range — stable across runs, same window every prior menu
-# scan used.  The known column cursor (0xDD46F8) is inside it, and menu-module
+# scan used.  The known column cursor (0xDD4538) is inside it, and menu-module
 # state has always been static so far; no heap pass needed unless this fails.
 STATIC_LO = 0x00400000
 STATIC_HI = 0x00DE0000
 
-# Known anchor: grid column cursor.  Phase C must re-find this.
-KNOWN_COLUMN_ADDR = 0x00DD46F8
+# Known anchor: grid column cursor, live-confirmed 2026-07-12.  Phase C must
+# re-find this.  (The original anchor 0xDD46F8 from the Echo mod hext patch
+# was disproved — it's the character index, not the column; see docstring.)
+KNOWN_COLUMN_ADDR = 0x00DD4538
 
 # Phase durations (seconds).
 IDLE_DURATION   = 12
@@ -182,7 +195,12 @@ class Tee:
 
 def speak_wait(text):
     """Blocking SAPI speech — used for phase INSTRUCTIONS only, never for
-    timing marks (SAPI startup latency is unpredictable; beeps mark time)."""
+    timing marks (SAPI startup latency is unpredictable; beeps mark time).
+    Everything spoken is also printed so it lands in the tee'd log — the
+    press-cadence instructions are what the analysis press-count expectations
+    are calibrated against, so the log must record what the player was told
+    (project rule: all spoken text is logged)."""
+    print(f"[SPOKEN] {text}")
     safe = text.replace("'", "''")
     try:
         subprocess.run(
@@ -252,8 +270,22 @@ def read_byte(handle, addr):
 
 
 # ---------------------------------------------------------------------------
-# Snapshot polling — identical mechanics to ff7_menu_cursor_isolate.py.
+# Snapshot polling.
+#
+# DIFF STRATEGY — chunked memoryview compare, not a per-byte Python loop.
+# The first run of this script diffed the ~10.3MB window with a pure-Python
+# `for i in range(len)` loop; one pass took ~250ms, so the actual snapshot
+# rate was ~3.75/s instead of the intended 10/s (45 snaps in the 12s Phase A
+# of the 2026-07-12 session log) and press counts came in at roughly half the
+# expectation the ranking is calibrated for (row cursor: count=10 vs
+# expect_presses=20).  Very few bytes actually change per snapshot (~30-50
+# addresses), so we compare 4KB slices first (C-speed memoryview equality,
+# no copies) and only byte-scan the rare slices that differ — a >50x
+# speedup with no numpy dependency (this project's Python env has none;
+# the numpy scripts in this folder ran in a separate venv).
 # ---------------------------------------------------------------------------
+DIFF_CHUNK = 4096
+
 def poll_phase(handle, duration_s, phase_label):
     """Snapshot the static range every SNAP_INTERVAL for duration_s.
     Returns (changers: addr->count, last_val: addr->final byte)."""
@@ -282,11 +314,18 @@ def poll_phase(handle, duration_s, phase_label):
             continue
 
         compare_len = min(len(prev), len(curr))
-        for i in range(compare_len):
-            if curr[i] != prev[i]:
-                addr = STATIC_LO + i
-                changers[addr] = changers.get(addr, 0) + 1
-                last_val[addr] = curr[i]
+        mv_prev = memoryview(prev)[:compare_len]
+        mv_curr = memoryview(curr)[:compare_len]
+        for off in range(0, compare_len, DIFF_CHUNK):
+            end = min(off + DIFF_CHUNK, compare_len)
+            if mv_prev[off:end] == mv_curr[off:end]:
+                continue
+            # This 4KB slice differs somewhere — byte-scan just this slice.
+            for i in range(off, end):
+                if curr[i] != prev[i]:
+                    addr = STATIC_LO + i
+                    changers[addr] = changers.get(addr, 0) + 1
+                    last_val[addr] = curr[i]
 
         prev = curr
         snap_num += 1
@@ -477,7 +516,7 @@ def main():
             COLNAV_DURATION, "C cols")
 
         # ---- Phase D: add letters ------------------------------------------
-        changers_d, last_d = run_cued_phase(
+        changers_d, _ = run_cued_phase(
             handle,
             "Phase D, typing. Press the Confirm button four times, slowly, "
             "about one press every three seconds. This adds letters to the "
@@ -533,6 +572,14 @@ def main():
                   f"{in_c_at_all}). Treat every other result as suspect. ***")
 
         # ---- Name buffer ----------------------------------------------------
+        # THE CLUSTER BASE IS NOT THE BUFFER BASE.  Cells holding the default
+        # name never change during the type/delete phases, so the changed
+        # cluster starts at the first byte the player EDITED — mid-buffer.
+        # (Exactly this happened on the 2026-07-12 first run: default 'Cloud'
+        # masked 0xDD45F0-F4 and the cluster started at 0xDD45F5.)  After
+        # picking a cluster, walk BACKWARD from its base while the preceding
+        # bytes still decode as printable FF7 characters — that unchanged
+        # prefix is the rest of the name, and the walk lands on the true base.
         clusters = find_adjacent_clusters(buf_cands)
         print(f"\n  NAME BUFFER: adjacent clusters among type/delete-only "
               f"addresses ({len(clusters)} found):")
@@ -546,7 +593,21 @@ def main():
             print(f"    0x{base:08X}-0x{end:08X}  len={end-base+1}  "
                   f"decoded now: '{decoded}'")
             if buf_addr is None and decoded:
-                buf_addr = base
+                walk = base
+                # Printable FF7 name bytes are 0x00-0xDF; 0xFF terminates and
+                # 0xE0+ are dialog control bytes that never appear in names.
+                # Cap the walk at 16 so a coincidentally-printable neighbor
+                # region can't drag the base off into unrelated BSS.
+                while walk > base - 16:
+                    b = read_byte(handle, walk - 1)
+                    if b is None or b >= 0xE0:
+                        break
+                    walk -= 1
+                if walk != base:
+                    print(f"    -> unchanged printable prefix found: true "
+                          f"base is 0x{walk:08X} (cluster base was the first "
+                          f"EDITED byte, not the buffer start)")
+                buf_addr = walk
 
         # Caret: changes on (almost) every press in BOTH D and E, small value.
         caret_rows = [(a, changers_d.get(a, 0), changers_e.get(a, 0),

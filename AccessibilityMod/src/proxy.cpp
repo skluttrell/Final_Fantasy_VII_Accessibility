@@ -46,10 +46,11 @@
  *        AND FFNx's voice_init() has patched the opcode table.
  *     6. Exit.
  *
- *   TitleCursorThread and MenuCursorThread both run until Proxy::Shutdown()
- *   signals g_cursor_stop_event (a shared manual-reset event). Each thread
- *   uses WaitForSingleObject(g_cursor_stop_event, 150) as its sleep; one
- *   SetEvent() wakes both within 150ms on clean unload.
+ *   All six polling threads (title, main menu, config, battle, wall-bump,
+ *   name-entry) run until Proxy::Shutdown() signals g_cursor_stop_event (a
+ *   shared manual-reset event). Each thread uses
+ *   WaitForSingleObject(g_cursor_stop_event, <poll ms>) as its sleep; one
+ *   SetEvent() wakes all of them within one poll interval on clean unload.
  *
  *   The 50ms poll is invisible to the player: FF7 takes several seconds to
  *   reach the first field map. Hooks::Install() is idempotent and fast
@@ -128,12 +129,13 @@ VERSION_FORWARD_FUNCS(DECLARE_FP)
 VERSION_FORWARD_FUNCS(MAKE_STUB)
 #undef MAKE_STUB
 
-// Shared manual-reset stop event for TitleCursorThread and MenuCursorThread.
-// Both threads block on WaitForSingleObject(g_cursor_stop_event, 150).
-// One SetEvent() in Proxy::Shutdown() wakes both simultaneously.
-// Written in InitThread before either CreateThread call; read in Shutdown().
+// Shared manual-reset stop event for ALL polling threads (title, main menu,
+// config, battle, wall-bump, name-entry). Each blocks on
+// WaitForSingleObject(g_cursor_stop_event, <its poll ms>); one SetEvent() in
+// Proxy::Shutdown() wakes all of them simultaneously.
+// Written in InitThread before any CreateThread call; read in Shutdown().
 // No lock needed: Shutdown() runs after InitThread exits (happens-before on
-// the global state the game loop observes when both threads are live).
+// the global state the game loop observes when the threads are live).
 static HANDLE g_cursor_stop_event = nullptr;
 static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
@@ -1595,16 +1597,18 @@ static std::wstring SpokenNameChar(wchar_t c)
     return std::wstring(1, c);
 }
 
-// Decode the raw NAME_ENTRY_BUFFER bytes (FF7 encoding: char = byte + 0x20
-// for the printable range, 0xFF terminates) into a wide string. Name-entry
-// text never contains the dialog-only token bytes (0xE0+), so this simple
-// mapping is complete here; FF7Text::Decode is for dialog strings.
+// Decode the raw NAME_ENTRY_BUFFER bytes into a wide string (0xFF terminates).
+// Uses FF7Text::DecodeChar so the full encoding table applies: the naive
+// byte+0x20 formula only covers bytes 0x00-0x5E, and the grid's apostrophe/
+// quote cells may well be stored as extended bytes (FF7's dialog apostrophe
+// is 0xB5). Sharing the table means any future encoding fix in ff7_text.cpp
+// automatically reaches the name reader too.
 static std::wstring DecodeNameBuffer(const uint8_t* raw, size_t cap)
 {
     std::wstring out;
     for (size_t i = 0; i < cap && raw[i] != 0xFF; ++i) {
-        const wchar_t c = static_cast<wchar_t>(raw[i] + 0x20);
-        if (c >= L' ' && c <= L'~') out += c;
+        const wchar_t c = FF7Text::DecodeChar(raw[i]);
+        if (c != L'\0') out += c;
     }
     return out;
 }
@@ -1631,9 +1635,15 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
 
     bool     on_screen  = false;  // debounced "naming screen is open" state
     uint8_t  gate_streak = 0;     // consecutive polls with both gate bytes set
-    uint32_t last_row = 0, last_col = 0;
+    uint8_t  last_row = 0, last_col = 0;
     uint8_t  last_char_index = 0;
     uint8_t  last_buf[FF7Addr::NAME_ENTRY_BUFFER_CAP] = {};
+    // Set when a wholesale buffer rewrite is seen; the announce is deferred
+    // one poll so a chained-screen handoff (buffer rewritten before the
+    // char-index flips — two separate game writes we sample 100ms apart)
+    // resolves to the screen-open announce instead of a spurious
+    // "Name is now Barret" immediately followed by "Name entry ... Barret".
+    bool     rewrite_pending = false;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, kPollMs) == WAIT_OBJECT_0)
@@ -1642,6 +1652,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
         if (!Config::Get().speak_menus) {
             on_screen = false;
             gate_streak = 0;
+            rewrite_pending = false;
             continue;
         }
 
@@ -1656,25 +1667,55 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
         if (game_mode != FF7Addr::GAME_MODE_NAME_ENTRY || active != 1) {
             on_screen = false;
             gate_streak = 0;
+            rewrite_pending = false;
             continue;
         }
 
-        if (gate_streak < 2) {
-            gate_streak++;
-            if (gate_streak < 2) continue;
-        }
+        // 2-poll debounce (saturating): skip the first gated poll so a single
+        // stale poll of either gate byte never triggers announces.
+        if (gate_streak < 2) gate_streak++;
+        if (gate_streak < 2) continue;
 
-        // Read the live state. All addresses are static BSS — always readable.
-        const uint32_t row =
-            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::NAME_ENTRY_ROW);
-        const uint32_t col =
-            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::NAME_ENTRY_COL);
-        const uint8_t char_index =
-            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_CHAR_INDEX);
-
+        // Read the live state — TWICE, requiring both samples identical.
+        // The game writes these values on its own thread; a poll can land
+        // mid-update (e.g. between the new char byte and the moved 0xFF
+        // terminator of an append, or between the COL and ROW writes of a
+        // wrap). A torn snapshot decodes to a name/cell that never existed
+        // on screen, so on any mismatch we skip this poll and pick up the
+        // settled state 100ms later — imperceptible, and self-correcting.
+        //
+        // ROW/COL are read as u8: the confirming scans only ever observed the
+        // LOW byte of each DWORD slot changing, and the three high bytes are
+        // unverified — if they held nonzero data, a u32 read would fail the
+        // grid bound check forever and silence the whole feature.
+        uint8_t row, col, char_index;
         uint8_t buf[FF7Addr::NAME_ENTRY_BUFFER_CAP];
-        memcpy(buf, reinterpret_cast<const void*>(FF7Addr::NAME_ENTRY_BUFFER),
-               sizeof(buf));
+        {
+            const uint8_t row1 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_ROW);
+            const uint8_t col1 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_COL);
+            const uint8_t idx1 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_CHAR_INDEX);
+            memcpy(buf, reinterpret_cast<const void*>(FF7Addr::NAME_ENTRY_BUFFER),
+                   sizeof(buf));
+
+            uint8_t buf2[FF7Addr::NAME_ENTRY_BUFFER_CAP];
+            memcpy(buf2, reinterpret_cast<const void*>(FF7Addr::NAME_ENTRY_BUFFER),
+                   sizeof(buf2));
+            const uint8_t row2 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_ROW);
+            const uint8_t col2 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_COL);
+            const uint8_t idx2 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_CHAR_INDEX);
+
+            if (row1 != row2 || col1 != col2 || idx1 != idx2 ||
+                memcmp(buf, buf2, sizeof(buf)) != 0) {
+                continue;   // torn read — retry next poll
+            }
+            row = row1; col = col1; char_index = idx1;
+        }
 
         // Screen (re)open: first gated poll, or the game chained straight to
         // the next character's screen (char_index change, e.g. Cloud→Barret).
@@ -1699,6 +1740,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
             TTS::Speak(msg.c_str(), /*interrupt=*/true);
 
             on_screen = true;
+            rewrite_pending = false;   // handoff explains any pending rewrite
             last_char_index = char_index;
             last_row = row;
             last_col = col;
@@ -1724,11 +1766,22 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
             last_col = col;
         }
 
-        // Name edits. Compare full raw buffers: length via terminator scan,
-        // then classify the change as append / delete / wholesale rewrite.
+        // Name edits. The raw memcmp is only the cheap change GATE (no
+        // per-poll allocations); classification and announce decisions use
+        // the DECODED names, so a change in stale bytes past the 0xFF
+        // terminator (indices beyond the visible name — unverified BSS up to
+        // the 12-byte cap) can never fire a spurious announce.
         if (memcmp(buf, last_buf, sizeof(buf)) != 0) {
             const std::wstring now_name  = DecodeNameBuffer(buf, sizeof(buf));
             const std::wstring prev_name = DecodeNameBuffer(last_buf, sizeof(last_buf));
+
+            // Raw bytes changed but the visible name did not (post-terminator
+            // churn): adopt the new bytes silently.
+            if (now_name == prev_name) {
+                memcpy(last_buf, buf, sizeof(buf));
+                rewrite_pending = false;
+                continue;
+            }
 
             std::wstring msg;
             if (now_name.size() == prev_name.size() + 1 &&
@@ -1739,6 +1792,24 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 msg  = SpokenNameChar(now_name.back());
                 msg += L". ";
                 msg += SpellName(now_name);
+                rewrite_pending = false;
+
+                // Self-check: the appended byte is ground truth for the cell
+                // the cursor is on. Log any disagreement with kNameGrid so a
+                // normal play session verifies the uncertain cells (row 5
+                // cols 8-9) without needing a sighted tester — TODO.txt's
+                // "fix when observed" plan depends on this record existing.
+                if (row < 7 && col < 10 &&
+                    now_name.back() != kNameGrid[row][col]) {
+                    char dbg[112];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] NAME-ENTRY GRID MISMATCH row=%u col=%u "
+                        "guessed=0x%04X game-wrote=0x%04X — fix kNameGrid",
+                        row, col,
+                        static_cast<unsigned>(kNameGrid[row][col]),
+                        static_cast<unsigned>(now_name.back()));
+                    Log::Write(dbg);
+                }
             } else if (prev_name.size() == now_name.size() + 1 &&
                        prev_name.compare(0, now_name.size(), now_name) == 0) {
                 // Single letter deleted (Cancel).
@@ -1746,9 +1817,21 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 msg += SpokenNameChar(prev_name.back());
                 msg += L". ";
                 msg += SpellName(now_name);
+                rewrite_pending = false;
             } else {
-                // Anything else — e.g. the Default button restoring the
-                // original name, or multiple edits landing within one poll.
+                // Wholesale rewrite — either the Default button restoring the
+                // original name, or the first half of a chained-screen
+                // handoff whose char-index flip we haven't sampled yet.
+                // Defer ONE poll: if the char index changes by next poll, the
+                // screen-open announce covers it; if not, it was a genuine
+                // in-screen rewrite and we announce it 100ms late.
+                if (!rewrite_pending) {
+                    rewrite_pending = true;
+                    // Deliberately do NOT update last_buf — next poll must
+                    // re-detect this same change to complete the deferral.
+                    continue;
+                }
+                rewrite_pending = false;
                 msg  = L"Name is now ";
                 msg += SpellName(now_name);
             }

@@ -807,7 +807,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 
 | Offset | Address | Field | Confirmed? |
 |--------|---------|-------|------------|
-| +0x01 | `0xCC0D89` | game_mode: 0=field, 2=battle, 9=menu (live) | ✓ live |
+| +0x01 | `0xCC0D89` | game_mode: 0=field, 2=battle, 6=name entry, 9=menu (live) | ✓ live |
 | +0x02 | `0xCC0D8A` | battle_id | FFNx label only |
 | +0x04/06 | `0xCC0D8C/8E` | field_model_pos_x/y (u16) | FFNx label only |
 | +0x22 | `0xCC0DAA` | field_model_triangle_id | FFNx label only |
@@ -865,17 +865,26 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDD46FC` | NAME_ENTRY_ACTIVE | 1 while naming screen open (v2.8 gate, with GAME_MODE==6) |
 | `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
 
-### Discovery techniques ranked by success rate (as of 2026-07-09)
+### Discovery techniques ranked by success rate (as of 2026-07-12)
 
 1. **Static chain resolution against the exe on disk** (v2.6): replicate FFNx
    `ff7_data.h` chains on the file image; cross-check against `ff7.h` address
    comments. Zero user effort, immune to FFNx trampolines. Best first move.
 2. **PSX decomp struct matching** (v2.6 UC lock): once a PC struct base is known,
    align it with the PSX decomp's version and lift the PSX field comments.
-3. **Targeted isolate delta scan** (MENU_CURSOR, CONFIG_ROW, SOUND_CURSOR): two
-   snapshot phases inside the same frozen context, subtract.
+3. **Targeted isolate delta scan** (MENU_CURSOR, CONFIG_ROW, SOUND_CURSOR,
+   NAME_ENTRY_ROW/COL/BUFFER): two snapshot phases inside the same frozen
+   context, subtract. Succeeded again v2.8 — and its validation phase
+   correctly EXPOSED a bad external anchor (see item 7).
 4. **Live change-monitor with the player narrating** (GAME_MODE values): passive
    500ms change-logger, no staged phases; good for enum-value discovery.
 5. **Full-heap delta scans**: FAILED at scale (battle cursor, ~1.5M bytes of
    background churn per quiet window). Use only inside frozen contexts.
 6. **Hardware-breakpoint debugging**: game self-terminates (anti-debug). Never retry.
+7. **Third-party mod hext-patch labels**: UNRELIABLE (v2.8). The Echo mod's
+   '01 - Disable Name Change.txt' labeled 0xDD46F8 "name-entry cursor column";
+   live scanning proved it's the character-being-named index — it never changes
+   during grid navigation. The ADDRESS a patch touches is a useful region hint
+   (it did point at the right DD45xx-DD46xx block), but the LABEL describes what
+   the patch author needed to break, not what the byte is. Never use one as a
+   validation anchor without live confirmation.

@@ -108,6 +108,25 @@ static wchar_t canonical_ch(wchar_t ch)
     }
 }
 
+wchar_t DecodeChar(unsigned char byte)
+{
+    // Standard ASCII-aligned range: byte + 0x20 is exact (0x00=' ' .. 0x5E='~').
+    // canonical_ch() is an identity map for this range but is applied anyway
+    // so the two paths can never drift.
+    if (byte <= 0x5E) {
+        return canonical_ch(static_cast<wchar_t>(byte + 0x20));
+    }
+    // Extended range: the ff7tk-sourced table gives the real glyph (byte+0x20
+    // is WRONG here — 0xB5 is FF7's apostrophe, not Ó), then canonical_ch
+    // folds it to its speakable form (curly quote -> straight apostrophe).
+    if (byte <= 0xDF) {
+        const wchar_t ch = kExtendedChars[byte - 0x5F];
+        return (ch != L'\0') ? canonical_ch(ch) : L'\0';
+    }
+    // 0xE0+ are newline/token/terminator bytes — never printable name content.
+    return L'\0';
+}
+
 std::wstring Decode(const char* encoded_text)
 {
     if (!encoded_text) return {};

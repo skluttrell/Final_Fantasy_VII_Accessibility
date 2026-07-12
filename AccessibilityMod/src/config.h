@@ -33,9 +33,10 @@ struct Settings {
     // spell names, item use text). Default: true.
     bool speak_battle = true;
 
-    // speak_menus: If true, main menu navigation is announced. v1 uses a general
-    // text-render interception approach; exact menu cursor tracking is v2.
-    // Default: true.
+    // speak_menus: If true, menu navigation is announced. Covers the title
+    // screen cursor, main menu cursor + Quit dialog, Config sub-menu rows and
+    // values, Sound sub-menu cursor and volumes, and the name-entry screen
+    // (grid cursor + name readback). Default: true.
     bool speak_menus = true;
 
     // wall_bump_tone: If true, a short low tone plays while the player pushes

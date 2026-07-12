@@ -25,7 +25,10 @@ Reading the summary:
 Watched regions (six candidate areas covering known cursor analogues):
   MENU_STATE   0xDC0000  4KB   — start of DC range (MENU_OBJECTS at +0x0FC0)
   MENU_OBJS    0xDC0F00  256B  — immediately before/at menu_objects struct
-  NAME_AREA    0xDD4400  1KB   — around name-entry cursor 0xDD46F8 (confirmed)
+  NAME_AREA    0xDD4400  1KB   — the name-entry state block (real cursor at
+                                 0xDD4538/453C; 0xDD46F8 is the char index —
+                                 the Echo mod's "cursor column" label was
+                                 disproved live 2026-07-12)
   PRE_SAVE     0xDBF000  4KB   — just before savemap (0xDBFD38)
   EARLY_A      0x9F7000  4KB   — early startup data segment (candidate)
   EARLY_B      0xC0F000  4KB   — pre-field module area (candidate)
@@ -60,9 +63,13 @@ CHANGE_BEEP_MS = 80            # duration for "change detected" beep
 # MENU_OBJS: 256 bytes centred on the MENU_OBJECTS boundary (0xDC0F00) to
 #   catch bytes just before and just after the confirmed anchor address.
 #
-# NAME_AREA: 1KB around 0xDD46F8, the name-entry column cursor (0-9) confirmed
-#   by Echo mod hext patch '01 - Disable Name Change.txt'. The title screen
-#   cursor (0/1 for Continue/NewGame) may be nearby in the DD range.
+# NAME_AREA: 1KB covering the name-entry state block. HISTORICAL NOTE: this
+#   region was originally chosen around 0xDD46F8, believed to be the name-entry
+#   column cursor per the Echo mod hext patch '01 - Disable Name Change.txt' —
+#   that label was DISPROVED live 2026-07-12 (0xDD46F8 is the character-being-
+#   named index; the real cursor is 0xDD4538 col / 0xDD453C row, both inside
+#   this same window). The region itself remains valid — it did lead to
+#   TITLE_CURSOR (0xDD6F24) being found in the DD segment.
 #
 # PRE_SAVE: 4KB just before the savemap base (0xDBFD38). Title-screen state
 #   might live here since the title screen runs before savemap is populated.

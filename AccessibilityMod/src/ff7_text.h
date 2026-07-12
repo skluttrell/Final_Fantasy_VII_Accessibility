@@ -64,4 +64,19 @@ namespace FF7Text {
  */
 std::wstring Decode(const char* encoded_text);
 
+/*
+ * DecodeChar: Decode ONE FF7-encoded byte to its speakable wchar_t, or L'\0'
+ * if the byte has no printable/speakable glyph (terminator, control bytes,
+ * token bytes, discarded symbols).
+ *
+ * WHY THIS EXISTS: fixed-size name/label buffers (e.g. the name-entry screen's
+ * NAME_ENTRY_BUFFER) need per-byte decoding with a caller-controlled length
+ * cap and no whitespace trimming — Decode() above is dialog-oriented (token
+ * expansion, trailing-space trim) and unsuitable there. This helper shares
+ * the same kExtendedChars table and canonical_ch() filter, so encoding fixes
+ * land in one place: the naive byte+0x20 formula is only correct for bytes
+ * 0x00-0x5E; extended bytes (e.g. 0xB5 = FF7's apostrophe) need the table.
+ */
+wchar_t DecodeChar(unsigned char byte);
+
 } // namespace FF7Text
