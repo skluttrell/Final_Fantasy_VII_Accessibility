@@ -143,10 +143,83 @@ constexpr uint32_t FIELD_ID = 0xCC15D0;
 // Confirmed by ff7_title_poll.py / ff7_title_verify.py (2026-06-30):
 //   single address in 0xDD segment, changed exactly once per Up/Down press,
 //   verified as clean 0↔1 toggle in sync with cursor movement.
-// Located 0x2B2C bytes after the name-entry cursor column (0xDD46F8).
+// Located 0x2B2C bytes after NAME_ENTRY_CHAR_INDEX (0xDD46F8) in the same
+// DD-segment menu-module block. (That address was originally believed to be
+// the name-entry cursor column per an Echo mod hext patch; live scanning on
+// 2026-07-12 disproved the label — see the name-entry section below.)
 // During field/menu/battle modes this address holds unrelated BSS data —
 // the polling thread guards against this by only speaking for values 0 or 1.
 constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
+
+// ---------------------------------------------------------------------------
+// Name-entry screen ("Please enter a name") addresses.
+//
+// All confirmed live 2026-07-12 by investigate/ff7_name_entry_scan.py
+// (frozen-context isolate scan: idle baseline, Up/Down-only, Left/Right-only,
+// type-only, delete-only phases, subtracted) and ff7_name_entry_verify.py
+// (live decode: spoken letters matched the player's actual cursor across a
+// full row walk and multiple row changes; buffer readback matched every
+// add/delete; the Cloud→Barret screen handoff was captured live, which is
+// what exposed the true buffer base and the char-index/active-flag pair).
+//
+// THE CHARACTER GRID (7 rows x 10 columns, from the in-game layout):
+//   row 0: A B C D E F G H I J
+//   row 1: K L M N O P Q R S T
+//   row 2: U V W X Y Z , . + -
+//   row 3: a b c d e f g h i j
+//   row 4: k l m n o p q r s t
+//   row 5: u v w x y z : ; ' "   <- columns 8-9 not yet visually confirmed
+//   row 6: 0 1 2 3 4 5 6 7 8 9
+//
+// CURSOR WRAP WARNING (player-reported 2026-07-12): the game's cursor does
+// NOT always wrap to the start of the same line at grid edges — it can land
+// somewhere non-obvious. This is engine behavior, not a bug in our reads.
+// The TTS thread therefore never predicts movement; it only announces the
+// cell the cursor actually landed on.
+//
+// KNOWN GAP — the side panel (Space / Delete / Select / Default):
+//   When the cursor moves onto the right-hand button panel, ROW and COL keep
+//   their last grid values (confirmed live: Right past column 9 changed
+//   neither). A byte at 0xDD4574 moved 0->1 at that moment but its pattern
+//   is inconsistent (it also changed once alongside a character delete and
+//   does not reset when returning to the grid) — NOT usable yet. Until the
+//   panel encoding is found, panel navigation is silent. See TODO.txt.
+// ---------------------------------------------------------------------------
+
+// Grid cursor column (0-9). u32; adjacent X/Y pair with NAME_ENTRY_ROW.
+constexpr uint32_t NAME_ENTRY_COL = 0x00DD4538;
+
+// Grid cursor row (0-6). u32.
+constexpr uint32_t NAME_ENTRY_ROW = 0x00DD453C;
+
+// The name being edited, FF7-encoded (char = byte + 0x20 for the printable
+// range), 0xFF-terminated. At least 9 characters of capacity observed live
+// ("CloudGHRC"); we read up to 12 (the savemap name field size) and treat
+// 0xFF or end-of-window as the terminator.
+//
+// DISCOVERY NOTE: the first scan reported 0xDD45F5 as the buffer — that was
+// only the first byte that CHANGED during the type/delete phases, because
+// the default name "Cloud" occupied F0-F4 and never changed. The verify
+// run's Cloud→Barret screen handoff rewrote the full string and exposed the
+// true base at 0xDD45F0.
+constexpr uint32_t NAME_ENTRY_BUFFER     = 0x00DD45F0;
+constexpr uint32_t NAME_ENTRY_BUFFER_CAP = 12;
+
+// Which character this naming screen is for: 0=Cloud, 1=Barret (observed;
+// presumably follows the standard character IDs for later screens).
+// Flipped 0->1 exactly at the Cloud→Barret handoff.
+// THIS is the address the Echo mod hext patch mislabeled "cursor column" —
+// it never changes during grid navigation.
+constexpr uint32_t NAME_ENTRY_CHAR_INDEX = 0x00DD46F8;
+
+// 1 while a naming screen is open, 0 otherwise. All three observed
+// transitions matched (Cloud close, Barret open, final exit). Gate together
+// with GAME_MODE == GAME_MODE_NAME_ENTRY — either alone could be BSS reuse.
+constexpr uint32_t NAME_ENTRY_ACTIVE     = 0x00DD46FC;
+
+// GAME_MODE (0xCC0D89) value on the naming screen. New live-observed value
+// (2026-07-12), joining 0=field, 2=battle, 9=menu.
+constexpr uint8_t GAME_MODE_NAME_ENTRY = 6;
 
 // Main-menu cursor position. Valid while the in-game overlay menu is open.
 // Holds the 0-indexed row currently highlighted in the main menu list:

@@ -130,6 +130,11 @@ every confirmed address — the clustering itself is a discovery tool.
 | `world_opcode_ask_sub_75EEBB` | `0x75EEBB` | FFNx naming convention (v2) |
 | `display_battle_action_text_42782A` | `0x42782A` | FFNx naming convention (v2) |
 | `TITLE_CURSOR` | `0x00DD6F24` | 0=New Game, 1=Continue — only valid on title screen; guard with FIELD_ID==0 |
+| `NAME_ENTRY_COL` | `0x00DD4538` | u32, grid column 0–9 on the naming screen. Adjacent X/Y pair with ROW below (v2.8, live-confirmed 2026-07-12) |
+| `NAME_ENTRY_ROW` | `0x00DD453C` | u32, grid row 0–6 (A–J / K–T / U–Z,.+- / a–j / k–t / u–z:;'" / 0–9) |
+| `NAME_ENTRY_BUFFER` | `0x00DD45F0` | Name-in-progress, FF7-encoded, 0xFF-terminated, ≥9 chars capacity. ⚠ the first scan found 0xDD45F5 — that was just the first byte that CHANGED; the "Cloud" prefix masked F0–F4 until the Barret-screen handoff rewrote them |
+| `NAME_ENTRY_CHAR_INDEX` | `0x00DD46F8` | Which character is being named: 0=Cloud, 1=Barret (flipped exactly at screen handoff). **This is the address the Echo mod hext patch mislabeled "cursor column"** — it never changes during grid navigation |
+| `NAME_ENTRY_ACTIVE` | `0x00DD46FC` | 1 while a naming screen is open, 0 otherwise. Matched all three observed transitions (Cloud close, Barret open, final exit). Gate together with GAME_MODE==6 |
 | `MENU_CURSOR` | `0x00DC1154` | Main menu row 0–10 (Item…Quit); constant during field play |
 | `MENU_OPEN` | `0x00DC12DC` | 1 when main menu or post-battle results active; must gate with FIELD_ID!=0 |
 | `CONFIG_ROW` | `0x00DC10F0` | Config sub-menu row 0–9 (Window color…Magic order); proxy gate: MENU_CURSOR==7 |
@@ -150,7 +155,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). ⚠ Useless in battle: reads menu-module scratch (0x9A13C8 via u16 table 0x9A7FC8) which is EMPTY during battle. v2.7 reads the heap text sections directly instead |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) — but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** — PSX comments identify unnamed PC fields |
-| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 9=menu**. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
+| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 6=name entry, 9=menu**. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
 | `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
 | `FIELD_BGMOVIE_FLAG` | `0x00CC0DC2` | +0x3A, u8. Movie is background-only (player walkable) |
 | `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
@@ -475,6 +480,11 @@ can stay in the background while FF7 is in focus.
 | `0x00DC0E24` | CONFIG_SPEED_FIELD_MSG | same |
 | `0x00DC108C` | SOUND_CURSOR | ff7_sound_cursor_scan.py |
 | `0x00DC0FA0` | QUIT_CURSOR | ff7_quit_dialog_scan.py |
+| `0x00DD4538` | NAME_ENTRY_COL | ff7_name_entry_scan.py + ff7_name_entry_verify.py (2026-07-12) |
+| `0x00DD453C` | NAME_ENTRY_ROW | same |
+| `0x00DD45F0` | NAME_ENTRY_BUFFER | same (scan reported 0xDD45F5; verify's screen-handoff diff exposed the true base) |
+| `0x00DD46F8` | NAME_ENTRY_CHAR_INDEX | same (disproved the Echo mod's "cursor column" label) |
+| `0x00DD46FC` | NAME_ENTRY_ACTIVE | same |
 
 ### Packed byte encodings
 
@@ -839,11 +849,20 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |
 
-### Title / name-entry block: 0xDD46F8 – 0xDD6F24
+### Title / name-entry block: 0xDD4400 – 0xDD6F24
 
 | Address | Symbol | Notes |
 |---------|--------|-------|
-| `0xDD46F8` | name-entry cursor column | |
+| `0xDD4400` | (noise) | frame-parity blink byte, toggles 0↔1 every frame on the naming screen |
+| `0xDD4538` | NAME_ENTRY_COL | u32, grid column 0–9 (v2.8) |
+| `0xDD453C` | NAME_ENTRY_ROW | u32, grid row 0–6 (v2.8) |
+| `0xDD4574` | side-panel suspect | UNRESOLVED: moved 0→1 on Right-past-column-9, didn't reset on grid return; also 3→2 once alongside a char delete. Semantics unknown — do not use yet |
+| `0xDD45E8` | unknown u32 | small values during editing, 0xFFFFFFFF at times, reset per screen. Unresolved |
+| `0xDD45F0` | NAME_ENTRY_BUFFER | FF7-encoded, 0xFF-terminated, ≥9 chars (v2.8) |
+| `0xDD4630` | (noise) | u16 frame/animation counter, changes every poll on the naming screen |
+| `0xDD46F0` | unknown | read 8 on Cloud screen ("CloudGHR" len), 6 on Barret screen ("Barret" len) — possibly name length at screen open; not updated live during editing. Unresolved |
+| `0xDD46F8` | NAME_ENTRY_CHAR_INDEX | 0=Cloud, 1=Barret. The Echo mod hext patch called this "cursor column" — wrong label, it's the character being named |
+| `0xDD46FC` | NAME_ENTRY_ACTIVE | 1 while naming screen open (v2.8 gate, with GAME_MODE==6) |
 | `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
 
 ### Discovery techniques ranked by success rate (as of 2026-07-09)

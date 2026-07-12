@@ -140,6 +140,7 @@ static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
+static HANDLE g_nameentry_thread  = nullptr;
 
 // ---------------------------------------------------------------------------
 // Sound sub-menu volume cache.
@@ -1509,6 +1510,259 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
+// Name-entry screen TTS thread (v2.8).
+//
+// Speaks the character grid on the "Please enter a name" screen:
+//   - on screen open: "Name entry. Current name, Cloud. Cursor on capital A."
+//   - on cursor move: the letter now under the cursor ("capital G", "comma")
+//   - on letter add (Confirm): echoes the added letter, then spells the
+//     whole name ("g. capital C l o u d g")
+//   - on letter delete (Cancel): "Deleted g." then spells what remains
+// The full-name spell-out after every edit is deliberate: keyboard/controller
+// auto-repeat can double a letter without the player noticing, and hearing
+// the complete name after each change catches that immediately.
+//
+// All addresses live-confirmed 2026-07-12 (ff7_name_entry_scan.py +
+// ff7_name_entry_verify.py) — see ff7_addresses.h name-entry section for the
+// full discovery story, including why the buffer base is 0xDD45F0 and why
+// 0xDD46F8 is the char index (not a cursor, despite the Echo mod's label).
+//
+// GATE: GAME_MODE == 6 (name entry, new live-observed value) AND
+// NAME_ENTRY_ACTIVE == 1, held for 2 consecutive polls (same streak pattern
+// as MenuCursorThread's MENU_OPEN debounce — a single stale poll of either
+// byte never triggers the announce logic).
+//
+// WHY WE NEVER PREDICT CURSOR MOVEMENT: the player reported (2026-07-12)
+// that the game's cursor wrap at grid edges is erratic — it does not always
+// wrap to the start of the same line. We only ever announce the cell the
+// cursor actually landed on, so engine wrap quirks are self-correcting:
+// whatever the game did, the player hears where they ended up.
+//
+// KNOWN GAP — side panel (Space/Delete/Select/Default): ROW/COL keep their
+// last grid values while the cursor is on the panel (confirmed live), and no
+// reliable panel-state byte has been found yet (0xDD4574 is inconsistent).
+// Panel navigation is therefore SILENT for now. Logged in TODO.txt.
+//
+// MULTI-SCREEN HANDOFF: FF7 can chain naming screens back-to-back (Cloud →
+// Barret at game start) without NAME_ENTRY_ACTIVE dropping 0 long enough to
+// guarantee our 100ms poll sees it. NAME_ENTRY_CHAR_INDEX changing is the
+// reliable handoff signal (0→1 captured live at the exact frame the Barret
+// screen replaced Cloud's) — we re-announce the screen when it changes.
+//
+// Gated by Config::Get().speak_menus (the naming screen is a menu-module
+// screen; no separate config option needed).
+// ---------------------------------------------------------------------------
+
+// The on-screen character grid, row-major. Rows/columns match the confirmed
+// cursor value ranges (row 0-6, col 0-9).
+// UNCERTAIN CELLS: row 5, columns 8-9 (apostrophe/quote) were hard to read
+// in the reference screenshot. If a player reports hearing the wrong
+// punctuation there, fix these two entries. The add/delete echo is immune to
+// this: it decodes the byte the game actually wrote, not the grid guess.
+static const wchar_t kNameGrid[7][10] = {
+    { L'A', L'B', L'C', L'D', L'E', L'F', L'G', L'H', L'I', L'J' },
+    { L'K', L'L', L'M', L'N', L'O', L'P', L'Q', L'R', L'S', L'T' },
+    { L'U', L'V', L'W', L'X', L'Y', L'Z', L',', L'.', L'+', L'-' },
+    { L'a', L'b', L'c', L'd', L'e', L'f', L'g', L'h', L'i', L'j' },
+    { L'k', L'l', L'm', L'n', L'o', L'p', L'q', L'r', L's', L't' },
+    { L'u', L'v', L'w', L'x', L'y', L'z', L':', L';', L'\'', L'"' },
+    { L'0', L'1', L'2', L'3', L'4', L'5', L'6', L'7', L'8', L'9' },
+};
+
+// Spoken form of a single name character. Punctuation gets its word (SAPI
+// and most screen readers skip or mangle lone punctuation), and uppercase
+// letters get a "capital" prefix so A/a are distinguishable by ear — Tolk
+// passes plain text, so we cannot rely on a screen reader's pitch-change
+// capital indication being enabled.
+static std::wstring SpokenNameChar(wchar_t c)
+{
+    switch (c) {
+        case L',':  return L"comma";
+        case L'.':  return L"period";
+        case L'+':  return L"plus";
+        case L'-':  return L"minus";
+        case L':':  return L"colon";
+        case L';':  return L"semicolon";
+        case L'\'': return L"apostrophe";
+        case L'"':  return L"quote";
+        case L' ':  return L"space";
+    }
+    if (c >= L'A' && c <= L'Z') {
+        std::wstring s = L"capital ";
+        s += c;
+        return s;
+    }
+    return std::wstring(1, c);
+}
+
+// Decode the raw NAME_ENTRY_BUFFER bytes (FF7 encoding: char = byte + 0x20
+// for the printable range, 0xFF terminates) into a wide string. Name-entry
+// text never contains the dialog-only token bytes (0xE0+), so this simple
+// mapping is complete here; FF7Text::Decode is for dialog strings.
+static std::wstring DecodeNameBuffer(const uint8_t* raw, size_t cap)
+{
+    std::wstring out;
+    for (size_t i = 0; i < cap && raw[i] != 0xFF; ++i) {
+        const wchar_t c = static_cast<wchar_t>(raw[i] + 0x20);
+        if (c >= L' ' && c <= L'~') out += c;
+    }
+    return out;
+}
+
+// Spell a name character-by-character with spoken punctuation/capitals:
+// "Cloud" -> "capital C l o u d". Empty input -> "empty".
+static std::wstring SpellName(const std::wstring& name)
+{
+    if (name.empty()) return L"empty";
+    std::wstring out;
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (i) out += L' ';
+        out += SpokenNameChar(name[i]);
+    }
+    return out;
+}
+
+static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
+{
+    // Poll at 100ms (vs the menus' 150ms): grid navigation is the fastest
+    // repeated input in the game short of battle, and a missed cell between
+    // polls would announce a letter the player already left.
+    constexpr DWORD kPollMs = 100;
+
+    bool     on_screen  = false;  // debounced "naming screen is open" state
+    uint8_t  gate_streak = 0;     // consecutive polls with both gate bytes set
+    uint32_t last_row = 0, last_col = 0;
+    uint8_t  last_char_index = 0;
+    uint8_t  last_buf[FF7Addr::NAME_ENTRY_BUFFER_CAP] = {};
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, kPollMs) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            on_screen = false;
+            gate_streak = 0;
+            continue;
+        }
+
+        // Gate: both bytes must agree that a naming screen is open. Either
+        // alone could be unrelated BSS reuse in another module; together
+        // (plus the 2-poll streak) false positives have not been observed.
+        const uint8_t game_mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+        const uint8_t active =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_ACTIVE);
+
+        if (game_mode != FF7Addr::GAME_MODE_NAME_ENTRY || active != 1) {
+            on_screen = false;
+            gate_streak = 0;
+            continue;
+        }
+
+        if (gate_streak < 2) {
+            gate_streak++;
+            if (gate_streak < 2) continue;
+        }
+
+        // Read the live state. All addresses are static BSS — always readable.
+        const uint32_t row =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::NAME_ENTRY_ROW);
+        const uint32_t col =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::NAME_ENTRY_COL);
+        const uint8_t char_index =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_CHAR_INDEX);
+
+        uint8_t buf[FF7Addr::NAME_ENTRY_BUFFER_CAP];
+        memcpy(buf, reinterpret_cast<const void*>(FF7Addr::NAME_ENTRY_BUFFER),
+               sizeof(buf));
+
+        // Screen (re)open: first gated poll, or the game chained straight to
+        // the next character's screen (char_index change, e.g. Cloud→Barret).
+        if (!on_screen || char_index != last_char_index) {
+            const std::wstring name = DecodeNameBuffer(buf, sizeof(buf));
+
+            std::wstring msg = L"Name entry. Current name, ";
+            msg += name.empty() ? L"empty" : name;
+            msg += L". ";
+            if (row < 7 && col < 10) {
+                msg += L"Cursor on ";
+                msg += SpokenNameChar(kNameGrid[row][col]);
+                msg += L".";
+            }
+
+            char dbg[96];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] NAME-ENTRY open char=%u row=%u col=%u len=%u",
+                char_index, row, col, static_cast<unsigned>(name.size()));
+            Log::Write(dbg);
+
+            TTS::Speak(msg.c_str(), /*interrupt=*/true);
+
+            on_screen = true;
+            last_char_index = char_index;
+            last_row = row;
+            last_col = col;
+            memcpy(last_buf, buf, sizeof(buf));
+            continue;
+        }
+
+        // Cursor movement: announce the cell the cursor LANDED ON (never a
+        // prediction — see wrap warning in the header comment). Out-of-grid
+        // values are logged but not spoken; that is the side-panel gap.
+        if (row != last_row || col != last_col) {
+            if (row < 7 && col < 10) {
+                TTS::Speak(SpokenNameChar(kNameGrid[row][col]).c_str(),
+                           /*interrupt=*/true);
+            } else {
+                char dbg[80];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAME-ENTRY cursor outside grid row=%u col=%u",
+                    row, col);
+                Log::Write(dbg);
+            }
+            last_row = row;
+            last_col = col;
+        }
+
+        // Name edits. Compare full raw buffers: length via terminator scan,
+        // then classify the change as append / delete / wholesale rewrite.
+        if (memcmp(buf, last_buf, sizeof(buf)) != 0) {
+            const std::wstring now_name  = DecodeNameBuffer(buf, sizeof(buf));
+            const std::wstring prev_name = DecodeNameBuffer(last_buf, sizeof(last_buf));
+
+            std::wstring msg;
+            if (now_name.size() == prev_name.size() + 1 &&
+                now_name.compare(0, prev_name.size(), prev_name) == 0) {
+                // Single letter appended (Confirm on a grid cell): echo the
+                // letter the GAME wrote (ground truth even if our grid table
+                // has a wrong guess), then spell the full name.
+                msg  = SpokenNameChar(now_name.back());
+                msg += L". ";
+                msg += SpellName(now_name);
+            } else if (prev_name.size() == now_name.size() + 1 &&
+                       prev_name.compare(0, now_name.size(), now_name) == 0) {
+                // Single letter deleted (Cancel).
+                msg  = L"Deleted ";
+                msg += SpokenNameChar(prev_name.back());
+                msg += L". ";
+                msg += SpellName(now_name);
+            } else {
+                // Anything else — e.g. the Default button restoring the
+                // original name, or multiple edits landing within one poll.
+                msg  = L"Name is now ";
+                msg += SpellName(now_name);
+            }
+
+            Log::Write("[FF7Access] NAME-ENTRY buffer changed");
+            TTS::Speak(msg.c_str(), /*interrupt=*/true);
+            memcpy(last_buf, buf, sizeof(buf));
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Background initialization thread.
 //
 // This thread handles Config/TTS/Hook init outside the loader lock.
@@ -1614,8 +1868,24 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start wall-bump thread.");
         }
 
+        // Name-entry screen TTS (v2.8). Grid cursor + name buffer confirmed
+        // live 2026-07-12 (ff7_name_entry_scan.py / ff7_name_entry_verify.py):
+        // NAME_ENTRY_COL=0xDD4538, NAME_ENTRY_ROW=0xDD453C,
+        // NAME_ENTRY_BUFFER=0xDD45F0, NAME_ENTRY_CHAR_INDEX=0xDD46F8,
+        // NAME_ENTRY_ACTIVE=0xDD46FC, GAME_MODE==6 on the naming screen.
+        // Must start before the Install() loop below for the same reason as
+        // the title thread: the first naming screen (Cloud) appears minutes
+        // into a New Game, but a naming screen is reachable without any of
+        // the field-module state Install() waits for.
+        g_nameentry_thread = CreateThread(nullptr, 0, NameEntryThread, nullptr, 0, nullptr);
+        if (g_nameentry_thread) {
+            Log::Write("[FF7Access] Name-entry polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start name-entry thread.");
+        }
+
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
-            !g_battle_thread && !g_wallbump_thread) {
+            !g_battle_thread && !g_wallbump_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -1752,6 +2022,11 @@ void Shutdown()
         WaitForSingleObject(g_wallbump_thread, 500);
         CloseHandle(g_wallbump_thread);
         g_wallbump_thread = nullptr;
+    }
+    if (g_nameentry_thread) {
+        WaitForSingleObject(g_nameentry_thread, 500);
+        CloseHandle(g_nameentry_thread);
+        g_nameentry_thread = nullptr;
     }
 
     if (g_cursor_stop_event) {

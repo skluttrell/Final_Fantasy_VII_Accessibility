@@ -106,6 +106,38 @@ distinguishable by ear. Deferred until the direction-mismatch approach is
 designed.
 
 
+[TTS] Name entry — side panel (Space/Delete/Select/Default) is silent
+----------------------------------------------------------------------
+The v2.8 name-entry TTS covers the 7x10 character grid and name readback,
+but the right-hand button panel is undetectable: NAME_ENTRY_ROW/COL keep
+their last grid values while the cursor is on the panel (confirmed live
+2026-07-12 — pressing Right past column 9 changed neither).
+
+Candidate byte 0xDD4574 moved 0->1 at the moment of a Right-past-the-edge
+press, but its behavior is inconsistent: it also changed 3->2 once alongside
+a character delete, and it did NOT reset when the cursor returned to the
+grid. Not usable without more data.
+
+Next step: at the next naturally-occurring naming screen (Tifa in Sector 7,
+Aeris at the church, or a New Game restart), run a focused probe: watch
+0xDD4560-0xDD45B0 while the player slowly enters/leaves the panel and moves
+Up/Down inside it, narrating each press afterwards. Also log 0xDD45E8
+(u32: small values while editing, 0xFFFFFFFF at times — possibly related).
+
+Also unresolved from the same session: 0xDD46F0 (8 on Cloud screen with
+"CloudGHR", 6 on Barret screen with "Barret" — maybe name length at screen
+open; not updated live during editing).
+
+
+[TTS] Name entry — grid row 5 columns 8-9 unverified
+-----------------------------------------------------
+kNameGrid guesses apostrophe (col 8) and double-quote (col 9) for row 5;
+the reference screenshot was unreadable there. If a player lands on those
+cells the spoken guess may be wrong. The add-echo is immune (it decodes the
+byte the game wrote), so navigating there and pressing Confirm reveals the
+truth — fix kNameGrid in proxy.cpp when observed.
+
+
 [CONFIG] Auto-create default config file if missing
 ----------------------------------------------------
 If the user places version.dll in the FF7 folder but forgets ffvii_accessibility.cfg,
