@@ -862,8 +862,8 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0xDD4400` | (noise) | frame-parity blink byte, toggles 0↔1 every frame on the naming screen |
-| `0xDD4538` | NAME_ENTRY_COL | u32, grid column 0–9 (v2.8) |
-| `0xDD453C` | NAME_ENTRY_ROW | u32, grid row 0–6 (v2.8) |
+| `0xDD4538` | NAME_ENTRY_COL | grid column 0–9 (v2.8). 4-byte slot spacing, but READ AS u8 — only the low byte is verified (v2.8.1) |
+| `0xDD453C` | NAME_ENTRY_ROW | grid row 0–6 (v2.8). Read as u8, same reason. Can CHANGE when entering the side panel (1→4 observed) |
 | `0xDD4574` | NAME_ENTRY_PANEL_INDEX | RESOLVED (v2.8.2): side-panel button index 0=Space 1=Delete 2=Select 3=Default (0/1 proven by buffer effects; 2/3 order ear-confirmed). Wraps 0↔3. Retains last value after leaving the panel and idles 0 — gate on PANE_FLAG (0x921ED4), never alone. The old "3→2 alongside a delete" anomaly was a Confirm press ON the panel's Delete button |
 | `0xDD45E8` | unknown u32 | small values during editing, 0xFFFFFFFF at times, reset per screen. Unresolved |
 | `0xDD45F0` | NAME_ENTRY_BUFFER | FF7-encoded, 0xFF-terminated, ≥9 chars (v2.8) |
