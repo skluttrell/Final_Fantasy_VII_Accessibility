@@ -139,7 +139,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `NAME_ENTRY_PANEL_INDEX` | `0x00DD4574` | Side-panel button, valid only while PANE_FLAG==1: 0=Space 1=Delete 2=Select 3=Default (0/1 proven by name-buffer effects). Wraps 0↔3; retains last value after leaving the panel |
 | `NAME_ENTRY_CARET` | `0x00DD46F0` | Caret position, clamped 0–8. Name hard cap = 9 chars; at cap Confirm replaces the last char |
 | `MENU_CURSOR` | `0x00DC1154` | Main menu row 0–10 (Item…Quit); constant during field play |
-| `MENU_OPEN` | `0x00DC12DC` | 1 when main menu or post-battle results active; must gate with FIELD_ID!=0 |
+| `MENU_OPEN` | `0x00DC12DC` | 1 when main menu, post-battle results, OR the naming screen is active; gate with FIELD_ID!=0 AND GAME_MODE!=6 (naming screen set it with FIELD_ID non-zero → false "Item" announce, fixed v2.8.3) |
 | `CONFIG_ROW` | `0x00DC10F0` | Config sub-menu row 0–9 (Window color…Magic order); proxy gate: MENU_CURSOR==7 |
 | `CONFIG_SPEED_BATTLE` | `0x00DC0E10` | Row 5 Battle speed — raw byte, 0=Fast → 255=Slow |
 | `CONFIG_SPEED_MSG` | `0x00DC0E11` | Row 6 Battle message speed — raw byte, 0=Fast → 255=Slow |
@@ -852,7 +852,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC108C` | SOUND_CURSOR | |
 | `0xDC10F0` | CONFIG_ROW | |
 | `0xDC1154` | MENU_CURSOR | |
-| `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen |
+| `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen AND the naming screen (v2.8.3) |
 | `0xDC208C` | kernel2 lookup result ptr | written after every consumer CALL to 0x41963C — but consumer is FFNx-replaced, so **never written in practice**; observed 0 always (2026-07-11) |
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |

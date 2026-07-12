@@ -173,10 +173,12 @@ constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
 //   row 5: u v w x y z : ; ' "   <- columns 8-9 not yet visually confirmed
 //   row 6: 0 1 2 3 4 5 6 7 8 9
 //
-// CURSOR EDGE BEHAVIOR (player-observed + live-confirmed 2026-07-12): the
-// cursor does NOT wrap at the right grid edge — pressing Right on the last
-// column JUMPS to the side panel (Space/Delete/Select/Default). Leaving the
-// panel with Left restores the previously-occupied grid COLUMN (the game
+// CURSOR EDGE BEHAVIOR (player-observed + live-confirmed 2026-07-12):
+// horizontal movement NEVER wraps — pressing Right on the last column JUMPS
+// to the side panel (Space/Delete/Select/Default). The only wrapping in the
+// whole screen is VERTICAL movement on the panel (index 0 <-> 3, observed
+// live and player-confirmed as normal game behavior). Leaving the panel
+// with Left restores the previously-occupied grid COLUMN (the game
 // remembers it), and entering the panel can CHANGE the ROW value (observed
 // row 1 -> 4 at panel entry) — one more reason the TTS thread only ever
 // announces where the cursor actually landed, gated by the pane flag below.
@@ -294,6 +296,9 @@ constexpr uint32_t MENU_CURSOR = 0x00DC1154;
 // IMPORTANT — this flag covers MORE than just the main menu:
 //   - In-game main menu (Item / Magic / Equip … / Quit)  ← what we want
 //   - Post-battle results screen (EXP, AP, gil, treasure) ← also sets this
+//   - The NAMING SCREEN (confirmed 2026-07-12: it set MENU_OPEN=1 with
+//     FIELD_ID non-zero, making MenuCursorThread falsely announce "Item"
+//     over the name-entry TTS; fixed by a GAME_MODE==6 stand-down gate)
 //   The FIELD_ID gate in MenuCursorThread (field_id == 0 → skip) is what
 //   prevents false announces from the title screen; the post-battle screen
 //   occurs during the battle module where FIELD_ID is 0, so it is filtered

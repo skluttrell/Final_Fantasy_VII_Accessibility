@@ -510,6 +510,26 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             continue;
         }
 
+        // The NAMING SCREEN also sets MENU_OPEN=1 while FIELD_ID stays
+        // non-zero (player-reported 2026-07-12: a false "Item" announce —
+        // MENU_CURSOR's stale value — talked over NameEntryThread's own
+        // screen-open announcement). GAME_MODE==6 identifies the naming
+        // screen; that screen's TTS belongs to NameEntryThread, so stand
+        // down completely while it is active. (Deliberately a narrow !=6
+        // exclusion rather than requiring GAME_MODE==9: 9=menu is live-
+        // confirmed for the field main menu, but other MENU_OPEN contexts
+        // haven't been mode-sampled yet, and this project only trusts
+        // live-observed GAME_MODE values.)
+        const uint8_t menu_game_mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+        if (menu_game_mode == FF7Addr::GAME_MODE_NAME_ENTRY) {
+            last_cursor      = 0xFF;
+            last_menu_open   = 0;
+            last_quit_cursor = 0xFF;
+            menu_open_streak = 0;
+            continue;
+        }
+
         // ── Main menu ────────────────────────────────────────────────────────
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
