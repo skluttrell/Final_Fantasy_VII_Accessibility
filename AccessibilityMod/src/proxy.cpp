@@ -1534,16 +1534,21 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // as MenuCursorThread's MENU_OPEN debounce — a single stale poll of either
 // byte never triggers the announce logic).
 //
-// WHY WE NEVER PREDICT CURSOR MOVEMENT: the player reported (2026-07-12)
-// that the game's cursor wrap at grid edges is erratic — it does not always
-// wrap to the start of the same line. We only ever announce the cell the
-// cursor actually landed on, so engine wrap quirks are self-correcting:
-// whatever the game did, the player hears where they ended up.
+// WHY WE NEVER PREDICT CURSOR MOVEMENT: the cursor does not wrap at the
+// right grid edge — it JUMPS to the side panel (player-observed, then
+// live-confirmed 2026-07-12). Entering the panel can also CHANGE the ROW
+// byte (observed 1 -> 4), and leaving restores the remembered grid column.
+// We only ever announce the cell/button the cursor actually landed on, so
+// all of these engine quirks are self-correcting.
 //
-// KNOWN GAP — side panel (Space/Delete/Select/Default): ROW/COL keep their
-// last grid values while the cursor is on the panel (confirmed live), and no
-// reliable panel-state byte has been found yet (0xDD4574 is inconsistent).
-// Panel navigation is therefore SILENT for now. Logged in TODO.txt.
+// SIDE PANEL (resolved 2026-07-12): NAME_ENTRY_PANE_FLAG (0x921ED4) is 1
+// while the cursor is on the Space/Delete/Select/Default panel, and
+// NAME_ENTRY_PANEL_INDEX (0xDD4574) says which button (0-3, wraps).
+// Grid-letter announcements are gated on pane_flag == 0 — without that
+// gate, the ROW change at panel entry would speak a phantom letter.
+// Indices 0/1 (Space/Delete) proven by their effect on the name buffer;
+// 2/3 (Select/Default) from on-screen order, player ear-confirmed. If
+// final testing shows 2/3 swapped, fix kPanelNames below.
 //
 // MULTI-SCREEN HANDOFF: FF7 can chain naming screens back-to-back (Cloud →
 // Barret at game start) without NAME_ENTRY_ACTIVE dropping 0 long enough to
@@ -1561,6 +1566,12 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // in the reference screenshot. If a player reports hearing the wrong
 // punctuation there, fix these two entries. The add/delete echo is immune to
 // this: it decodes the byte the game actually wrote, not the grid guess.
+// Side-panel button names, indexed by NAME_ENTRY_PANEL_INDEX (top to
+// bottom). 0/1 proven by buffer effects; 2/3 ear-confirmed order.
+static const wchar_t* const kPanelNames[4] = {
+    L"Space", L"Delete", L"Select", L"Default",
+};
+
 static const wchar_t kNameGrid[7][10] = {
     { L'A', L'B', L'C', L'D', L'E', L'F', L'G', L'H', L'I', L'J' },
     { L'K', L'L', L'M', L'N', L'O', L'P', L'Q', L'R', L'S', L'T' },
@@ -1636,6 +1647,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
     bool     on_screen  = false;  // debounced "naming screen is open" state
     uint8_t  gate_streak = 0;     // consecutive polls with both gate bytes set
     uint8_t  last_row = 0, last_col = 0;
+    uint8_t  last_pane = 0, last_panel = 0;
     uint8_t  last_char_index = 0;
     uint8_t  last_buf[FF7Addr::NAME_ENTRY_BUFFER_CAP] = {};
     // Set when a wholesale buffer rewrite is seen; the announce is deferred
@@ -1688,13 +1700,17 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
         // LOW byte of each DWORD slot changing, and the three high bytes are
         // unverified — if they held nonzero data, a u32 read would fail the
         // grid bound check forever and silence the whole feature.
-        uint8_t row, col, char_index;
+        uint8_t row, col, pane, panel, char_index;
         uint8_t buf[FF7Addr::NAME_ENTRY_BUFFER_CAP];
         {
             const uint8_t row1 =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_ROW);
             const uint8_t col1 =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_COL);
+            const uint8_t pan1 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_PANE_FLAG);
+            const uint8_t pix1 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_PANEL_INDEX);
             const uint8_t idx1 =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_CHAR_INDEX);
             memcpy(buf, reinterpret_cast<const void*>(FF7Addr::NAME_ENTRY_BUFFER),
@@ -1707,14 +1723,20 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_ROW);
             const uint8_t col2 =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_COL);
+            const uint8_t pan2 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_PANE_FLAG);
+            const uint8_t pix2 =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_PANEL_INDEX);
             const uint8_t idx2 =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::NAME_ENTRY_CHAR_INDEX);
 
-            if (row1 != row2 || col1 != col2 || idx1 != idx2 ||
+            if (row1 != row2 || col1 != col2 || pan1 != pan2 ||
+                pix1 != pix2 || idx1 != idx2 ||
                 memcmp(buf, buf2, sizeof(buf)) != 0) {
                 continue;   // torn read — retry next poll
             }
-            row = row1; col = col1; char_index = idx1;
+            row = row1; col = col1; pane = pan1; panel = pix1;
+            char_index = idx1;
         }
 
         // Screen (re)open: first gated poll, or the game chained straight to
@@ -1725,16 +1747,22 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
             std::wstring msg = L"Name entry. Current name, ";
             msg += name.empty() ? L"empty" : name;
             msg += L". ";
-            if (row < 7 && col < 10) {
+            if (pane == 1 && panel <= FF7Addr::NAME_ENTRY_PANEL_MAX) {
+                msg += L"Cursor on ";
+                msg += kPanelNames[panel];
+                msg += L".";
+            } else if (row < 7 && col < 10) {
                 msg += L"Cursor on ";
                 msg += SpokenNameChar(kNameGrid[row][col]);
                 msg += L".";
             }
 
-            char dbg[96];
+            char dbg[112];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                "[FF7Access] NAME-ENTRY open char=%u row=%u col=%u len=%u",
-                char_index, row, col, static_cast<unsigned>(name.size()));
+                "[FF7Access] NAME-ENTRY open char=%u row=%u col=%u pane=%u "
+                "panel=%u len=%u",
+                char_index, row, col, pane, panel,
+                static_cast<unsigned>(name.size()));
             Log::Write(dbg);
 
             TTS::Speak(msg.c_str(), /*interrupt=*/true);
@@ -1744,14 +1772,43 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
             last_char_index = char_index;
             last_row = row;
             last_col = col;
+            last_pane = pane;
+            last_panel = panel;
             memcpy(last_buf, buf, sizeof(buf));
             continue;
         }
 
-        // Cursor movement: announce the cell the cursor LANDED ON (never a
-        // prediction — see wrap warning in the header comment). Out-of-grid
-        // values are logged but not spoken; that is the side-panel gap.
-        if (row != last_row || col != last_col) {
+        // Cursor movement — pane-aware. Grid letters are announced ONLY
+        // while the cursor is actually in the grid (pane == 0): entering the
+        // panel can change the ROW byte (observed live, 1 -> 4), which would
+        // otherwise speak a phantom letter. All branches announce where the
+        // cursor LANDED, never a prediction (see header comment).
+        if (pane != last_pane) {
+            // Crossed between grid and panel.
+            if (pane == 1) {
+                if (panel <= FF7Addr::NAME_ENTRY_PANEL_MAX) {
+                    TTS::Speak(kPanelNames[panel], /*interrupt=*/true);
+                }
+            } else if (row < 7 && col < 10) {
+                // Back on the grid — the game restores the remembered grid
+                // column, so tell the player where they landed.
+                std::wstring msg = L"grid, ";
+                msg += SpokenNameChar(kNameGrid[row][col]);
+                TTS::Speak(msg.c_str(), /*interrupt=*/true);
+            }
+            last_pane  = pane;
+            last_panel = panel;
+            last_row   = row;
+            last_col   = col;
+        } else if (pane == 1 && panel != last_panel) {
+            // Moving between panel buttons (wraps 0 <-> 3).
+            if (panel <= FF7Addr::NAME_ENTRY_PANEL_MAX) {
+                TTS::Speak(kPanelNames[panel], /*interrupt=*/true);
+            }
+            last_panel = panel;
+            last_row   = row;    // keep grid state in sync silently — the
+            last_col   = col;    // ROW byte can drift while on the panel
+        } else if (pane == 0 && (row != last_row || col != last_col)) {
             if (row < 7 && col < 10) {
                 TTS::Speak(SpokenNameChar(kNameGrid[row][col]).c_str(),
                            /*interrupt=*/true);
@@ -1799,7 +1856,10 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 // normal play session verifies the uncertain cells (row 5
                 // cols 8-9) without needing a sighted tester — TODO.txt's
                 // "fix when observed" plan depends on this record existing.
-                if (row < 7 && col < 10 &&
+                // Only meaningful for GRID confirms: the panel's Space button
+                // also appends a character while row/col still point at a
+                // grid cell, which would log a false mismatch.
+                if (pane == 0 && row < 7 && col < 10 &&
                     now_name.back() != kNameGrid[row][col]) {
                     char dbg[112];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,

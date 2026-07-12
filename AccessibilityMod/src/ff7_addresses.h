@@ -173,19 +173,28 @@ constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
 //   row 5: u v w x y z : ; ' "   <- columns 8-9 not yet visually confirmed
 //   row 6: 0 1 2 3 4 5 6 7 8 9
 //
-// CURSOR WRAP WARNING (player-reported 2026-07-12): the game's cursor does
-// NOT always wrap to the start of the same line at grid edges — it can land
-// somewhere non-obvious. This is engine behavior, not a bug in our reads.
-// The TTS thread therefore never predicts movement; it only announces the
-// cell the cursor actually landed on.
+// CURSOR EDGE BEHAVIOR (player-observed + live-confirmed 2026-07-12): the
+// cursor does NOT wrap at the right grid edge — pressing Right on the last
+// column JUMPS to the side panel (Space/Delete/Select/Default). Leaving the
+// panel with Left restores the previously-occupied grid COLUMN (the game
+// remembers it), and entering the panel can CHANGE the ROW value (observed
+// row 1 -> 4 at panel entry) — one more reason the TTS thread only ever
+// announces where the cursor actually landed, gated by the pane flag below.
 //
-// KNOWN GAP — the side panel (Space / Delete / Select / Default):
-//   When the cursor moves onto the right-hand button panel, ROW and COL keep
-//   their last grid values (confirmed live: Right past column 9 changed
-//   neither). A byte at 0xDD4574 moved 0->1 at that moment but its pattern
-//   is inconsistent (it also changed once alongside a character delete and
-//   does not reset when returning to the grid) — NOT usable yet. Until the
-//   panel encoding is found, panel navigation is silent. See TODO.txt.
+// SIDE PANEL — RESOLVED 2026-07-12 (was the v2.8 "known gap"):
+//   ff7_name_entry_panel_probe.py labeled the buttons by their effect on the
+//   name buffer (Space added byte 0x00, Delete removed a char — indices 0
+//   and 1 proven; 2=Select and 3=Default inferred from on-screen order and
+//   player-confirmed by ear during ff7_name_entry_pane_verify.py).
+//   ff7_name_entry_pane_flag_scan.py (A/B/A revert scan over the full
+//   static range) found the pane flag at 0x921ED4 — the sole clean boolean
+//   candidate — and the live verify tracked six grid<->panel crossings and
+//   a dozen panel moves flawlessly. The panel index WRAPS vertically
+//   (0 <-> 3 transitions observed).
+//
+// NAME LENGTH: hard cap of 9 characters. At the cap, Confirm REPLACES the
+// 9th character instead of appending (observed live: 'CloudFPZf' ->
+// 'CloudFPZp' -> 'CloudFPZz' on successive grid confirms).
 // ---------------------------------------------------------------------------
 
 // Grid cursor column (0-9) and row (0-6): adjacent 4-byte-spaced X/Y pair.
@@ -224,6 +233,31 @@ constexpr uint32_t NAME_ENTRY_CHAR_INDEX = 0x00DD46F8;
 // transitions matched (Cloud close, Barret open, final exit). Gate together
 // with GAME_MODE == GAME_MODE_NAME_ENTRY — either alone could be BSS reuse.
 constexpr uint32_t NAME_ENTRY_ACTIVE     = 0x00DD46FC;
+
+// Pane flag: 0 = cursor in the letter grid, 1 = cursor on the side panel.
+// Lives OUTSIDE the DD name-entry block (0x92xxxx menu-module data) — found
+// by full-static-range A/B/A revert scan (ff7_name_entry_pane_flag_scan.py,
+// 2026-07-12), then live-verified across six grid<->panel crossings
+// (ff7_name_entry_pane_verify.py). Only valid while the naming-screen gate
+// holds; treat as unrelated BSS otherwise.
+constexpr uint32_t NAME_ENTRY_PANE_FLAG  = 0x00921ED4;
+
+// Side-panel button index, valid ONLY while NAME_ENTRY_PANE_FLAG == 1:
+//   0 = Space   (proven: Confirm added byte 0x00 to the name)
+//   1 = Delete  (proven: Confirm removed a character)
+//   2 = Select  (on-screen order + player ear-confirmed; closes the screen)
+//   3 = Default (on-screen order + player ear-confirmed; restores the name)
+// Wraps vertically (0 <-> 3). RETAINS its last value after returning to the
+// grid and idles at 0 before first panel entry — it says WHICH button, never
+// WHETHER the cursor is on the panel; that is the pane flag's job.
+constexpr uint32_t NAME_ENTRY_PANEL_INDEX = 0x00DD4574;
+constexpr uint32_t NAME_ENTRY_PANEL_MAX   = 3;
+
+// Caret position within the name, clamped to 0..8 (the 9-char cap minus 1).
+// Tracked 5->6->7->8 live as letters were appended to 'Cloud' and pinned at
+// 8 once the name was full. Not currently used by the mod (the buffer's
+// 0xFF terminator gives the length directly) — documented for completeness.
+constexpr uint32_t NAME_ENTRY_CARET      = 0x00DD46F0;
 
 // GAME_MODE (0xCC0D89) value on the naming screen. New live-observed value
 // (2026-07-12), joining 0=field, 2=battle, 9=menu.

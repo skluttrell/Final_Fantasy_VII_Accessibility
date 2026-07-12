@@ -135,6 +135,9 @@ every confirmed address — the clustering itself is a discovery tool.
 | `NAME_ENTRY_BUFFER` | `0x00DD45F0` | Name-in-progress, FF7-encoded, 0xFF-terminated, ≥9 chars capacity. ⚠ the first scan found 0xDD45F5 — that was just the first byte that CHANGED; the "Cloud" prefix masked F0–F4 until the Barret-screen handoff rewrote them |
 | `NAME_ENTRY_CHAR_INDEX` | `0x00DD46F8` | Which character is being named: 0=Cloud, 1=Barret (flipped exactly at screen handoff). **This is the address the Echo mod hext patch mislabeled "cursor column"** — it never changes during grid navigation |
 | `NAME_ENTRY_ACTIVE` | `0x00DD46FC` | 1 while a naming screen is open, 0 otherwise. Matched all three observed transitions (Cloud close, Barret open, final exit). Gate together with GAME_MODE==6 |
+| `NAME_ENTRY_PANE_FLAG` | `0x00921ED4` | 0=cursor in letter grid, 1=cursor on side panel (v2.8.2, live-verified across 6 crossings). Lives in 0x92xxxx .data, NOT the DD block. Entering the panel can change the ROW byte (observed 1→4) — gate grid announcements on this flag |
+| `NAME_ENTRY_PANEL_INDEX` | `0x00DD4574` | Side-panel button, valid only while PANE_FLAG==1: 0=Space 1=Delete 2=Select 3=Default (0/1 proven by name-buffer effects). Wraps 0↔3; retains last value after leaving the panel |
+| `NAME_ENTRY_CARET` | `0x00DD46F0` | Caret position, clamped 0–8. Name hard cap = 9 chars; at cap Confirm replaces the last char |
 | `MENU_CURSOR` | `0x00DC1154` | Main menu row 0–10 (Item…Quit); constant during field play |
 | `MENU_OPEN` | `0x00DC12DC` | 1 when main menu or post-battle results active; must gate with FIELD_ID!=0 |
 | `CONFIG_ROW` | `0x00DC10F0` | Config sub-menu row 0–9 (Window color…Magic order); proxy gate: MENU_CURSOR==7 |
@@ -485,6 +488,9 @@ can stay in the background while FF7 is in focus.
 | `0x00DD45F0` | NAME_ENTRY_BUFFER | same (scan reported 0xDD45F5; verify's screen-handoff diff exposed the true base) |
 | `0x00DD46F8` | NAME_ENTRY_CHAR_INDEX | same (disproved the Echo mod's "cursor column" label) |
 | `0x00DD46FC` | NAME_ENTRY_ACTIVE | same |
+| `0x00DD4574` | NAME_ENTRY_PANEL_INDEX | ff7_name_entry_panel_probe.py (buttons labeled by their effect on the name buffer, 2026-07-12) |
+| `0x00921ED4` | NAME_ENTRY_PANE_FLAG | ff7_name_entry_pane_flag_scan.py (A/B/A revert) + ff7_name_entry_pane_verify.py (live, 2026-07-12) |
+| `0x00DD46F0` | NAME_ENTRY_CARET | ff7_name_entry_panel_probe.py (tracked 5→8 during appends) |
 
 ### Packed byte encodings
 
@@ -763,7 +769,9 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0x9055A0` | execute_opcode_table | uint32[256] |
+| `0x921ED4` | NAME_ENTRY_PANE_FLAG | 0=grid, 1=side panel on the naming screen (v2.8.2). Sole clean candidate of a full-static A/B/A revert scan; live-verified across 6 crossings. Far from the DD name-entry block — menu-module .data |
 | `0x9A8729`, `0x9A872A`, `0x9ADE30`, `0x9ADE34` | input-event/SFX pulse flags | pulse-and-reset on any d-pad press; REJECTED as cursor candidates |
+| `0x9A8731` | grid/panel covariant | 44 on grid, 49 on panel, reverted (pane-flag scan 2026-07-12); secondary candidate, likely cursor-SFX/sprite id — unused, PANE_FLAG is cleaner |
 | `0x9A13C8` / `0x9A7FC8` | kernel2 text scratch + u16 offset table | menu-module staging; **ALL ZERO during battle** (probed live 2026-07-11) — battle code never populates it |
 | `0x9A9484` | ENEMY_ATTACK_NAME_TABLE | CONFIRMED (was "section-8 table?"): current formation's attack names from scene.bin, stride 0x20; = get_kernel_text section 9 (`ret 0x9A9484 + idx*0x20`) |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
@@ -856,11 +864,11 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDD4400` | (noise) | frame-parity blink byte, toggles 0↔1 every frame on the naming screen |
 | `0xDD4538` | NAME_ENTRY_COL | u32, grid column 0–9 (v2.8) |
 | `0xDD453C` | NAME_ENTRY_ROW | u32, grid row 0–6 (v2.8) |
-| `0xDD4574` | side-panel suspect | UNRESOLVED: moved 0→1 on Right-past-column-9, didn't reset on grid return; also 3→2 once alongside a char delete. Semantics unknown — do not use yet |
+| `0xDD4574` | NAME_ENTRY_PANEL_INDEX | RESOLVED (v2.8.2): side-panel button index 0=Space 1=Delete 2=Select 3=Default (0/1 proven by buffer effects; 2/3 order ear-confirmed). Wraps 0↔3. Retains last value after leaving the panel and idles 0 — gate on PANE_FLAG (0x921ED4), never alone. The old "3→2 alongside a delete" anomaly was a Confirm press ON the panel's Delete button |
 | `0xDD45E8` | unknown u32 | small values during editing, 0xFFFFFFFF at times, reset per screen. Unresolved |
 | `0xDD45F0` | NAME_ENTRY_BUFFER | FF7-encoded, 0xFF-terminated, ≥9 chars (v2.8) |
 | `0xDD4630` | (noise) | u16 frame/animation counter, changes every poll on the naming screen |
-| `0xDD46F0` | unknown | read 8 on Cloud screen ("CloudGHR" len), 6 on Barret screen ("Barret" len) — possibly name length at screen open; not updated live during editing. Unresolved |
+| `0xDD46F0` | NAME_ENTRY_CARET | RESOLVED (v2.8.2): caret position, clamped 0–8. Tracked 5→6→7→8 live as letters were appended to 'Cloud', pinned at 8 when full. Explains the 9-char name cap: at cap, Confirm REPLACES the 9th char instead of appending |
 | `0xDD46F8` | NAME_ENTRY_CHAR_INDEX | 0=Cloud, 1=Barret. The Echo mod hext patch called this "cursor column" — wrong label, it's the character being named |
 | `0xDD46FC` | NAME_ENTRY_ACTIVE | 1 while naming screen open (v2.8 gate, with GAME_MODE==6) |
 | `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |

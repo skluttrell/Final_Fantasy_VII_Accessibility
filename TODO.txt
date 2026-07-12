@@ -106,29 +106,23 @@ distinguishable by ear. Deferred until the direction-mismatch approach is
 designed.
 
 
-[TTS] Name entry — side panel (Space/Delete/Select/Default) is silent
-----------------------------------------------------------------------
-The v2.8 name-entry TTS covers the 7x10 character grid and name readback,
-but the right-hand button panel is undetectable: NAME_ENTRY_ROW/COL keep
-their last grid values while the cursor is on the panel (confirmed live
-2026-07-12 — pressing Right past column 9 changed neither).
+[TTS] Name entry — side panel: RESOLVED 2026-07-12 (v2.8.2), one residual
+------------------------------------------------------------------------
+The panel is fully wired: NAME_ENTRY_PANE_FLAG (0x921ED4, 0=grid 1=panel,
+found by A/B/A revert scan + live-verified) gates everything, and
+NAME_ENTRY_PANEL_INDEX (0xDD4574) names the button (0=Space 1=Delete
+2=Select 3=Default; 0/1 proven by buffer effects via
+ff7_name_entry_panel_probe.py).
 
-PLAYER OBSERVATION (2026-07-12, post-session): the cursor is not erratic at
-line ends after all — pressing Right on the LAST grid column JUMPS to the
-side-panel buttons instead of wrapping. This reframes the 0xDD4574 data:
-every value ever observed there is 0-3 (exactly a 4-button index), it
-changed at the moments the player crossed the grid edge (0->1, 1->2), and
-it reset to 0 at the Cloud->Barret handoff. The one odd event (3->2
-alongside a character delete) fits if the player was pressing Confirm ON
-the panel's Delete button. 0xDD4574 = panel button index is now the leading
-hypothesis; only the value->button mapping is unconfirmed.
+RESIDUAL: Select(2)/Default(3) order is from the on-screen layout plus the
+player's ear-confirmation of ff7_name_entry_pane_verify.py — not yet proven
+by effect (Default = name rewrite, Select = screen close). The player's
+normal use will prove it immediately: if confirming "Select" ever restores
+the name instead of closing the screen, swap indices 2/3 in kPanelNames
+(proxy.cpp) and in ff7_addresses.h.
 
-Next step: run investigate/ff7_name_entry_panel_probe.py (written and ready)
-at the next naming screen (New Game restart / Tifa / Aeris). It walks the
-player through the panel and labels each 0xDD4574 value by what a Confirm
-press does to the name buffer (Space adds a char, Delete removes one,
-Default rewrites, Select closes the screen) — fully non-visual. It also
-logs 0xDD45E8 and 0xDD46F0 (still unresolved) on every change.
+Also still unresolved (harmless): 0xDD45E8 (u32, small values /
+0xFFFFFFFF, per-screen reset — never changed during the panel probe).
 
 Also unresolved from the same session: 0xDD46F0 (8 on Cloud screen with
 "CloudGHR", 6 on Barret screen with "Barret" — maybe name length at screen
