@@ -113,16 +113,22 @@ but the right-hand button panel is undetectable: NAME_ENTRY_ROW/COL keep
 their last grid values while the cursor is on the panel (confirmed live
 2026-07-12 — pressing Right past column 9 changed neither).
 
-Candidate byte 0xDD4574 moved 0->1 at the moment of a Right-past-the-edge
-press, but its behavior is inconsistent: it also changed 3->2 once alongside
-a character delete, and it did NOT reset when the cursor returned to the
-grid. Not usable without more data.
+PLAYER OBSERVATION (2026-07-12, post-session): the cursor is not erratic at
+line ends after all — pressing Right on the LAST grid column JUMPS to the
+side-panel buttons instead of wrapping. This reframes the 0xDD4574 data:
+every value ever observed there is 0-3 (exactly a 4-button index), it
+changed at the moments the player crossed the grid edge (0->1, 1->2), and
+it reset to 0 at the Cloud->Barret handoff. The one odd event (3->2
+alongside a character delete) fits if the player was pressing Confirm ON
+the panel's Delete button. 0xDD4574 = panel button index is now the leading
+hypothesis; only the value->button mapping is unconfirmed.
 
-Next step: at the next naturally-occurring naming screen (Tifa in Sector 7,
-Aeris at the church, or a New Game restart), run a focused probe: watch
-0xDD4560-0xDD45B0 while the player slowly enters/leaves the panel and moves
-Up/Down inside it, narrating each press afterwards. Also log 0xDD45E8
-(u32: small values while editing, 0xFFFFFFFF at times — possibly related).
+Next step: run investigate/ff7_name_entry_panel_probe.py (written and ready)
+at the next naming screen (New Game restart / Tifa / Aeris). It walks the
+player through the panel and labels each 0xDD4574 value by what a Confirm
+press does to the name buffer (Space adds a char, Delete removes one,
+Default rewrites, Select closes the screen) — fully non-visual. It also
+logs 0xDD45E8 and 0xDD46F0 (still unresolved) on every change.
 
 Also unresolved from the same session: 0xDD46F0 (8 on Cloud screen with
 "CloudGHR", 6 on Barret screen with "Barret" — maybe name length at screen
