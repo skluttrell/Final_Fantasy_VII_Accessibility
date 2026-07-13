@@ -555,6 +555,27 @@ gates on the Sensed flag byte `u8[0x9A8B39 + slot·0x44] & 0x40` for enemies
 (+0x28/+0x2A u16) is available in the same struct if a Sense MP readout is
 ever wanted.
 
+### v2.12 (2026-07-13): Enemy defeat announcements + Sense-gate override
+
+Two user requests after the v2.11 play test (user has no Sense materia yet):
+
+1. **`speak_enemy_hp_always` config key** (default false): overrides the
+   Sense parity gate in `TargetHPText` so enemy HP speaks during targeting
+   without Sense. Added to the shipped cfg template; set to TRUE in both
+   installed configs for the user's testing (documented inline there).
+2. **Enemy defeat announcements** ("Guard Hound A defeated"): a liveness
+   watcher in BattleActionThread (gated on `speak_battle`, GAME_MODE==2)
+   polls each enemy slot's actor-vars every 50ms. Death = `currentHP <= 0`
+   (primary) OR statusMask bit 0x01 = kernel Death status (secondary), and
+   only announces after the slot was previously SEEN alive (plausible max HP,
+   cur > 0, no Death bit) — battle-init memset zeroes and empty formation
+   slots can therefore never false-positive; the tracker resets whenever
+   GAME_MODE leaves 2 (between battles). Names via v2.10's EnemySlotName
+   with "enemy N" fallback; spoken with interrupt=false so a defeat queues
+   after in-flight action speech instead of clipping it. Bonus static
+   confirmation this session: PSX decomp battle.h `SceneEnemy \ size:0xB8`
+   matches the v2.10 enemy-record stride exactly.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -786,7 +807,7 @@ CONFIG_ROW != 1.
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
 | Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
-| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10), ~~Sense HP readout during targeting~~ (DONE v2.11, 2026-07-13), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits) |
+| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10), ~~Sense HP readout during targeting~~ (DONE v2.11), ~~enemy defeat announcements~~ (DONE v2.12, 2026-07-13), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits), party-KO announcements (same watcher pattern as v2.12, slots 0-2) |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |

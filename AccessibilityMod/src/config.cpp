@@ -101,6 +101,7 @@ void Load()
         else if (key == "speak_battle")  g_settings.speak_battle  = parse_bool(value);
         else if (key == "speak_battle_menu") g_settings.speak_battle_menu = parse_bool(value);
         else if (key == "speak_menus")   g_settings.speak_menus   = parse_bool(value);
+        else if (key == "speak_enemy_hp_always") g_settings.speak_enemy_hp_always = parse_bool(value);
         else if (key == "wall_bump_tone") g_settings.wall_bump_tone = parse_bool(value);
         else if (key == "interrupt")     g_settings.interrupt      = parse_bool(value);
         else if (key == "debug_log")     g_settings.debug_log      = parse_bool(value);

@@ -1216,10 +1216,16 @@ static bool TargetHPText(uint8_t slot, std::wstring& out)
     if (slot <= 2) {
         show = true;
     } else if (slot >= 4 && slot <= 9) {
-        const uint8_t flags = *reinterpret_cast<const volatile uint8_t*>(
-            FF7Addr::BATTLE_SENSED_FLAG_TABLE +
-            static_cast<uint32_t>(slot) * FF7Addr::BATTLE_DUP_LETTER_STRIDE);
-        show = (flags & FF7Addr::BATTLE_SENSED_FLAG_BIT) != 0;
+        // speak_enemy_hp_always (v2.12) overrides the Sense parity rule for
+        // players who prefer full information over matching the screen.
+        if (Config::Get().speak_enemy_hp_always) {
+            show = true;
+        } else {
+            const uint8_t flags = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::BATTLE_SENSED_FLAG_TABLE +
+                static_cast<uint32_t>(slot) * FF7Addr::BATTLE_DUP_LETTER_STRIDE);
+            show = (flags & FF7Addr::BATTLE_SENSED_FLAG_BIT) != 0;
+        }
     }
     if (!show)
         return false;
@@ -1256,6 +1262,13 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         static_cast<uint32_t>(sizeof(kCharNames) / sizeof(kCharNames[0]));
 
     uint8_t last_actor_id = 0xFF;   // 0xFF = sentinel; announce on next valid actor change
+
+    // v2.12: per-enemy-slot liveness tracking for defeat announcements.
+    // A slot must first be SEEN alive (plausible HP, no Death status) before
+    // its death can announce — battle-init zeroes and empty formation slots
+    // therefore never produce a false "defeated". Indexed by actor slot 4-9
+    // (index 0 = slot 4). Reset whenever the battle module is not active.
+    bool enemy_was_alive[6] = {};
 
     // Rate limiter for kernel2 section re-scans while sections are missing.
     ULONGLONG next_scan_tick = 0;
@@ -1295,6 +1308,63 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             last_actor_id = 0xFF;
             pending = false;
             continue;
+        }
+
+        // ---- v2.12: enemy defeat announcements --------------------------
+        // Watch each enemy slot's actor-vars (HP pair + statusMask) every
+        // poll while the battle module is active. Death is primarily
+        // "currentHP <= 0" with the kernel Death status bit (0x01) as a
+        // secondary signal; both only count after the slot was seen alive
+        // (see enemy_was_alive above). Runs BEFORE the active-actor
+        // classification below because that path `continue`s on slots this
+        // check must not miss.
+        {
+            const uint8_t game_mode =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+            if (game_mode != 2) {
+                memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
+            } else {
+                for (uint8_t slot = 4; slot <= 9; ++slot) {
+                    const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
+                        static_cast<uint32_t>(slot) * FF7Addr::BATTLE_ACTOR_VARS_STRIDE;
+                    const uint32_t status = *reinterpret_cast<const volatile uint32_t*>(
+                        base + 0x00);   // statusMask; bit 0x01 = Death
+                    const int32_t cur = *reinterpret_cast<const volatile int32_t*>(
+                        base + FF7Addr::BAVARS_OFF_CURRENT_HP);
+                    const int32_t max = *reinterpret_cast<const volatile int32_t*>(
+                        base + FF7Addr::BAVARS_OFF_MAX_HP);
+
+                    // Struct populated with sane values? (max == 0 means the
+                    // slot is empty or was just memset by battle init.)
+                    const bool plausible = (max > 0 && max <= 10000000);
+                    const bool dead  = plausible && (cur <= 0 || (status & 0x01));
+                    const bool alive = plausible && cur > 0 && cur <= max &&
+                                       !(status & 0x01);
+
+                    bool& was_alive = enemy_was_alive[slot - 4];
+                    if (was_alive && dead) {
+                        was_alive = false;
+                        std::wstring name;
+                        if (!EnemySlotName(slot, name)) {
+                            wchar_t fallback[16];
+                            _snwprintf_s(fallback, _countof(fallback), _TRUNCATE,
+                                         L"enemy %u", static_cast<unsigned>(slot - 3u));
+                            name = fallback;
+                        }
+                        name += L" defeated";
+                        char dbg[128];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] BATTLE defeat slot=%u => %ls",
+                            static_cast<unsigned>(slot), name.c_str());
+                        Log::Write(dbg);
+                        // Queue (don't interrupt): a defeat usually lands
+                        // right after damage/action speech that should finish.
+                        TTS::Speak(name, /*interrupt=*/false);
+                    } else if (alive) {
+                        was_alive = true;
+                    }
+                }
+            }
         }
 
         const uint8_t actor_id =

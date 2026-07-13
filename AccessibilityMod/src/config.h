@@ -48,6 +48,15 @@ struct Settings {
     // (grid cursor + name readback). Default: true.
     bool speak_menus = true;
 
+    // speak_enemy_hp_always: If true, target selection speaks enemy HP even
+    // when the enemy has NOT been Sensed. By default (false) enemy HP is only
+    // spoken once Sense has revealed it — exact information parity with the
+    // sighted target window, which hides enemy HP until Sense. Enable this if
+    // you prefer full HP info over parity (or for testing before Sense is
+    // available). Party HP is always spoken regardless of this setting.
+    // Default: false.
+    bool speak_enemy_hp_always = false;
+
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the
     // character is not moving). Vanilla FF7 has no footstep sounds, so without
