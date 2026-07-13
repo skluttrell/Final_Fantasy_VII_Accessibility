@@ -185,7 +185,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | *(target-name extras)* | `0x9AB0E0/0x9A8B39` | From the v2.10 disasm, identities RESOLVED in v2.11 via BATTLE_ACTOR_VARS below: u32[0x9AB0E0+slot·0x68] = actor_vars stateFlags (+0x04), bit 0x40 → game appends kernel string 0x71 (unused); u8[0x9A8B39+slot·0x44] bit 0x40 = **SENSED display flag** → game formats "cur/max" HP from u16[0x9A8B4C+slot·0x44] (display-cached cur) + u16[0x9AB10C+slot·0x68] (= actor_vars maxHP low word) via kernel strings 0x7F/0x72. 0x9A80F0 = the game's target-name scratch buffer (write-on-render only — do NOT poll) |
 | `BATTLE_ACTOR_VARS` | `0x009AB0DC` | FFNx battle_ai_context::actor_vars — per-actor battle stats, 10 slots × stride 0x68 (= sizeof battle_actor_vars). Static, two agreeing derivations (ff7_sense_hp_static.py, v2.11): (1) FFNx chain battle_context = u32 operand at 0x41CCB2+0x5F = 0x9AB0A0, actor_vars = +0x3C; the operand sits in "mov edi,0x9AB0A0 / rep stosd" — sub_41CCB2 is the battle-init memset whose OTHER memsets clear exactly the v2.10 formation/enemy-record regions; (2) section 7's reads land on named fields with this base. Key offsets: +0x04 stateFlags, +0x24 formationID (u16, = FFNx voice enemy_id), +0x28/+0x2A cur/max MP (u16), **+0x2C/+0x30 cur/max HP (i32)** — read the i32s, not the game's u16 display words (>65535-HP bosses truncate) |
 | `BATTLE_SENSED_FLAG_TABLE` | `0x009A8B39` | u8 per actor slot, stride 0x44 (same display struct as the dup-letter byte); bit 0x40 = target window shows HP (set by Sense). v2.11 gates the enemy HP readout on it — exact info parity with the sighted window; party slots 0-2 speak HP unconditionally (party HP is always on-screen) |
-| `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII), +0x09 u8 control_direction (per-field d-pad input rotation, 0-255 = 0-360°), +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
+| `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
+| *(control_direction semantics)* | — | **LIVE-CALIBRATED 2026-07-13** (md1stin, control_dir=124→174.4°; Up motion 5.6°, Down −174.4°): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180. First guess (world − control) was 180° off. ⚠ Left/right MIRROR unverified — Up/Down samples can't distinguish rotation from reflection; debug line prints the mirrored candidate until a screen-left/right exit is ear-checked |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
 
 ---
@@ -632,6 +633,17 @@ as the player moves. New FieldNavThread in proxy.cpp; config key
 one-shot N-key scan — was reworked to this scheme within hours when the
 user supplied the key file; the old cfg key parses as an alias).
 Unmapped FF4 keys and their prerequisites are listed in TODO.txt.
+
+**Direction calibration (same day)**: first play test reported directions
+reversed ("down" for an exit dead ahead) and the NAV calib log lines
+solved it in one read — Up moved the player at world bearing 5.6°, Down at
+−174.4°, with control_dir 174.4°, i.e. **control_direction is the world
+bearing of screen-DOWN** and screen angle = world + control − 180 (the
+guess had been world − control: 180° off). M announcing "md1stin"
+confirmed the header field-name read (that IS the internal field name;
+friendly names via the savemap location string are a TODO). Left/right
+mirror remains unverifiable from Up/Down data alone — debug log prints
+the mirrored candidate until a sideways exit is ear-checked.
 
 **Derivation — fully static** (`ff7_field_triggers_static.py`): the engine's
 parsed field-file section 8 sits behind ONE global, FFNx's
@@ -1099,7 +1111,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 |---------|--------|-------|
 | `0xCFF3D8` | field_camera_rotation_matrix | FFNx name embeds the address; used as a chain cross-check in v2.14. The rotation matrix itself is NOT yet used by the mod (control_direction supersedes it for input-relative directions) |
 | `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
-| `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | → field_trigger_header (field name, control_direction, gateways[12]) — the v2.14 exit scan source; see §4 |
+| `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | → field_trigger_header (field name, control_direction, gateways[12]) — the v2.14 pathfinder source; see §4. control_direction = world bearing of screen-DOWN (live-calibrated 2026-07-13); screen angle = world + ctrl − 180 |
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
 

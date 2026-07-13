@@ -190,6 +190,18 @@ Shift+K, \, P, M). Still unmapped, waiting on features:
   - Game Keys F1 (walk/run toggle) and F3 (random encounter toggle) are
     game-altering features, not announcements — decide separately.
 
+[NAV] Friendly map names for the M announce
+--------------------------------------------
+M currently speaks the field's INTERNAL name ("md1stin") from the triggers
+header — authentic and unique, but cryptic. The game has a friendly
+location string ("Sector 1 Station") shown in the save/PHS menu; it lives
+in the savemap (base 0xDBFD38) but the exact live offset needs verifying
+before use (the qhimm savemap doc's location-name entry is part of the
+save-preview block, which may only be written AT save time — check whether
+a live copy exists elsewhere, e.g. where the save menu reads it from).
+Fallback design: speak the friendly name when available, internal name
+otherwise.
+
 [CONFIG] Auto-create default config file if missing
 ----------------------------------------------------
 If the user places version.dll in the FF7 folder but forgets ffvii_accessibility.cfg,
