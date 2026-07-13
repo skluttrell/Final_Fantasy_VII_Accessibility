@@ -1131,6 +1131,71 @@ static const wchar_t* GenericActionLabel(uint8_t command_id, wchar_t* buf, size_
     }
 }
 
+// ---------------------------------------------------------------------------
+// Real enemy names for battle announcements (v2.10).
+//
+// Replicates get_kernel_text section 7 — the game's OWN target-name lookup,
+// found by static disassembly of the section jump table at 0x419A38
+// (investigate/ff7_target_name_disasm.py, 2026-07-13; details in
+// ff7_addresses.h SECTION 1c3). Chain: formation slot table (u16 record
+// index per enemy slot) -> loaded scene.bin enemy record (stride 0xB8,
+// FF7-encoded name in bytes 0-0x1F) -> duplicate-type letter suffix
+// ("MP A" / "MP B"), so two same-type enemies stay distinguishable by ear
+// exactly as they are on screen.
+//
+// Returns false (caller keeps its generic label) when the slot is not an
+// enemy, the formation slot is empty (record -1), the record index is
+// outside the 3-record scene range (battle module not initialized), or the
+// decoded name is blank.
+// ---------------------------------------------------------------------------
+static bool EnemySlotName(uint8_t slot, std::wstring& out)
+{
+    if (slot < 4 || slot > 9)
+        return false;
+    const uint32_t enemy_idx = slot - 4u;
+
+    const int16_t record = *reinterpret_cast<const volatile int16_t*>(
+        FF7Addr::BATTLE_FORMATION_SLOTS +
+        enemy_idx * FF7Addr::BATTLE_FORMATION_SLOT_STRIDE);
+    if (record < 0 ||
+        record >= static_cast<int16_t>(FF7Addr::BATTLE_ENEMY_RECORD_COUNT))
+        return false;
+
+    // The name field may occupy all 0x20 bytes with NO 0xFF terminator, so
+    // decode per byte under the length cap — the game itself copies at most
+    // 0x20 bytes and then writes its own terminator (0x41999B). Decode()ing
+    // the record in place could run past the name into stat bytes.
+    const volatile uint8_t* name = reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::BATTLE_ENEMY_RECORDS +
+        static_cast<uint32_t>(record) * FF7Addr::BATTLE_ENEMY_RECORD_STRIDE);
+    out.clear();
+    for (uint32_t i = 0; i < FF7Addr::BATTLE_ENEMY_NAME_LEN; ++i) {
+        const uint8_t b = name[i];
+        if (b == 0xFF)
+            break;
+        const wchar_t c = FF7Text::DecodeChar(b);
+        if (c != L'\0')
+            out += c;
+    }
+    // Blank / whitespace-only = record not populated (stale zeroed BSS).
+    if (out.find_first_not_of(L' ') == std::wstring::npos)
+        return false;
+    while (out.back() == L' ')   // non-empty here per the check above
+        out.pop_back();
+
+    // Duplicate-type suffix, indexed by ACTOR slot as in the game's code
+    // ((idx+4)*0x44). 0xFF = this enemy type is unique in the formation;
+    // the game renders base-char + index, i.e. 0='A', 1='B', ...
+    const uint8_t letter = *reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::BATTLE_DUP_LETTER_TABLE +
+        static_cast<uint32_t>(slot) * FF7Addr::BATTLE_DUP_LETTER_STRIDE);
+    if (letter != 0xFF && letter < 26) {
+        out += L' ';
+        out += static_cast<wchar_t>(L'A' + letter);
+    }
+    return true;
+}
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
     // Default English party names indexed by character ID (0=Cloud … 8=Cid).
@@ -1153,7 +1218,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     uint32_t  pending_s0_cmd    = 0;      // struct snapshot at turn start
     uint32_t  pending_s0_idx    = 0;
     ULONGLONG pending_deadline  = 0;
-    wchar_t   pending_actor[32] = {};
+    wchar_t   pending_actor[64] = {};   // 64: fits a 32-char enemy name + " A" suffix
 
     // Announce helper: "[actor], [name-or-generic]".  Written as a lambda so
     // both the immediate path and the deferred flash path share it.
@@ -1252,8 +1317,9 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         }
 
         // Build the actor label.  Slot 0 = party leader (name from savemap);
-        // slots 1–2 = "ally N"; slots 4–9 = "enemy".
-        wchar_t actor_label[32] = {};
+        // slots 1–2 = "ally N"; slots 4–9 = the real scene.bin enemy name
+        // with duplicate-letter suffix (v2.10), or "enemy" if unresolvable.
+        wchar_t actor_label[64] = {};
         if (is_party) {
             if (actor_id == 0) {
                 const uint8_t leader_id =
@@ -1266,7 +1332,12 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                              L"ally %u", static_cast<unsigned>(actor_id + 1u));
             }
         } else {
-            wcscpy_s(actor_label, L"enemy");
+            std::wstring ename;
+            if (EnemySlotName(actor_id, ename))
+                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE,
+                             L"%ls", ename.c_str());
+            else
+                wcscpy_s(actor_label, L"enemy");
         }
 
         // Lazily locate the kernel2 sections on first use; retry at most
@@ -1350,9 +1421,11 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 //
 // Target labels: party slots 0-2, enemy slots 4-9 (same actor-slot space
 // BattleActionThread uses). Slot 0 = the party leader's real name from
-// the savemap; other slots get positional labels ("ally 2", "enemy 1").
-// Naming every actor (party member 2/3 names, real enemy names from
-// scene.bin) is a known follow-up, not v2.9.
+// the savemap; slots 4-9 = the real scene.bin enemy name with duplicate-
+// letter suffix (v2.10, EnemySlotName above), falling back to "enemy N";
+// party slots 1-2 keep positional labels ("ally 2") — naming party members
+// 2/3 is still a follow-up (their names come from the menu module, not
+// get_kernel_text section 7).
 //
 // Gated by Config::Get().speak_battle_menu (separate from speak_battle so
 // menu narration and action narration can be toggled independently).
@@ -1416,8 +1489,12 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
             _snwprintf_s(buf, buf_count, _TRUNCATE, L"ally %u",
                          static_cast<unsigned>(slot + 1u));
         } else if (slot >= 4 && slot <= 9) {
-            _snwprintf_s(buf, buf_count, _TRUNCATE, L"enemy %u",
-                         static_cast<unsigned>(slot - 3u));
+            std::wstring ename;
+            if (EnemySlotName(slot, ename))
+                _snwprintf_s(buf, buf_count, _TRUNCATE, L"%ls", ename.c_str());
+            else
+                _snwprintf_s(buf, buf_count, _TRUNCATE, L"enemy %u",
+                             static_cast<unsigned>(slot - 3u));
         } else {
             _snwprintf_s(buf, buf_count, _TRUNCATE, L"target %u",
                          static_cast<unsigned>(slot));
@@ -1621,9 +1698,9 @@ targeting_check:
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::BATTLE_TARGET_INDEX);
             if (target != last_target) {
                 last_target = target;
-                wchar_t label[32];
+                wchar_t label[64];   // 64: fits a 32-char enemy name + " A" suffix
                 target_label(target, label, _countof(label));
-                char dbg[96];
+                char dbg[128];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] BMENU target=%u => %ls",
                     static_cast<unsigned>(target), label);

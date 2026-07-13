@@ -781,6 +781,59 @@ constexpr uint32_t BATTLE_TARGET_INDEX      = 0x00DC3C94; // u8 moving selection
 constexpr uint32_t BATTLE_TARGETING_ACTOR   = 0x00DC3C98; // u8 pointer actor
 
 // ---------------------------------------------------------------------------
+// SECTION 1c3: Battle TARGET NAMES (real enemy names from scene.bin)
+//
+// Derived 2026-07-13 by static disassembly of get_kernel_text's (sub_41963C)
+// battle-section switch (investigate/ff7_target_name_disasm.py; the 07-11
+// consumer disasm had already exposed the first half). The 4-entry jump
+// table at 0x419A38 maps sections 6-9; SECTION 7 (handler 0x4197D3) is the
+// game's OWN target-name lookup — the exact code the targeting window
+// displays from — so these tables are authoritative by construction, no
+// live scan needed:
+//
+//   idx < 6 (enemy list index; actor slot = idx + 4):
+//     record = movsx( u16[0x9A8794 + idx*0x10] )       ; formation slot table
+//     name   = 0x9A8E9C + record*0xB8, first 0x20 bytes ; loaded enemy records
+//     letter = u8[0x9A8B1F + (idx+4)*0x44]              ; duplicate suffix
+//     if letter != 0xFF: append FF7-char( dword[0x9AB070] + letter )
+//                        (0x9AB070 holds the encoded 'A' base -> "MP A"/"MP B")
+//   idx >= 6: returns the empty-string default — party target names do NOT
+//             come from this path (menu module handles them), so the mod
+//             keeps its savemap-leader/"ally N" labels for party slots.
+//
+// WHY these strides are trustworthy: 0xB8 (184) is exactly the scene.bin
+// enemy record size (name = bytes 0-0x1F, FF7-encoded), and a scene holds
+// 3 records — so valid record indices are 0-2 (movsx allows -1 = empty
+// formation slot). The name field can occupy all 0x20 bytes with NO 0xFF
+// terminator; the game copies max 0x20 bytes then writes its own 0xFF
+// (0x41999B) — callers must impose the same cap, never Decode() the record
+// in place.
+//
+// The same branch also revealed (documented for future use, NOT read yet):
+//   u32[0x9AB0E0 + slot*0x68] bit 0x40  -> game appends kernel string 0x71
+//   u8 [0x9A8B39 + slot*0x44] bit 0x40  -> Sense-style readout: formats
+//     u16[0x9A8B4C + slot*0x44] and u16[0x9AB10C + slot*0x68] (HP pair)
+//     through kernel strings 0x7F/0x72.
+// ---------------------------------------------------------------------------
+
+// Per-enemy-slot formation table: u16 record index (signed; -1 = empty slot),
+// stride 0x10, indexed by enemy list index 0-5 (= actor slot - 4).
+constexpr uint32_t BATTLE_FORMATION_SLOTS       = 0x009A8794;
+constexpr uint32_t BATTLE_FORMATION_SLOT_STRIDE = 0x10;
+
+// Loaded scene.bin enemy records (3 per scene), stride 0xB8; the FF7-encoded
+// display name is bytes 0-0x1F (0xFF-padded, possibly UNterminated at 0x20).
+constexpr uint32_t BATTLE_ENEMY_RECORDS         = 0x009A8E9C;
+constexpr uint32_t BATTLE_ENEMY_RECORD_STRIDE   = 0xB8;
+constexpr uint32_t BATTLE_ENEMY_RECORD_COUNT    = 3;
+constexpr uint32_t BATTLE_ENEMY_NAME_LEN        = 0x20;
+
+// Per-ACTOR-SLOT duplicate-name letter index (0='A', 1='B', ...; 0xFF = the
+// enemy type is unique in this formation, no suffix), stride 0x44.
+constexpr uint32_t BATTLE_DUP_LETTER_TABLE      = 0x009A8B1F;
+constexpr uint32_t BATTLE_DUP_LETTER_STRIDE     = 0x44;
+
+// ---------------------------------------------------------------------------
 // SECTION 1d: Field navigation addresses (wall-bump tone feature)
 //
 // All resolved statically from the exe on disk by

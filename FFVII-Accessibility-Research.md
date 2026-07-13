@@ -179,6 +179,10 @@ every confirmed address — the clustering itself is a discovery tool.
 | `BATTLE_ISSUED_ACTION` | `0x00DC3C78` | u16 = FFNx issued_action_id (✓ live: 30 after confirming Ice) |
 | `BATTLE_TARGET_TYPE/INDEX` | `0x00DC3C90/94` | u8 pair = FFNx issued_action_target_type/index. INDEX tracks the moving target selection live (✓: 4↔5 across enemies, 0 = party slot 0) |
 | `BATTLE_TARGETING_ACTOR` | `0x00DC3C98` | u8 = FFNx targeting_actor_id_DC3C98 — live target cursor actor id (✓ 2026-07-12: 4/5 = enemy slots, party 0–2). Updates during state-0 targeting after a Confirm |
+| `BATTLE_FORMATION_SLOTS` | `0x009A8794` | Per-enemy-slot formation table, stride 0x10: u16 (movsx→signed, -1 = empty) = index into the loaded enemy records, indexed by enemy list index 0–5 (= actor slot − 4). From get_kernel_text SECTION 7 = the game's own target-name lookup (jump table 0x419A38, handler 0x4197D3; static disasm 2026-07-13, v2.10) |
+| `BATTLE_ENEMY_RECORDS` | `0x009A8E9C` | The 3 loaded scene.bin enemy records, stride 0xB8 (= exact scene.bin record size); FF7-encoded display name = bytes 0–0x1F, 0xFF-padded but possibly UNterminated at 0x20 — the game copies max 0x20 then writes its own 0xFF (0x41999B); never Decode() in place (v2.10) |
+| `BATTLE_DUP_LETTER_TABLE` | `0x009A8B1F` | Per-ACTOR-SLOT duplicate-name letter, stride 0x44: u8 index appended as FF7-char(dword[0x9AB070]+idx) → "MP A"/"MP B"; 0xFF = enemy type unique in formation. dword[0x9AB070] = encoded 'A' base (v2.10) |
+| *(target-name extras)* | `0x9AB0E0/0x9A8B39` | Same disasm, documented not used: u32[0x9AB0E0+slot·0x68] bit 0x40 → game appends kernel string 0x71; u8[0x9A8B39+slot·0x44] bit 0x40 → Sense-style readout formatting u16[0x9A8B4C+slot·0x44] + u16[0x9AB10C+slot·0x68] (HP pair) via kernel strings 0x7F/0x72. 0x9A80F0 = the game's target-name scratch buffer (write-on-render only — do NOT poll) |
 
 ---
 
@@ -473,11 +477,46 @@ key `speak_battle_menu`):
   plain ATB wait — prev-state gating is the difference between "target cursor"
   and silence), disarmed on 0xFFFF/new menu/battle exit. Speaks target labels
   on TARGET_INDEX (0xDC3C94) change: leader name for slot 0, "ally N"/
-  "enemy N" positionally. Real enemy names (scene.bin) are a known follow-up.
+  "enemy N" positionally. Real enemy names (scene.bin): DONE in v2.10 below.
 - Kernel2 scan now guarded by an interlocked busy flag — two threads
   (BattleActionThread + BattleMenuThread) can trigger it lazily; duplicate
   concurrent walks are wasteful though harmless, so one runs and the other
   skips to its rate-limited retry.
+
+### v2.10 (2026-07-13): Real enemy names in battle announcements
+
+Target selection and enemy-turn announcements now speak the actual enemy name
+("Guard Hound", "MP A") instead of positional "enemy N"/"enemy" labels — for
+both BattleMenuThread targeting and BattleActionThread turn announces, via a
+shared `EnemySlotName()` helper in proxy.cpp.
+
+**Derivation — fully static, no live scan needed**: the 2026-07-11 consumer
+disasm had dumped the first half of an unexplained branch inside get_kernel_text
+(sub_41963C); `ff7_target_name_disasm.py` (2026-07-13) completed it and printed
+the section jump table at 0x419A38, which proved sections 6–9 are the BATTLE
+text sections: 6 = summon-attack names, **7 = TARGET NAMES (handler 0x4197D3)**,
+8 = item-namespace, 9 = enemy-attack names (0x9A9484, matching v2.7). Section 7
+is the exact code the on-screen targeting window renders from, so its tables
+are authoritative by construction:
+
+```
+record = movsx( u16[0x9A8794 + enemy_idx*0x10] )   ; enemy_idx = actor slot − 4
+name   = 0x9A8E9C + record*0xB8, bytes 0–0x1F       ; 0xB8 = scene.bin record
+letter = u8[0x9A8B1F + actor_slot*0x44]             ; 0xFF = unique, else
+append FF7-char( dword[0x9AB070] + letter )          ; "MP A" / "MP B"
+```
+
+Implementation notes: record −1/out-of-range (scene holds 3 records) or a
+blank decoded name falls back to the old generic labels; the name field can
+occupy all 0x20 bytes with NO 0xFF terminator, so it is decoded per byte via
+`FF7Text::DecodeChar` under the length cap (the game itself copies max 0x20
+then writes its own terminator at 0x41999B) — never `Decode()` the record in
+place. Party slots are untouched by section 7 (idx ≥ 6 returns the empty
+default), so leader-name/"ally N" labels stay; party members 2/3 by name
+remain a follow-up. Bonus finds documented in §4/§14: per-actor Sensed flag +
+HP pair (a future "Sense readout" feature), per-actor status dword 0x9AB0E0,
+and the game's target-name scratch buffer 0x9A80F0 (render-time only, not
+pollable).
 
 ---
 
@@ -710,7 +749,7 @@ CONFIG_ROW != 1.
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
 | Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
-| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: real enemy names in target announcements (scene.bin), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits) |
+| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10, 2026-07-13), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits), Sense HP readout during targeting (tables found in v2.10, see §4 target-name extras) |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |
@@ -833,6 +872,12 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0x9A8731` | grid/panel covariant | 44 on grid, 49 on panel, reverted (pane-flag scan 2026-07-12); secondary candidate, likely cursor-SFX/sprite id — unused, PANE_FLAG is cleaner |
 | `0x9A13C8` / `0x9A7FC8` | kernel2 text scratch + u16 offset table | menu-module staging; **ALL ZERO during battle** (probed live 2026-07-11) — battle code never populates it |
 | `0x9A9484` | ENEMY_ATTACK_NAME_TABLE | CONFIRMED (was "section-8 table?"): current formation's attack names from scene.bin, stride 0x20; = get_kernel_text section 9 (`ret 0x9A9484 + idx*0x20`) |
+| `0x9A80F0` | target-name scratch buffer | get_kernel_text section 7 composes "name + dup letter (+ status/Sense text)" here on render; write-on-render only, do NOT poll (2026-07-13) |
+| `0x9A8794` | BATTLE_FORMATION_SLOTS | stride 0x10 × 6 enemy slots (ends 0x9A87F4); u16[+0] = loaded-record index, movsx (−1 = empty). Note 0x9A8729/2A pulse flags above sit INSIDE the region just before it — this 0x9A87xx area is the battle formation block (2026-07-13, v2.10) |
+| `0x9A8B1F` | BATTLE_DUP_LETTER_TABLE | per-actor-slot struct array, stride 0x44 (base ≤0x9A8B04, letter byte at 0x9A8B1F + slot·0x44); u8[0x9A8B39+slot·0x44] bit 0x40 = Sensed flag, u16[0x9A8B4C+slot·0x44] = HP for Sense readout (2026-07-13) |
+| `0x9A8E9C` | BATTLE_ENEMY_RECORDS | 3 × 0xB8 scene.bin enemy records (ends 0x9A90C4); name = bytes 0–0x1F, possibly unterminated. Sits between the formation/per-actor block and ENEMY_ATTACK_NAME_TABLE 0x9A9484 — one contiguous loaded-scene cluster 0x9A87xx–0x9A98xx (2026-07-13, v2.10) |
+| `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13) |
+| `0x9AB0E0` | per-actor status dwords | stride 0x68; bit 0x40 of u32[+0] makes the target-name path append kernel string 0x71; u16[0x9AB10C+slot·0x68] pairs with the Sense HP readout (2026-07-13, documented not used) |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
 | *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon/etc. name sections resident for process lifetime; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists — the only exe-static pointers into the block are font tables (0xCFF3F8 cluster) |
 
