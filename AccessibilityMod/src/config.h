@@ -57,6 +57,14 @@ struct Settings {
     // Default: false.
     bool speak_enemy_hp_always = false;
 
+    // field_exit_scan: If true, pressing the N key during field gameplay
+    // announces the field's name and every exit: direction (in d-pad terms,
+    // e.g. "up-left") and walking distance in seconds, nearest first. The
+    // key only responds while the game window is focused and the player is
+    // in normal field control (not in menus, battles, or dialogs).
+    // Default: true.
+    bool field_exit_scan = true;
+
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the
     // character is not moving). Vanilla FF7 has no footstep sounds, so without

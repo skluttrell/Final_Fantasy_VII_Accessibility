@@ -185,6 +185,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | *(target-name extras)* | `0x9AB0E0/0x9A8B39` | From the v2.10 disasm, identities RESOLVED in v2.11 via BATTLE_ACTOR_VARS below: u32[0x9AB0E0+slot·0x68] = actor_vars stateFlags (+0x04), bit 0x40 → game appends kernel string 0x71 (unused); u8[0x9A8B39+slot·0x44] bit 0x40 = **SENSED display flag** → game formats "cur/max" HP from u16[0x9A8B4C+slot·0x44] (display-cached cur) + u16[0x9AB10C+slot·0x68] (= actor_vars maxHP low word) via kernel strings 0x7F/0x72. 0x9A80F0 = the game's target-name scratch buffer (write-on-render only — do NOT poll) |
 | `BATTLE_ACTOR_VARS` | `0x009AB0DC` | FFNx battle_ai_context::actor_vars — per-actor battle stats, 10 slots × stride 0x68 (= sizeof battle_actor_vars). Static, two agreeing derivations (ff7_sense_hp_static.py, v2.11): (1) FFNx chain battle_context = u32 operand at 0x41CCB2+0x5F = 0x9AB0A0, actor_vars = +0x3C; the operand sits in "mov edi,0x9AB0A0 / rep stosd" — sub_41CCB2 is the battle-init memset whose OTHER memsets clear exactly the v2.10 formation/enemy-record regions; (2) section 7's reads land on named fields with this base. Key offsets: +0x04 stateFlags, +0x24 formationID (u16, = FFNx voice enemy_id), +0x28/+0x2A cur/max MP (u16), **+0x2C/+0x30 cur/max HP (i32)** — read the i32s, not the game's u16 display words (>65535-HP bosses truncate) |
 | `BATTLE_SENSED_FLAG_TABLE` | `0x009A8B39` | u8 per actor slot, stride 0x44 (same display struct as the dup-letter byte); bit 0x40 = target window shows HP (set by Sense). v2.11 gates the enemy HP readout on it — exact info parity with the sighted window; party slots 0-2 speak HP unconditionally (party HP is always on-screen) |
+| `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII), +0x09 u8 control_direction (per-field d-pad input rotation, 0-255 = 0-360°), +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
+| *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
 
 ---
 
@@ -615,6 +617,42 @@ Party-KO announcements added to TODO.txt with full implementation notes
 (same watcher + quiet-gap patterns; deferred at the user's request until
 their party has more members to test with).
 
+### v2.14 (2026-07-13): Field EXIT SCAN — first interactable-tracking feature
+
+Pressing N during normal field control announces the field's name and all
+active exits, nearest first: "Field MD1_2. Exit 1: up-left, 3 seconds.
+Exit 2: right, 8 seconds." Directions in d-pad terms, distances in seconds
+of walking. New FieldNavThread in proxy.cpp; config key `field_exit_scan`.
+
+**Derivation — fully static** (`ff7_field_triggers_static.py`): the engine's
+parsed field-file section 8 sits behind ONE global, FFNx's
+`field_triggers_header`. FFNx resolves it from `field_main_loop` (needs a
+live game object — the old session-3 dead end), but `field_sub_6388EE`'s
+NAME embeds its address, so the chain anchors there and self-validates via
+THREE other name-embedded FFNx externals resolved off the same function
+(0xCFFE3C, 0xCFF3D8, 0x623C0F — all matched):
+`FIELD_TRIGGERS_HEADER_PTR = 0xCFF454`, landing in the known 0xCFF3xx-0xCFF5xx
+field-statics cluster exactly as §14's cluster rule predicts.
+
+Three deliberate design choices:
+- **control_direction (+0x09) instead of the camera matrix**: the header
+  byte is the per-field rotation the ENGINE applies to d-pad input, so
+  subtracting it from the world bearing yields the d-pad direction to press
+  — no 3D math against 0xCFF3D8 needed. (Also unblocks the deferred
+  wall-slide feature, which stalled on exactly this input→world mapping.)
+- **Coordinate scale from FFNx's own code**: model_pos ÷ 4096 = walkmesh
+  coords (background.cpp), so player pos >> 12 compares directly to gateway
+  vertices; v2.6's measured 32768 highres units/50ms walk → 160 walkmesh
+  units/sec for the seconds estimate.
+- **Distance to the nearest point of the exit LINE SEGMENT** (2D, Z
+  ignored), not to a vertex — exits are walked into anywhere along the line.
+
+⚠ Direction sign/zero convention is PROVISIONAL until one play test: the
+debug log prints both candidate rotations (world−ctrl vs world+ctrl) per
+gateway plus a once-per-second input-vs-motion calibration line while
+walking — one debug-logged walkabout pins the true convention if the first
+guess reads wrong.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -951,6 +989,8 @@ Proven payoffs of cluster reasoning so far:
 | `0x6E6291` | battle_update_targeting_info (FFNx) | +0x684 → targeting_actor_id 0xDC3C98 |
 | `0x6D72E9` / `0x6D1CC0` | kernel2 request consumer / dispatcher | real CALL to 0x41963C at 0x6D72C6 |
 | `0x6E97E0` | build_dialog_window | |
+| `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
+| `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
 | `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
 
 Pattern: field module code sits in 0x60xxxx–0x6Exxxx, world map in 0x75xxxx,
@@ -1043,6 +1083,16 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | +0x64 | `0xCC0DEC` | field_id (module copy — distinct from 0xCC15D0) | FFNx label only |
 | +0x68 | `0xCC0DF0` | current_key_input_status (u32) | ✓ live |
 | +0x6C | `0xCC0DF4` | previous_key_input_status | FFNx label only |
+
+### Field statics cluster: 0xCFF3D8 – 0xCFF73E
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xCFF3D8` | field_camera_rotation_matrix | FFNx name embeds the address; used as a chain cross-check in v2.14. The rotation matrix itself is NOT yet used by the mod (control_direction supersedes it for input-relative directions) |
+| `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
+| `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | → field_trigger_header (field name, control_direction, gateways[12]) — the v2.14 exit scan source; see §4 |
+| `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file |
+| `0xCFF73E` | FIELD_N_MODELS | u16 model count |
 
 ### Savemap: 0xDBFD38 – ≈0xDC0E2C (0x10F4 bytes)
 

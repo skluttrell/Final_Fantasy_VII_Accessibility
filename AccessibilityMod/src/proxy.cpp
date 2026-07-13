@@ -77,6 +77,8 @@
 #include "log.h"
 #include <string>
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
+#include <cmath>     // atan2f/sqrtf/fmodf in the field exit scan (v2.14)
+#include <utility>   // std::swap in the exit-scan distance sort
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -143,6 +145,7 @@ static HANDLE g_config_thread     = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
+static HANDLE g_fieldnav_thread   = nullptr;
 static HANDLE g_nameentry_thread  = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -2181,6 +2184,284 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
+// Field navigation — EXIT SCAN thread (v2.14). First interactable-tracking
+// feature of the navigation system.
+//
+// Pressing N during normal field control announces the field's name and all
+// active exits (gateways), nearest first: "Field MD1_2. Exit 1: up-left,
+// 3 seconds. Exit 2: right, 8 seconds." — direction in D-PAD terms and
+// distance in seconds of WALKING.
+//
+// DATA SOURCE (ff7_addresses.h SECTION 1e): the engine's parsed field-file
+// section 8 behind FIELD_TRIGGERS_HEADER_PTR (0xCFF454, resolved statically
+// via FFNx's chain with three name-embedded cross-checks). Each of the 12
+// gateway slots holds an exit LINE (two walkmesh-coord vertices) and the
+// destination field id (0x7FFF = unused slot).
+//
+// GEOMETRY: player walkmesh position = field_event_data model_pos >> 12
+// (FFNx: "model_pos.x / 4096.f"). Distance = player to the NEAREST POINT of
+// the exit line segment, in the XY plane (Z left out: fields are drawn from
+// a fixed camera and exits are reached by 2D walking; a stacked-walkway
+// field could understate distance, acceptable for v1). Walking covers ~160
+// walkmesh units/sec (v2.6 measurement), so seconds = distance / 160.
+//
+// DIRECTION: world angle of (player -> nearest point), then rotated by the
+// header's control_direction byte — the SAME per-field value the engine
+// uses to rotate d-pad input to match the camera — and mapped to 8 d-pad
+// sectors. ⚠ SIGN/ZERO CONVENTION NOT YET PLAY-CONFIRMED: the debug log
+// prints raw angles, control_direction, and BOTH candidate rotations
+// (subtract vs add) per gateway, plus a once-per-second input-vs-motion
+// calibration line while walking — one debug-logged session pins the true
+// convention if the first guess announces wrong directions.
+//
+// HOTKEY: GetAsyncKeyState('N') edge, gated on the game window being
+// focused (GetForegroundWindow's process == ours) so typing in another app
+// can't trigger it, and on normal field control (GAME_MODE==0, FIELD_ID!=0,
+// MENU_OPEN==0, no UC lock, no movie, no recent dialog) so it can't talk
+// over battles/menus. Config::Get().field_exit_scan turns it off entirely.
+// ---------------------------------------------------------------------------
+
+// Map an input-relative angle (degrees, 0 = the Up d-pad, clockwise) to a
+// spoken 8-way d-pad direction.
+static const wchar_t* DpadSectorName(float deg)
+{
+    static const wchar_t* const kSectors[8] = {
+        L"up", L"up-right", L"right", L"down-right",
+        L"down", L"down-left", L"left", L"up-left",
+    };
+    // Normalize to [0, 360), offset by half a sector so each name is
+    // centered on its axis (up = [-22.5, +22.5)).
+    float norm = fmodf(deg + 22.5f, 360.0f);
+    if (norm < 0.0f) norm += 360.0f;
+    int sector = static_cast<int>(norm / 45.0f);
+    if (sector < 0)  sector = 0;
+    if (sector > 7)  sector = 7;
+    return kSectors[sector];
+}
+
+static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
+{
+    bool key_was_down = false;
+
+    // Once-per-second rate limiter for the direction-calibration debug line.
+    ULONGLONG next_calib_tick = 0;
+    int32_t   calib_last_x = 0, calib_last_y = 0;
+    bool      calib_have_last = false;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().field_exit_scan) {
+            key_was_down = false;
+            continue;
+        }
+
+        // Normal field control only (same gate set as the wall-bump tone,
+        // minus the dialog-activity window — a scan DURING dialog is
+        // harmless, the announce just queues after the dialog speech).
+        const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
+            FF7Addr::FIELD_ID);
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
+        const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::MENU_OPEN);
+        if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
+            menu_open != 0) {
+            key_was_down = false;
+            calib_have_last = false;
+            continue;
+        }
+
+        // Locate the player's walkmesh position (shared v2.6 pattern).
+        const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::FIELD_EVENT_DATA_PTR);
+        const uint16_t pmid = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::FIELD_PLAYER_MODEL_ID);
+        const uint16_t nmod = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::FIELD_N_MODELS);
+        if (arr < 0x401000 || pmid >= nmod || pmid > 0x20)
+            continue;
+        const uint8_t* elem = reinterpret_cast<const uint8_t*>(
+            arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQuery(elem, &mbi, sizeof(mbi)) == 0 ||
+            mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            continue;
+        const int32_t* pos = reinterpret_cast<const int32_t*>(
+            elem + FF7Addr::FIELD_EVENT_MODEL_POS);
+        const int32_t px = pos[0] >> 12;   // walkmesh coords
+        const int32_t py = pos[1] >> 12;
+
+        // Triggers header for this field.
+        const uint32_t hdr = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::FIELD_TRIGGERS_HEADER_PTR);
+        if (hdr < 0x401000)
+            continue;
+        if (VirtualQuery(reinterpret_cast<const void*>(hdr), &mbi, sizeof(mbi)) == 0 ||
+            mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            continue;
+        const uint8_t control_dir = *reinterpret_cast<const uint8_t*>(
+            hdr + FF7Addr::FTRIG_OFF_CONTROL_DIR);
+        const float control_deg = control_dir * (360.0f / 256.0f);
+
+        // ---- direction calibration logging (debug_log only) -------------
+        // While a direction is held and the player moves, log the held bits
+        // against the world motion angle once per second. One walkabout
+        // session gives the exact input->world mapping (see header comment).
+        if (Config::Get().debug_log) {
+            const ULONGLONG now = GetTickCount64();
+            const uint32_t keys = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::FIELD_KEY_INPUT_STATUS);
+            if (calib_have_last && (keys & FF7Addr::KEY_DIR_ANY) &&
+                now >= next_calib_tick &&
+                (pos[0] != calib_last_x || pos[1] != calib_last_y)) {
+                const float mdx = static_cast<float>(pos[0] - calib_last_x);
+                const float mdy = static_cast<float>(pos[1] - calib_last_y);
+                const float motion_deg = atan2f(mdx, mdy) * (180.0f / 3.14159265f);
+                char dbg[160];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV calib keys=%04X motion_deg=%.1f ctrl_dir=%u (%.1f deg)",
+                    static_cast<unsigned>(keys & FF7Addr::KEY_DIR_ANY),
+                    motion_deg, static_cast<unsigned>(control_dir), control_deg);
+                Log::Write(dbg);
+                next_calib_tick = now + 1000;
+            }
+            calib_last_x = pos[0];
+            calib_last_y = pos[1];
+            calib_have_last = true;
+        }
+
+        // ---- hotkey edge detection ---------------------------------------
+        // Only while the game window is focused: GetAsyncKeyState is global,
+        // and 'N' typed into a chat window must not trigger a scan.
+        bool key_down = (GetAsyncKeyState('N') & 0x8000) != 0;
+        if (key_down) {
+            DWORD fg_pid = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+            if (fg_pid != GetCurrentProcessId())
+                key_down = false;
+        }
+        const bool pressed = key_down && !key_was_down;
+        key_was_down = key_down;
+        if (!pressed)
+            continue;
+
+        // ---- build the scan announcement ---------------------------------
+        // Field name: plain ASCII in the header (not FF7-encoded).
+        char fname[10] = {};
+        memcpy(fname, reinterpret_cast<const void*>(hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
+        for (char& c : fname)
+            if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
+
+        struct ExitInfo {
+            float dist_units;
+            float input_deg_sub;   // world angle minus control_direction
+            float input_deg_add;   // world angle plus  control_direction
+            int   dest_field;
+        };
+        ExitInfo exits[FF7Addr::FTRIG_GATEWAY_COUNT];
+        int n_exits = 0;
+
+        for (uint32_t g = 0; g < FF7Addr::FTRIG_GATEWAY_COUNT; ++g) {
+            const uint8_t* gw = reinterpret_cast<const uint8_t*>(
+                hdr + FF7Addr::FTRIG_OFF_GATEWAYS + g * FF7Addr::FTRIG_GATEWAY_SIZE);
+            const int16_t* v = reinterpret_cast<const int16_t*>(gw);
+            const int16_t x1 = v[0], y1 = v[1];
+            const int16_t x2 = v[3], y2 = v[4];
+            const int16_t dest = *reinterpret_cast<const int16_t*>(gw + 0x12);
+            if (dest == FF7Addr::FTRIG_FIELD_ID_UNUSED || dest < 0)
+                continue;
+            if (x1 == 0 && y1 == 0 && x2 == 0 && y2 == 0)
+                continue;   // degenerate line = empty slot
+
+            // Nearest point on the segment (x1,y1)-(x2,y2) to the player.
+            const float ex = static_cast<float>(x2 - x1);
+            const float ey = static_cast<float>(y2 - y1);
+            const float wx = static_cast<float>(px - x1);
+            const float wy = static_cast<float>(py - y1);
+            const float len2 = ex * ex + ey * ey;
+            float t = (len2 > 0.0f) ? ((wx * ex + wy * ey) / len2) : 0.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            const float nx = x1 + t * ex;
+            const float ny = y1 + t * ey;
+            const float dx = nx - static_cast<float>(px);
+            const float dy = ny - static_cast<float>(py);
+            const float dist = sqrtf(dx * dx + dy * dy);
+
+            // World bearing 0 = +Y axis, clockwise toward +X (convention is
+            // provisional until the calibration log confirms it).
+            const float world_deg = atan2f(dx, dy) * (180.0f / 3.14159265f);
+
+            ExitInfo& e = exits[n_exits++];
+            e.dist_units    = dist;
+            e.input_deg_sub = world_deg - control_deg;
+            e.input_deg_add = world_deg + control_deg;
+            e.dest_field    = dest;
+
+            if (Config::Get().debug_log) {
+                char dbg[224];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV gw%u line=(%d,%d)-(%d,%d) dest=%d "
+                    "player=(%d,%d) dist=%.0f world_deg=%.1f sub=%ls add=%ls",
+                    g, x1, y1, x2, y2, dest,
+                    px, py, dist, world_deg,
+                    DpadSectorName(e.input_deg_sub),
+                    DpadSectorName(e.input_deg_add));
+                Log::Write(dbg);
+            }
+        }
+
+        // Sort nearest-first (n is at most 12 — insertion sort is plenty).
+        for (int i = 1; i < n_exits; ++i)
+            for (int j = i; j > 0 && exits[j].dist_units < exits[j - 1].dist_units; --j)
+                std::swap(exits[j], exits[j - 1]);
+
+        std::wstring msg = L"Field ";
+        if (fname[0]) {
+            wchar_t wname[10] = {};
+            for (int i = 0; i < 9 && fname[i]; ++i)
+                wname[i] = static_cast<wchar_t>(fname[i]);
+            msg += wname;
+        } else {
+            msg += L"unknown";
+        }
+        msg += L". ";
+        if (n_exits == 0) {
+            msg += L"No exits found.";
+        } else {
+            for (int i = 0; i < n_exits; ++i) {
+                wchar_t part[96];
+                const int secs = static_cast<int>(
+                    exits[i].dist_units / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
+                if (secs < 1)
+                    _snwprintf_s(part, _countof(part), _TRUNCATE,
+                                 L"Exit %d: %ls, very close. ",
+                                 i + 1, DpadSectorName(exits[i].input_deg_sub));
+                else
+                    _snwprintf_s(part, _countof(part), _TRUNCATE,
+                                 L"Exit %d: %ls, %d %ls. ",
+                                 i + 1, DpadSectorName(exits[i].input_deg_sub),
+                                 secs, secs == 1 ? L"second" : L"seconds");
+                msg += part;
+            }
+        }
+
+        char dbg[96];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] NAV scan: %d exits, ctrl_dir=%u",
+            n_exits, static_cast<unsigned>(control_dir));
+        Log::Write(dbg);
+        TTS::Speak(msg, /*interrupt=*/true);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Name-entry screen TTS thread (v2.8).
 //
 // Speaks the character grid on the "Please enter a name" screen:
@@ -2692,6 +2973,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start wall-bump thread.");
         }
 
+        // Field exit scan (v2.14). Triggers header resolved statically via
+        // FFNx's chain with three name-embedded cross-checks
+        // (ff7_field_triggers_static.py, 2026-07-13) — see the FieldNavThread
+        // header comment and ff7_addresses.h SECTION 1e.
+        g_fieldnav_thread = CreateThread(nullptr, 0, FieldNavThread, nullptr, 0, nullptr);
+        if (g_fieldnav_thread) {
+            Log::Write("[FF7Access] Field navigation (exit scan) thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start field navigation thread.");
+        }
+
         // Name-entry screen TTS (v2.8). Grid cursor + name buffer confirmed
         // live 2026-07-12 (ff7_name_entry_scan.py / ff7_name_entry_verify.py):
         // NAME_ENTRY_COL=0xDD4538, NAME_ENTRY_ROW=0xDD453C,
@@ -2710,7 +3002,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
-            !g_wallbump_thread && !g_nameentry_thread) {
+            !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -2847,6 +3139,11 @@ void Shutdown()
         WaitForSingleObject(g_battlemenu_thread, 500);
         CloseHandle(g_battlemenu_thread);
         g_battlemenu_thread = nullptr;
+    }
+    if (g_fieldnav_thread) {
+        WaitForSingleObject(g_fieldnav_thread, 500);
+        CloseHandle(g_fieldnav_thread);
+        g_fieldnav_thread = nullptr;
     }
     if (g_wallbump_thread) {
         WaitForSingleObject(g_wallbump_thread, 500);

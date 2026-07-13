@@ -991,6 +991,55 @@ constexpr uint32_t KEY_DIR_DOWN  = 0x4000;
 constexpr uint32_t KEY_DIR_LEFT  = 0x8000;
 constexpr uint32_t KEY_DIR_ANY   = KEY_DIR_UP | KEY_DIR_RIGHT | KEY_DIR_DOWN | KEY_DIR_LEFT;
 
+// ---------------------------------------------------------------------------
+// SECTION 1e: Field TRIGGERS header — exits/gateways (v2.14 exit scan)
+//
+// FIELD_TRIGGERS_HEADER_PTR is a global holding a field_trigger_header*
+// (FFNx ff7.h) — the engine's parsed copy of field-file section 8: the
+// field's own name, the per-field input rotation, and the 12 gateway (exit)
+// definitions. Resolved STATICALLY (investigate/ff7_field_triggers_static.py,
+// 2026-07-13) via FFNx's chain anchored at field_sub_6388EE (address embedded
+// in the FFNx symbol name):
+//   field_draw_everything          = grc(0x6388EE, 0x11) = 0x63A60B
+//   field_pick_tiles_make_vertices = grc(^, 0xC9)        = 0x640F22
+//   field_layer3_pick_tiles        = grc(^, 0x12)        = 0x640F95
+//   FIELD_TRIGGERS_HEADER_PTR      = gav(^, 0x134)       = 0xCFF454
+// Chain self-validated by THREE other FFNx name-embedded addresses read off
+// the same function (0xCFFE3C do_draw_layer3, 0xCFF3D8 camera rotation
+// matrix, 0x623C0F field_layer_sub) — all matched. 0xCFF454 sits in the
+// known 0xCFF3xx-0xCFF5xx field-statics cluster (font tables 0xCFF3F8,
+// FIELD_FILE_BUFFER 0xCFF594), as expected.
+//
+// Header layout (offsets computed from FFNx's packed struct):
+//   +0x00 char field_name[9]     ASCII, the field's internal name ("MD1_1")
+//   +0x09 u8   control_direction per-field INPUT ROTATION (0-255 = 0-360°):
+//              the engine rotates d-pad input by this so "up" matches the
+//              camera — the same value lets the mod announce directions in
+//              d-pad terms without any camera-matrix math
+//   +0x38 field_gateway gateways[12], 24 bytes each:
+//              +0x00 s16[3] exit line vertex 1 (walkmesh coords)
+//              +0x06 s16[3] exit line vertex 2
+//              +0x0C s16[3] destination vertex (in the TARGET field)
+//              +0x12 s16    destination field id (0x7FFF = unused slot)
+//              +0x14 u8[4]  unknown
+//   +0x158 field_trigger triggers[12] (bg toggles — not used by the mod)
+//
+// COORDINATE SCALE: field_event_data model_pos is walkmesh coords × 4096
+// (FFNx background.cpp: "model_pos.x / 4096.f") — so player walkmesh pos =
+// model_pos >> 12, directly comparable to gateway vertices. Walking covers
+// ~160 walkmesh units/second (v2.6 measurement: 32768 highres units per
+// 50ms at walk speed 1024 → ÷4096 ×20).
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t FIELD_TRIGGERS_HEADER_PTR = 0x00CFF454;
+constexpr uint32_t FTRIG_OFF_FIELD_NAME      = 0x00;  // char[9]
+constexpr uint32_t FTRIG_OFF_CONTROL_DIR     = 0x09;  // u8
+constexpr uint32_t FTRIG_OFF_GATEWAYS        = 0x38;  // field_gateway[12]
+constexpr uint32_t FTRIG_GATEWAY_SIZE        = 24;
+constexpr uint32_t FTRIG_GATEWAY_COUNT       = 12;
+constexpr int16_t  FTRIG_FIELD_ID_UNUSED     = 0x7FFF;
+constexpr float    WALKMESH_UNITS_PER_SEC    = 160.0f; // walking pace
+
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different
 // code paths. We patch those call sites to intercept world map dialog.
