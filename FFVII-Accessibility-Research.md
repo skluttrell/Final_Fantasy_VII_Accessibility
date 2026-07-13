@@ -575,6 +575,9 @@ Two user requests after the v2.11 play test (user has no Sense materia yet):
    decomp battle.h `SceneEnemy \ size:0xB8` matches the v2.10 enemy-record
    stride exactly.
 
+**USER PLAY-TEST CONFIRMED 2026-07-13** (after v2.12.2): enemy HP without
+Sense and "defeated" announcements both working in-game.
+
 **v2.12.1 fix — defeats must speak in a QUIET GAP, not at detection.** The
 first play test heard no defeats; the debug log showed detection perfect but
 the speech cancelled within the same millisecond: the killing blow's tick
@@ -584,12 +587,17 @@ kills, two identical traces). Detected defeats now accumulate in a pending
 string and speak (interrupt=false) once no thread has issued ANY speech for
 600ms (new cross-thread stamp `TTS::LastSpeakTick()`), with a 5s overdue cap
 and an immediate flush on leaving battle so a battle-ending kill is never
-dropped. General lesson recorded: **any low-priority battle announcement
-must use this quiet-gap pattern** — the battle threads' interrupt=true
-bursts arrive in same-tick clusters. (Same trace also showed the phase-2
-flush "MP B, attacks" being instantly clobbered by "Cloud, Attack" — the
-pending-flush announce is inaudible in this collision case; noted as a known
-polish item, not fixed here.)
+dropped. **v2.12.2 completed the fix**: the first quiet-gap version passed
+its test AT the death tick (nothing had spoken for 2.2s BEFORE it) and got
+cancelled by the burst that follows microseconds later in the same
+iteration — the gap must be measured FORWARD from detection too (pending
+defeat must itself be ≥600ms old). General lesson recorded: **any
+low-priority battle announcement must use this two-sided quiet-gap
+pattern** — the battle threads' interrupt=true bursts arrive in same-tick
+clusters, and the triggering event IS the burst. (Same trace also showed
+the phase-2 flush "MP B, attacks" being instantly clobbered by "Cloud,
+Attack" — the pending-flush announce is inaudible in this collision case;
+noted as a known polish item, not fixed here.)
 
 ---
 
