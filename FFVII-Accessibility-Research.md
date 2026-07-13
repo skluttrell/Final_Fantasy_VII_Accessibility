@@ -617,12 +617,21 @@ Party-KO announcements added to TODO.txt with full implementation notes
 (same watcher + quiet-gap patterns; deferred at the user's request until
 their party has more members to test with).
 
-### v2.14 (2026-07-13): Field EXIT SCAN — first interactable-tracking feature
+### v2.14 (2026-07-13): Field PATHFINDER — first interactable-tracking feature
 
-Pressing N during normal field control announces the field's name and all
-active exits, nearest first: "Field MD1_2. Exit 1: up-left, 3 seconds.
-Exit 2: right, 8 seconds." Directions in d-pad terms, distances in seconds
-of walking. New FieldNavThread in proxy.cpp; config key `field_exit_scan`.
+A destination browser on the FF1-6 accessibility mods' key scheme (source
+of truth: `accessiblity_keys.txt` at the repo root — **key parity with the
+FF4 screen-reader mod is a standing project requirement**, recorded in
+memory feedback_key_parity): J/L (or [/]) cycle destinations, Shift+J/L
+(or -/=) cycle categories (All/Exits today), K announces the selection,
+Shift+K resets to All, \ or P speaks directions ("Exit 2: up-left,
+3 seconds" — d-pad terms, seconds of walking), M announces the map name.
+Destinations are numbered by gateway slot order so "Exit 2" keeps its name
+as the player moves. New FieldNavThread in proxy.cpp; config key
+`pathfinder_keys` (the original same-day name `field_exit_scan` — a
+one-shot N-key scan — was reworked to this scheme within hours when the
+user supplied the key file; the old cfg key parses as an alias).
+Unmapped FF4 keys and their prerequisites are listed in TODO.txt.
 
 **Derivation — fully static** (`ff7_field_triggers_static.py`): the engine's
 parsed field-file section 8 sits behind ONE global, FFNx's

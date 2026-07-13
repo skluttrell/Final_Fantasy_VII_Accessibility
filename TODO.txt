@@ -166,6 +166,30 @@ Implementation notes (everything needed is already in place):
     same watcher, trivial addition.
   - Phrasing: "<name> is down" (distinct from enemies' "defeated").
 
+[NAV] FF4-scheme keys deferred until their prerequisites exist
+----------------------------------------------------------------
+accessiblity_keys.txt (repo root) is the binding source of truth (parity
+with the FF1-6 accessibility mods — see memory feedback_key_parity). The
+v2.14 pathfinder implements the core browser (J/L/[/], Shift+J/L/-/=, K,
+Shift+K, \, P, M). Still unmapped, waiting on features:
+
+  - Shift+\ / Shift+P: toggle "valid path only" filter — needs actual
+    walkmesh pathfinding (currently directions are straight-line).
+  - Ctrl+\: layer filter — needs walkmesh triangle/layer awareness.
+  - Ctrl+Arrows: teleport one tile — needs a safe position-write method
+    (writing model_pos highres coords + walkmesh triangle id).
+  - Shift+M: map exit filter toggle.
+  - Announcements section: G (gil), H (battle HP readout — party HP is
+    already spoken during targeting; H would be on-demand), I (setting/
+    item descriptions), V (vehicle), T (timers).
+  - Audio section: ' (footsteps toggle), ; (wall tones toggle — the
+    wall-bump tone exists but is config-file-only today), 9 (audio
+    beacons), F8 (mod menu).
+  - Waypoints section: , . / Shift+/ Ctrl+/ etc. — needs a waypoint
+    store (per-field named positions saved to disk).
+  - Game Keys F1 (walk/run toggle) and F3 (random encounter toggle) are
+    game-altering features, not announcements — decide separately.
+
 [CONFIG] Auto-create default config file if missing
 ----------------------------------------------------
 If the user places version.dll in the FF7 folder but forgets ffvii_accessibility.cfg,

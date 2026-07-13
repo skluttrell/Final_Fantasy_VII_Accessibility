@@ -77,8 +77,7 @@
 #include "log.h"
 #include <string>
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
-#include <cmath>     // atan2f/sqrtf/fmodf in the field exit scan (v2.14)
-#include <utility>   // std::swap in the exit-scan distance sort
+#include <cmath>     // atan2f/sqrtf/fmodf in the field pathfinder (v2.14)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -2184,19 +2183,32 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
-// Field navigation — EXIT SCAN thread (v2.14). First interactable-tracking
+// Field navigation — PATHFINDER BROWSER thread (v2.14, reworked to the
+// FF1-6 accessibility key scheme the same day). First interactable-tracking
 // feature of the navigation system.
 //
-// Pressing N during normal field control announces the field's name and all
-// active exits (gateways), nearest first: "Field MD1_2. Exit 1: up-left,
-// 3 seconds. Exit 2: right, 8 seconds." — direction in D-PAD terms and
-// distance in seconds of WALKING.
+// KEY BINDINGS follow accessiblity_keys.txt (repo root) — the FF4 Pixel
+// Remaster screen-reader scheme — so users of the FF1-6 accessibility mods
+// can transfer their muscle memory directly (user requirement, 2026-07-13):
+//   J / L   (or [ / ])  cycle destinations in the current category
+//   Shift+J / Shift+L (or - / =)  cycle destination categories
+//   K                  announce the selected destination's name
+//   Shift+K            reset category to All
+//   \ or P             directions to the selected destination
+//   M                  announce the current map's name
+// Categories today: All, Exits (identical until NPC/save-point/LINE-trigger
+// categories arrive — the mechanism ships first so the keys behave like the
+// other games from day one). Unimplemented FF4 keys (Shift+\ valid-path
+// filter, Ctrl+\ layer filter, Ctrl+arrows teleport, Shift+M exit filter)
+// are silently ignored; listed in TODO.txt for when prerequisites exist.
 //
 // DATA SOURCE (ff7_addresses.h SECTION 1e): the engine's parsed field-file
 // section 8 behind FIELD_TRIGGERS_HEADER_PTR (0xCFF454, resolved statically
 // via FFNx's chain with three name-embedded cross-checks). Each of the 12
 // gateway slots holds an exit LINE (two walkmesh-coord vertices) and the
-// destination field id (0x7FFF = unused slot).
+// destination field id (0x7FFF = unused slot). Destinations are numbered by
+// gateway SLOT order ("Exit 1".."Exit n") so a destination keeps its name
+// while the player moves — never renumbered by distance.
 //
 // GEOMETRY: player walkmesh position = field_event_data model_pos >> 12
 // (FFNx: "model_pos.x / 4096.f"). Distance = player to the NEAREST POINT of
@@ -2214,11 +2226,11 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // calibration line while walking — one debug-logged session pins the true
 // convention if the first guess announces wrong directions.
 //
-// HOTKEY: GetAsyncKeyState('N') edge, gated on the game window being
+// HOTKEYS use GetAsyncKeyState edges, gated on the game window being
 // focused (GetForegroundWindow's process == ours) so typing in another app
-// can't trigger it, and on normal field control (GAME_MODE==0, FIELD_ID!=0,
-// MENU_OPEN==0, no UC lock, no movie, no recent dialog) so it can't talk
-// over battles/menus. Config::Get().field_exit_scan turns it off entirely.
+// can't trigger them, and on normal field control (GAME_MODE==0,
+// FIELD_ID!=0, MENU_OPEN==0) so they can't talk over battles/menus.
+// Config::Get().pathfinder_keys turns the whole set off.
 // ---------------------------------------------------------------------------
 
 // Map an input-relative angle (degrees, 0 = the Up d-pad, clockwise) to a
@@ -2239,9 +2251,37 @@ static const wchar_t* DpadSectorName(float deg)
     return kSectors[sector];
 }
 
+// One browsable destination (currently always a gateway/exit; NPC and
+// save-point categories will add their own kinds here).
+struct NavDest {
+    wchar_t name[24];      // spoken name, e.g. "Exit 2"
+    int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
+};
+
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
-    bool key_was_down = false;
+    // The FF4-scheme hotkeys we poll, with per-key previous-state for edge
+    // detection. OEM VKs are the US-layout punctuation keys.
+    static const int kVKs[] = {
+        'J', 'L', 'K', 'P', 'M',
+        VK_OEM_4,     // [
+        VK_OEM_6,     // ]
+        VK_OEM_5,     // backslash
+        VK_OEM_MINUS, // -
+        VK_OEM_PLUS,  // =
+    };
+    enum { KJ, KL, KK, KP, KM, KLBRACKET, KRBRACKET, KBACKSLASH, KMINUS, KPLUS,
+           KEY_COUNT };
+    bool was_down[KEY_COUNT] = {};
+
+    // Browser state. Selection and category persist while the player stays
+    // on one field (opening the menu or fighting a battle does NOT reset
+    // them); a field change resets both.
+    static const wchar_t* const kCategoryNames[] = { L"All", L"Exits" };
+    constexpr int kCategoryCount = 2;
+    int16_t nav_field_id = 0;
+    int     category     = 0;
+    int     selection    = 0;
 
     // Once-per-second rate limiter for the direction-calibration debug line.
     ULONGLONG next_calib_tick = 0;
@@ -2252,8 +2292,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
-        if (!Config::Get().field_exit_scan) {
-            key_was_down = false;
+        if (!Config::Get().pathfinder_keys) {
+            memset(was_down, 0, sizeof(was_down));
             continue;
         }
 
@@ -2268,7 +2308,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             FF7Addr::MENU_OPEN);
         if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
             menu_open != 0) {
-            key_was_down = false;
+            memset(was_down, 0, sizeof(was_down));
             calib_have_last = false;
             continue;
         }
@@ -2334,127 +2374,203 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             calib_have_last = true;
         }
 
-        // ---- hotkey edge detection ---------------------------------------
+        // ---- hotkey edge detection (whole FF4-scheme key set) ------------
         // Only while the game window is focused: GetAsyncKeyState is global,
-        // and 'N' typed into a chat window must not trigger a scan.
-        bool key_down = (GetAsyncKeyState('N') & 0x8000) != 0;
-        if (key_down) {
-            DWORD fg_pid = 0;
-            GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
-            if (fg_pid != GetCurrentProcessId())
-                key_down = false;
+        // and these letters typed into a chat window must not trigger
+        // announcements. When unfocused, previous-state still tracks the
+        // real key state so re-focusing can't produce a stale edge.
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        const bool focused = (fg_pid == GetCurrentProcessId());
+
+        bool pressed[KEY_COUNT] = {};
+        bool any_pressed = false;
+        for (int k = 0; k < KEY_COUNT; ++k) {
+            const bool down = (GetAsyncKeyState(kVKs[k]) & 0x8000) != 0;
+            pressed[k] = focused && down && !was_down[k];
+            was_down[k] = down;
+            any_pressed = any_pressed || pressed[k];
         }
-        const bool pressed = key_down && !key_was_down;
-        key_was_down = key_down;
-        if (!pressed)
+        if (!any_pressed)
             continue;
 
-        // ---- build the scan announcement ---------------------------------
-        // Field name: plain ASCII in the header (not FF7-encoded).
+        const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (ctrl)
+            continue;   // Ctrl+\ (layer filter) etc. not applicable yet
+
+        // Decode key presses into browser actions (accessiblity_keys.txt):
+        //   J/[ prev dest, L/] next dest (unshifted)
+        //   Shift+J/- prev category, Shift+L/= next category
+        //   K announce selection, Shift+K reset category
+        //   \/P directions (unshifted; Shift+\ filter not applicable yet)
+        //   M current map name
+        const bool act_prev_dest = (pressed[KJ] && !shift) || pressed[KLBRACKET];
+        const bool act_next_dest = (pressed[KL] && !shift) || pressed[KRBRACKET];
+        const bool act_prev_cat  = (pressed[KJ] && shift)  || pressed[KMINUS];
+        const bool act_next_cat  = (pressed[KL] && shift)  || pressed[KPLUS];
+        const bool act_announce  = pressed[KK] && !shift;
+        const bool act_reset_cat = pressed[KK] && shift;
+        const bool act_directions =
+            ((pressed[KBACKSLASH] || pressed[KP]) && !shift);
+        const bool act_map_name  = pressed[KM] && !shift;
+
+        if (!(act_prev_dest || act_next_dest || act_prev_cat || act_next_cat ||
+              act_announce || act_reset_cat || act_directions || act_map_name))
+            continue;
+
+        // ---- field name (plain ASCII in the header, not FF7-encoded) -----
         char fname[10] = {};
         memcpy(fname, reinterpret_cast<const void*>(hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
         for (char& c : fname)
             if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
 
-        struct ExitInfo {
-            float dist_units;
-            float input_deg_sub;   // world angle minus control_direction
-            float input_deg_add;   // world angle plus  control_direction
-            int   dest_field;
-        };
-        ExitInfo exits[FF7Addr::FTRIG_GATEWAY_COUNT];
-        int n_exits = 0;
+        if (act_map_name) {
+            std::wstring msg;
+            if (fname[0]) {
+                for (int i = 0; i < 9 && fname[i]; ++i)
+                    msg += static_cast<wchar_t>(fname[i]);
+            } else {
+                msg = L"Unknown map";
+            }
+            Log::Write("[FF7Access] NAV map-name announce");
+            TTS::Speak(msg, /*interrupt=*/true);
+            continue;
+        }
 
+        // ---- rebuild the destination list (fresh every keypress) ---------
+        // 12 gateway slots max — rebuilding on demand is cheaper than any
+        // caching scheme and always reflects the live field. Slot order is
+        // the destination's IDENTITY: "Exit 2" keeps its name as the player
+        // moves. Both categories currently contain exactly the exits.
+        NavDest dests[FF7Addr::FTRIG_GATEWAY_COUNT];
+        int n_dests = 0;
         for (uint32_t g = 0; g < FF7Addr::FTRIG_GATEWAY_COUNT; ++g) {
             const uint8_t* gw = reinterpret_cast<const uint8_t*>(
                 hdr + FF7Addr::FTRIG_OFF_GATEWAYS + g * FF7Addr::FTRIG_GATEWAY_SIZE);
             const int16_t* v = reinterpret_cast<const int16_t*>(gw);
-            const int16_t x1 = v[0], y1 = v[1];
-            const int16_t x2 = v[3], y2 = v[4];
-            const int16_t dest = *reinterpret_cast<const int16_t*>(gw + 0x12);
-            if (dest == FF7Addr::FTRIG_FIELD_ID_UNUSED || dest < 0)
+            const int16_t dest_id = *reinterpret_cast<const int16_t*>(gw + 0x12);
+            if (dest_id == FF7Addr::FTRIG_FIELD_ID_UNUSED || dest_id < 0)
                 continue;
-            if (x1 == 0 && y1 == 0 && x2 == 0 && y2 == 0)
+            if (v[0] == 0 && v[1] == 0 && v[3] == 0 && v[4] == 0)
                 continue;   // degenerate line = empty slot
+            NavDest& d = dests[n_dests++];
+            _snwprintf_s(d.name, _countof(d.name), _TRUNCATE, L"Exit %d", n_dests);
+            d.line_x1 = v[0]; d.line_y1 = v[1];
+            d.line_x2 = v[3]; d.line_y2 = v[4];
+        }
 
-            // Nearest point on the segment (x1,y1)-(x2,y2) to the player.
-            const float ex = static_cast<float>(x2 - x1);
-            const float ey = static_cast<float>(y2 - y1);
-            const float wx = static_cast<float>(px - x1);
-            const float wy = static_cast<float>(py - y1);
-            const float len2 = ex * ex + ey * ey;
-            float t = (len2 > 0.0f) ? ((wx * ex + wy * ey) / len2) : 0.0f;
-            if (t < 0.0f) t = 0.0f;
-            if (t > 1.0f) t = 1.0f;
-            const float nx = x1 + t * ex;
-            const float ny = y1 + t * ey;
-            const float dx = nx - static_cast<float>(px);
-            const float dy = ny - static_cast<float>(py);
-            const float dist = sqrtf(dx * dx + dy * dy);
+        // Field change invalidates selection and category.
+        if (field_id != nav_field_id) {
+            nav_field_id = field_id;
+            category  = 0;
+            selection = 0;
+        }
+        if (selection >= n_dests)
+            selection = (n_dests > 0) ? n_dests - 1 : 0;
 
-            // World bearing 0 = +Y axis, clockwise toward +X (convention is
-            // provisional until the calibration log confirms it).
-            const float world_deg = atan2f(dx, dy) * (180.0f / 3.14159265f);
-
-            ExitInfo& e = exits[n_exits++];
-            e.dist_units    = dist;
-            e.input_deg_sub = world_deg - control_deg;
-            e.input_deg_add = world_deg + control_deg;
-            e.dest_field    = dest;
-
-            if (Config::Get().debug_log) {
-                char dbg[224];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] NAV gw%u line=(%d,%d)-(%d,%d) dest=%d "
-                    "player=(%d,%d) dist=%.0f world_deg=%.1f sub=%ls add=%ls",
-                    g, x1, y1, x2, y2, dest,
-                    px, py, dist, world_deg,
-                    DpadSectorName(e.input_deg_sub),
-                    DpadSectorName(e.input_deg_add));
-                Log::Write(dbg);
+        // Announce helpers ---------------------------------------------------
+        const auto speak_category = [&]() {
+            wchar_t msg[64];
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d %ls.",
+                         kCategoryNames[category], n_dests,
+                         n_dests == 1 ? L"destination" : L"destinations");
+            TTS::Speak(msg, /*interrupt=*/true);
+        };
+        const auto speak_selection = [&](bool with_position) {
+            if (n_dests == 0) {
+                TTS::Speak(L"No destinations.", /*interrupt=*/true);
+                return;
             }
-        }
+            wchar_t msg[64];
+            if (with_position)
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d of %d.",
+                             dests[selection].name, selection + 1, n_dests);
+            else
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls",
+                             dests[selection].name);
+            TTS::Speak(msg, /*interrupt=*/true);
+        };
 
-        // Sort nearest-first (n is at most 12 — insertion sort is plenty).
-        for (int i = 1; i < n_exits; ++i)
-            for (int j = i; j > 0 && exits[j].dist_units < exits[j - 1].dist_units; --j)
-                std::swap(exits[j], exits[j - 1]);
-
-        std::wstring msg = L"Field ";
-        if (fname[0]) {
-            wchar_t wname[10] = {};
-            for (int i = 0; i < 9 && fname[i]; ++i)
-                wname[i] = static_cast<wchar_t>(fname[i]);
-            msg += wname;
-        } else {
-            msg += L"unknown";
+        if (act_prev_cat || act_next_cat) {
+            category += act_next_cat ? 1 : -1;
+            if (category < 0) category = kCategoryCount - 1;
+            if (category >= kCategoryCount) category = 0;
+            selection = 0;
+            speak_category();
+            continue;
         }
-        msg += L". ";
-        if (n_exits == 0) {
-            msg += L"No exits found.";
-        } else {
-            for (int i = 0; i < n_exits; ++i) {
-                wchar_t part[96];
-                const int secs = static_cast<int>(
-                    exits[i].dist_units / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
-                if (secs < 1)
-                    _snwprintf_s(part, _countof(part), _TRUNCATE,
-                                 L"Exit %d: %ls, very close. ",
-                                 i + 1, DpadSectorName(exits[i].input_deg_sub));
-                else
-                    _snwprintf_s(part, _countof(part), _TRUNCATE,
-                                 L"Exit %d: %ls, %d %ls. ",
-                                 i + 1, DpadSectorName(exits[i].input_deg_sub),
-                                 secs, secs == 1 ? L"second" : L"seconds");
-                msg += part;
+        if (act_reset_cat) {
+            category  = 0;
+            selection = 0;
+            speak_category();
+            continue;
+        }
+        if (act_prev_dest || act_next_dest) {
+            if (n_dests == 0) {
+                TTS::Speak(L"No destinations.", /*interrupt=*/true);
+                continue;
             }
+            selection += act_next_dest ? 1 : -1;
+            if (selection < 0) selection = n_dests - 1;
+            if (selection >= n_dests) selection = 0;
+            speak_selection(/*with_position=*/true);
+            continue;
+        }
+        if (act_announce) {
+            speak_selection(/*with_position=*/false);
+            continue;
         }
 
-        char dbg[96];
-        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] NAV scan: %d exits, ctrl_dir=%u",
-            n_exits, static_cast<unsigned>(control_dir));
-        Log::Write(dbg);
+        // ---- directions to the selected destination (\ or P) -------------
+        if (n_dests == 0) {
+            TTS::Speak(L"No destinations.", /*interrupt=*/true);
+            continue;
+        }
+        const NavDest& d = dests[selection];
+
+        // Nearest point on the exit line segment to the player.
+        const float ex = static_cast<float>(d.line_x2 - d.line_x1);
+        const float ey = static_cast<float>(d.line_y2 - d.line_y1);
+        const float wx = static_cast<float>(px - d.line_x1);
+        const float wy = static_cast<float>(py - d.line_y1);
+        const float len2 = ex * ex + ey * ey;
+        float t = (len2 > 0.0f) ? ((wx * ex + wy * ey) / len2) : 0.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        const float dx = (d.line_x1 + t * ex) - static_cast<float>(px);
+        const float dy = (d.line_y1 + t * ey) - static_cast<float>(py);
+        const float dist = sqrtf(dx * dx + dy * dy);
+
+        // World bearing 0 = +Y axis, clockwise toward +X (convention is
+        // provisional until the calibration log confirms it).
+        const float world_deg = atan2f(dx, dy) * (180.0f / 3.14159265f);
+        const float input_deg_sub = world_deg - control_deg;
+        const float input_deg_add = world_deg + control_deg;
+
+        if (Config::Get().debug_log) {
+            char dbg[224];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] NAV dir %ls line=(%d,%d)-(%d,%d) player=(%d,%d) "
+                "dist=%.0f world_deg=%.1f ctrl=%u sub=%ls add=%ls",
+                d.name, d.line_x1, d.line_y1, d.line_x2, d.line_y2,
+                px, py, dist, world_deg, static_cast<unsigned>(control_dir),
+                DpadSectorName(input_deg_sub), DpadSectorName(input_deg_add));
+            Log::Write(dbg);
+        }
+
+        wchar_t msg[96];
+        const int secs = static_cast<int>(
+            dist / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
+        if (secs < 1)
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                         L"%ls: %ls, very close.",
+                         d.name, DpadSectorName(input_deg_sub));
+        else
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                         L"%ls: %ls, %d %ls.",
+                         d.name, DpadSectorName(input_deg_sub),
+                         secs, secs == 1 ? L"second" : L"seconds");
         TTS::Speak(msg, /*interrupt=*/true);
     }
 

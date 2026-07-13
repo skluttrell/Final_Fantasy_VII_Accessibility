@@ -57,13 +57,16 @@ struct Settings {
     // Default: false.
     bool speak_enemy_hp_always = false;
 
-    // field_exit_scan: If true, pressing the N key during field gameplay
-    // announces the field's name and every exit: direction (in d-pad terms,
-    // e.g. "up-left") and walking distance in seconds, nearest first. The
-    // key only responds while the game window is focused and the player is
-    // in normal field control (not in menus, battles, or dialogs).
+    // pathfinder_keys: If true, the FF1-6 accessibility-scheme pathfinder
+    // hotkeys work during field gameplay (see accessiblity_keys.txt at the
+    // repo root — key parity with the FF4 screen-reader mod is a project
+    // requirement): J/L or [/] cycle destinations, Shift+J/L or -/= cycle
+    // categories, K announces the selection, Shift+K resets to All, \ or P
+    // speaks direction + walking distance, M announces the map name. Keys
+    // only respond while the game window is focused and the player is in
+    // normal field control (not in menus, battles, or dialogs).
     // Default: true.
-    bool field_exit_scan = true;
+    bool pathfinder_keys = true;
 
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the

@@ -103,7 +103,10 @@ void Load()
         else if (key == "speak_menus")   g_settings.speak_menus   = parse_bool(value);
         else if (key == "speak_enemy_hp_always") g_settings.speak_enemy_hp_always = parse_bool(value);
         else if (key == "wall_bump_tone") g_settings.wall_bump_tone = parse_bool(value);
-        else if (key == "field_exit_scan") g_settings.field_exit_scan = parse_bool(value);
+        // "field_exit_scan" was the pathfinder's short-lived original name
+        // (v2.14, same-day rename) — accepted as an alias so no config breaks.
+        else if (key == "pathfinder_keys" || key == "field_exit_scan")
+            g_settings.pathfinder_keys = parse_bool(value);
         else if (key == "interrupt")     g_settings.interrupt      = parse_bool(value);
         else if (key == "debug_log")     g_settings.debug_log      = parse_bool(value);
         // Unknown keys are silently ignored for forward compatibility.
