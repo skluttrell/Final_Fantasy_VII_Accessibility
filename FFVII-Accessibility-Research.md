@@ -571,10 +571,25 @@ Two user requests after the v2.11 play test (user has no Sense materia yet):
    cur > 0, no Death bit) — battle-init memset zeroes and empty formation
    slots can therefore never false-positive; the tracker resets whenever
    GAME_MODE leaves 2 (between battles). Names via v2.10's EnemySlotName
-   with "enemy N" fallback; spoken with interrupt=false so a defeat queues
-   after in-flight action speech instead of clipping it. Bonus static
-   confirmation this session: PSX decomp battle.h `SceneEnemy \ size:0xB8`
-   matches the v2.10 enemy-record stride exactly.
+   with "enemy N" fallback. Bonus static confirmation this session: PSX
+   decomp battle.h `SceneEnemy \ size:0xB8` matches the v2.10 enemy-record
+   stride exactly.
+
+**v2.12.1 fix — defeats must speak in a QUIET GAP, not at detection.** The
+first play test heard no defeats; the debug log showed detection perfect but
+the speech cancelled within the same millisecond: the killing blow's tick
+also fires action announcements (pending-flash resolution + next-turn), and
+their interrupt=true wipes queued speech — every time, reproducibly (two
+kills, two identical traces). Detected defeats now accumulate in a pending
+string and speak (interrupt=false) once no thread has issued ANY speech for
+600ms (new cross-thread stamp `TTS::LastSpeakTick()`), with a 5s overdue cap
+and an immediate flush on leaving battle so a battle-ending kill is never
+dropped. General lesson recorded: **any low-priority battle announcement
+must use this quiet-gap pattern** — the battle threads' interrupt=true
+bursts arrive in same-tick clusters. (Same trace also showed the phase-2
+flush "MP B, attacks" being instantly clobbered by "Cloud, Attack" — the
+pending-flush announce is inaudible in this collision case; noted as a known
+polish item, not fixed here.)
 
 ---
 
