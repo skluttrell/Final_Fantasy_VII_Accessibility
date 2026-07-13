@@ -166,6 +166,18 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_PLAYER_MODEL_ID` | `0x00CC162C` | u16 player index into event-data array (player ≠ always model 0) |
 | `FIELD_N_MODELS` | `0x00CFF73E` | u16 model count on current field |
 | `FIELD_MOVIE_PLAYING` | `0x00CC1638` | u16 nonzero while movie plays on field. FFNx movie test: `word && !BGMOVIE_flag` |
+| `BATTLE_MENU_STATE` | `0x0091EF9C` | u16, current battle menu widget: 0=waiting/ATB, **1=command menu**, 2/3=Defend/Change-row pseudo-commands, 5/6/7=action lists, 19=targeting, 24–28=limit/slots widgets. The "current widget" global the PSX architecture predicted. Static chain 2026-07-12 (all 3 FFNx cross-checks passed), live verify pending |
+| `BATTLE_MENU_PREV_STATE` | `0x0091EF98` | u16, written on every state transition (static 2026-07-12) |
+| `BATTLE_MENU_FN_TABLE` | `0x0091E6B8` | uint32[64] per-state handler table (= FFNx battle_menu_state_fn_table; resolved from battle_sub_6DB0EE+0x1B4) |
+| `BATTLE_ACTIVE_SLOT` | `0x00DC3C7C` | u8 party slot (0–2) whose battle menu is open; selects the widget block AND the char data block below (static 2026-07-12) |
+| `BATTLE_MENU_BUSY` | `0x00DC35AC` | u32, 1 = menu transition/animation in progress; handlers skip input while set (static 2026-07-12) |
+| `BATTLE_WIDGET_BLOCK` | `0x00DC20A0` | **THE BATTLE MENU CURSOR** (static 2026-07-12, live verify pending). Per-slot block at +slot·0x700; 0x38-byte widget structs: +0x00 command widget, +0x38 state-5 list, +0x70 state-6 list, +0xA8 state-7 list. Widget fields: +0 horiz cursor (LEFT/RIGHT), +4 vert cursor (UP/DOWN), +0x08 horiz wrap count, +0x0C visible rows, +0x14 scroll offset, +0x1C total entries, +0x28/+0x2C axis modes, +0x30 scroll-busy. Command menu: selected entry index = **row + col·4** (column-major, 4 rows/col, `and 3` wrap); col wraps mod u8[0xDBA4B9+slot·0x440]. List widgets: selected index = w0+w4+scroll |
+| `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+col·4: u8[+0] command id (0xFF=empty, cursor skips), u8[+1] action type (Confirm jump-table selector 0–0xB), u8[+2] action id; +0x108 (0xDBA5A0) state-6 list, +0x2C8 (0xDBA760) state-7 list, both 6-byte entries |
+| `BATTLE_LIST5_TABLE` | `0x009AC354` | Global (not per-slot) 6-byte entries for the state-5 list (magic-shaped): u16[+0] action id (0xFFFF=empty), u8[+3] → 0xDC3C84 on Confirm, u8[+4] enable-flag bits |
+| `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id; entry[0] copied here on Confirm (also 0x12/0x13 written by the Defend/Change-row left/right paths) |
+| `BATTLE_ISSUED_ACTION` | `0x00DC3C78` | u16 = FFNx issued_action_id; list entry id copied here on list Confirm |
+| `BATTLE_TARGET_TYPE/INDEX` | `0x00DC3C90/94` | u8 pair = FFNx issued_action_target_type/index (via set_battle_targeting_data 0x6E5C52) |
+| `BATTLE_TARGETING_ACTOR` | `0x00DC3C98` | u8 = FFNx targeting_actor_id_DC3C98 — **the live target-selection cursor** (which actor the pointer is on during state 19) |
 
 ---
 
@@ -661,7 +673,8 @@ CONFIG_ROW != 1.
 | ASK per-option TTS as cursor moves | `opcode_ask + 0x8E` → inner loop; needs FF7 original opcode_ask address |
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
-| Battle turn announcement | `battle_set_do_render_menu_call` |
+| Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
+| **Battle menu cursor TTS** | **Addresses statically solved 2026-07-12** (§4 BATTLE_WIDGET_BLOCK / BATTLE_MENU_STATE); awaiting live verify (`ff7_battle_menu_cursor_live_verify.py`), then mod thread: poll state==1 → speak command under cursor; states 5/6/7 → speak list entry name via v2.7 kernel2 heap lookups; state 19 → speak target from targeting_actor + actor names |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |
@@ -757,6 +770,13 @@ Proven payoffs of cluster reasoning so far:
 | `0x6342C6` | field_update_models_positions | +0x45D→player_model_id, +0x25→n_models |
 | `0x63C17F` | field_loop | +0x5DD → field_update_models_positions |
 | `0x6D71FA` | kernel2 request writer | stores section/idx to 0xDC38E8; returns void; FFNx-trampolined |
+| `0x6CE8B3` | battle_menu_update (FFNx name) | per-frame battle menu tick; +0xD9 CALL → 0x6DB0EE (FFNx trampolines THIS call site — hook wary) |
+| `0x6DB0EE` | battle menu state dispatcher | +0x1B4 → fn table 0x91E6B8; +0x276 → battle_actor_data 0xDC38E0; +0x1F9 CALL → 0x6E6291; +0x50E CALL → dispatch_chosen_battle_action 0x6D86D2 |
+| `0x6D8C75` / `0x6D91FA` | state 0 (actor ready) / state 1 (command menu) handlers | state 1 is where the command cursor logic lives; Confirm jump table at 0x6D97F7 |
+| `0x6D98E3` / `0x6D9B98` / `0x6DA072` | state 5/6/7 list handlers | magic-shaped/per-actor lists; widget ptr = 0xDC20D8/0xDC2110/0xDC2148 + slot·0x700 |
+| `0x6F4DB2` | shared widget navigation helper | takes widget ptr arg; ALL cursor inc/dec/wrap/scroll logic — cursor ops are [reg+disp], invisible to absolute-operand scans |
+| `0x6E5C52` | set_battle_targeting_data (FFNx) | +0x14E/+0x164 → target type/index globals |
+| `0x6E6291` | battle_update_targeting_info (FFNx) | +0x684 → targeting_actor_id 0xDC3C98 |
 | `0x6D72E9` / `0x6D1CC0` | kernel2 request consumer / dispatcher | real CALL to 0x41963C at 0x6D72C6 |
 | `0x6E97E0` | build_dialog_window | |
 | `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
@@ -769,6 +789,9 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0x9055A0` | execute_opcode_table | uint32[256] |
+| `0x91E6B8` | BATTLE_MENU_FN_TABLE | uint32[64] battle menu state handlers (2026-07-12) |
+| `0x91EF98` / `0x91EF9C` | BATTLE_MENU_PREV_STATE / BATTLE_MENU_STATE | u16 pair — the battle "current widget" selector; same .data neighborhood as NAME_ENTRY_PANE_FLAG 0x921ED4 (menu-module state cluster) |
+| `0x9AC354` | BATTLE_LIST5_TABLE | global 6-byte entries for the state-5 (magic-shaped) battle list |
 | `0x921ED4` | NAME_ENTRY_PANE_FLAG | 0=grid, 1=side panel on the naming screen (v2.8.2). Sole clean candidate of a full-static A/B/A revert scan; live-verified across 6 crossings. Far from the DD name-entry block — menu-module .data |
 | `0x9A8729`, `0x9A872A`, `0x9ADE30`, `0x9ADE34` | input-event/SFX pulse flags | pulse-and-reset on any d-pad press; REJECTED as cursor candidates |
 | `0x9A8731` | grid/panel covariant | 44 on grid, 49 on panel, reverted (pane-flag scan 2026-07-12); secondary candidate, likely cursor-SFX/sprite id — unused, PANE_FLAG is cleaner |
@@ -787,10 +810,16 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0xBFC3E0–0xBFC5E0` | SFX/audio playback buffer | random churn; noise source in scans |
 
 The battle command-menu CURSOR is confirmed NOT in either known per-actor array
-(3 investigation sessions). PSX architecture says it lives in a small (0x240-byte)
-menu-widget struct selected by a "current widget" global — if that carried over,
-it is plausibly a separate small block somewhere in 0xBFxxxx–0xC0xxxx or the menu
-region below, not yet found.
+(3 investigation sessions). RESOLVED STATICALLY 2026-07-12: the PSX "menu-widget
+struct selected by a current-widget global" architecture DID carry over — the
+widget global is `BATTLE_MENU_STATE` 0x91EF9C (menu-module .data, like the
+name-entry PANE_FLAG at 0x921ED4), and the widget structs live in the menu
+module block at 0xDC20A0+slot·0x700 (see §4 BATTLE_WIDGET_BLOCK). The three
+live-scan sessions failed because the cursor is two u32 components inside a
+0x38-byte struct at an address 0x1000+ bytes from any then-known anchor, in a
+region that also hosts constantly-churning scroll/animation fields (+0x24/+0x30
+change during list scrolling — classic delta-scan poison). Live verify:
+`ff7_battle_menu_cursor_live_verify.py`.
 
 ### Field module block: 0xCBF578 – 0xCC1B42
 
@@ -854,6 +883,9 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC1154` | MENU_CURSOR | |
 | `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen AND the naming screen (v2.8.3) |
 | `0xDC208C` | kernel2 lookup result ptr | written after every consumer CALL to 0x41963C — but consumer is FFNx-replaced, so **never written in practice**; observed 0 always (2026-07-11) |
+| `0xDC20A0` | BATTLE_WIDGET_BLOCK | per-slot (+slot·0x700) battle menu widget structs — command cursor at +0/+4; see §4 (2026-07-12) |
+| `0xDC35AC` | BATTLE_MENU_BUSY | u32 transition flag; `0xDC35A8` = command-menu-opened SFX-played byte |
+| `0xDC3C54–0xDC3C98` | issued-action staging block | 0xDC3C70 cmd id, 0xDC3C78 action id, 0xDC3C7C ACTIVE SLOT, 0xDC3C84 action idx, 0xDC3C90/94 target type/idx, 0xDC3C98 targeting actor (all = FFNx externals; static 2026-07-12) |
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |
 
@@ -875,9 +907,15 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 
 ### Discovery techniques ranked by success rate (as of 2026-07-12)
 
-1. **Static chain resolution against the exe on disk** (v2.6): replicate FFNx
-   `ff7_data.h` chains on the file image; cross-check against `ff7.h` address
-   comments. Zero user effort, immune to FFNx trampolines. Best first move.
+1. **Static chain resolution against the exe on disk** (v2.6; battle menu
+   cursor 2026-07-12): replicate FFNx `ff7_data.h` chains on the file image;
+   cross-check against `ff7.h` address comments. Zero user effort, immune to
+   FFNx trampolines. Best first move. The battle-cursor break came from
+   pairing it with **capstone disassembly of the resolved functions**:
+   extract every absolute data-region operand per handler, then intersect
+   "written by input handlers" with "read by draw code" — that intersection
+   is tiny and cursor-shaped even when no single +-1 instruction exists
+   (the mutation lived in a shared helper behind a struct pointer).
 2. **PSX decomp struct matching** (v2.6 UC lock): once a PC struct base is known,
    align it with the PSX decomp's version and lift the PSX field comments.
 3. **Targeted isolate delta scan** (MENU_CURSOR, CONFIG_ROW, SOUND_CURSOR,
