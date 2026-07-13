@@ -33,6 +33,15 @@ struct Settings {
     // spell names, item use text). Default: true.
     bool speak_battle = true;
 
+    // speak_battle_menu: If true, the in-battle command menu is announced as
+    // the cursor moves: command names (Attack/Magic/Item/Limit...), magic and
+    // item list entries by name, and target selection ("enemy 1", ally names).
+    // This is the navigation half of battle TTS; speak_battle covers the
+    // action-execution half (what actually happens each turn). Separate flags
+    // because a player may want quiet menus but spoken actions, or vice versa.
+    // Default: true.
+    bool speak_battle_menu = true;
+
     // speak_menus: If true, menu navigation is announced. Covers the title
     // screen cursor, main menu cursor + Quit dialog, Config sub-menu rows and
     // values, Sound sub-menu cursor and volumes, and the name-entry screen

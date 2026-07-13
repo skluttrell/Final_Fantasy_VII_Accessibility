@@ -444,6 +444,41 @@ Implementation (BattleActionThread v2.7 in proxy.cpp):
 - Limit names carry a leading F8+param colour code — skipped locally (the dialog
   decoder's single-byte 0xF8 handling is correct for dialog, wrong for these).
 
+### v2.9 (2026-07-12) — Battle menu navigation TTS (the battle cursor, solved)
+
+The battle command-menu cursor — unsolved through three live-scanning sessions —
+fell to static analysis in one session. Full derivation in §14 (battle module
+block note) and §4 (BATTLE_* entries); investigation scripts
+`ff7_battle_menu_static.py`, `ff7_battle_menu_handler_disasm.py`,
+`ff7_battle_menu_submenu_disasm.py`, live verify
+`ff7_battle_menu_cursor_live_verify.py` (two battles, user-confirmed:
+"I think that's got it").
+
+Implementation (BattleMenuThread in proxy.cpp, 50ms poll, gated on new config
+key `speak_battle_menu`):
+- **Command menu (state 1)**: speaks the command under the cursor on every
+  (slot,col,row) change AND on menu open (state entry invalidates the key, so
+  the landing command speaks immediately — that is the "your turn" cue).
+  Names resolve via a NEW kernel2 section — command names, signature
+  `"Attack|Magic|"` — at entry id-1 (ids are 1-based); Defend (0x12),
+  Change-row (0x13), and Limit (0x14, unshifted) are hardcoded ahead of the
+  lookup; GenericActionLabel is the final fallback. Empty cells (0xFF) stay
+  silent: the game's own nav skips them, we only ever read one mid-move.
+- **Lists (states 5/6/7)**: selected index = w0+w4+scroll; the entry's u16
+  packs action index (low byte) + flags (high). The name section is chosen by
+  the command that OPENED the list (BATTLE_ISSUED_CMD → dispatch branch →
+  ResolveActionName), reusing the entire v2.7 machinery including the
+  item/thrown-weapon namespace split. Unknown commands degrade to "row N".
+- **Targeting**: armed only on a menu-state→0 transition (state 0 is also
+  plain ATB wait — prev-state gating is the difference between "target cursor"
+  and silence), disarmed on 0xFFFF/new menu/battle exit. Speaks target labels
+  on TARGET_INDEX (0xDC3C94) change: leader name for slot 0, "ally N"/
+  "enemy N" positionally. Real enemy names (scene.bin) are a known follow-up.
+- Kernel2 scan now guarded by an interlocked busy flag — two threads
+  (BattleActionThread + BattleMenuThread) can trigger it lazily; duplicate
+  concurrent walks are wasteful though harmless, so one runs and the other
+  skips to its rate-limited retry.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -675,7 +710,7 @@ CONFIG_ROW != 1.
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
 | Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
-| **Battle menu cursor TTS** | **Addresses statically solved 2026-07-12** (§4 BATTLE_WIDGET_BLOCK / BATTLE_MENU_STATE); awaiting live verify (`ff7_battle_menu_cursor_live_verify.py`), then mod thread: poll state==1 → speak command under cursor; states 5/6/7 → speak list entry name via v2.7 kernel2 heap lookups; state 19 → speak target from targeting_actor + actor names |
+| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: real enemy names in target announcements (scene.bin), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits) |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |

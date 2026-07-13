@@ -141,6 +141,7 @@ static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
 static HANDLE g_battle_thread     = nullptr;
+static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
 static HANDLE g_nameentry_thread  = nullptr;
 
@@ -904,8 +905,22 @@ struct Kernel2Sections {
                              //          72-95 enemy skills, 128+ limit breaks
     const uint8_t* item;     // entries 0-127 item names
     const uint8_t* weapon;   // entries 0-127 weapon names (thrown weapons)
+    const uint8_t* command;  // command names: entry = battle command id - 1
+                             // ("Attack","Magic","Summon","Item","Steal",...).
+                             // The -1 comes from the menu/battle id space
+                             // being 1-based (v2.9, live-corrected) while the
+                             // kernel command-name table is 0-based.
 };
-static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr };
+static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr, nullptr };
+
+// Scan-in-progress guard.  v2.9 added a second thread (BattleMenuThread) that
+// can trigger ScanKernel2Sections lazily, so two threads could otherwise scan
+// concurrently.  Concurrent scans are HARMLESS for correctness (both compute
+// identical section addresses and pointer-sized aligned stores are atomic on
+// x86) but each scan walks the whole address space — the guard just prevents
+// wasted duplicate walks.  A thread that finds the guard taken simply skips;
+// its rate-limited retry fires again later.
+static volatile LONG g_k2_scan_busy = 0;
 
 // FF7-encode an ASCII signature (byte = char - 0x20; '|' stands for the 0xFF
 // string terminator).  Returns encoded length.
@@ -958,14 +973,22 @@ static const uint8_t* FindSectionBase(const uint8_t* region, size_t size,
 // v2.5 generic labels — degraded, never wrong.
 static void ScanKernel2Sections()
 {
-    uint8_t sig_magic[24], sig_item[24], sig_weapon[24];
+    // Skip if another thread is mid-scan (see g_k2_scan_busy comment).
+    if (InterlockedCompareExchange(&g_k2_scan_busy, 1, 0) != 0)
+        return;
+
+    uint8_t sig_magic[24], sig_item[24], sig_weapon[24], sig_command[24];
     const size_t len_magic  = EncodeSignature("Cure|Cure2|",        sig_magic,  sizeof(sig_magic));
     const size_t len_item   = EncodeSignature("Potion|Hi-Potion|",  sig_item,   sizeof(sig_item));
     const size_t len_weapon = EncodeSignature("Buster Sword|",      sig_weapon, sizeof(sig_weapon));
+    // Command-name section head: entries 0,1,... are "Attack","Magic",...
+    // stored back-to-back like every other kernel2 text section.
+    const size_t len_command = EncodeSignature("Attack|Magic|",     sig_command, sizeof(sig_command));
 
     MEMORY_BASIC_INFORMATION mbi = {};
     uintptr_t addr = 0x00400000;
-    while (addr < 0x7FFF0000 && (!g_k2.magic || !g_k2.item || !g_k2.weapon)) {
+    while (addr < 0x7FFF0000 &&
+           (!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command)) {
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
             break;
         const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -976,18 +999,21 @@ static void ScanKernel2Sections()
         if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
             mbi.Protect == PAGE_READWRITE) {
             const uint8_t* p = reinterpret_cast<const uint8_t*>(base);
-            if (!g_k2.magic)  g_k2.magic  = FindSectionBase(p, mbi.RegionSize, sig_magic,  len_magic);
-            if (!g_k2.item)   g_k2.item   = FindSectionBase(p, mbi.RegionSize, sig_item,   len_item);
-            if (!g_k2.weapon) g_k2.weapon = FindSectionBase(p, mbi.RegionSize, sig_weapon, len_weapon);
+            if (!g_k2.magic)   g_k2.magic   = FindSectionBase(p, mbi.RegionSize, sig_magic,   len_magic);
+            if (!g_k2.item)    g_k2.item    = FindSectionBase(p, mbi.RegionSize, sig_item,    len_item);
+            if (!g_k2.weapon)  g_k2.weapon  = FindSectionBase(p, mbi.RegionSize, sig_weapon,  len_weapon);
+            if (!g_k2.command) g_k2.command = FindSectionBase(p, mbi.RegionSize, sig_command, len_command);
         }
         addr = base + mbi.RegionSize;
     }
 
-    char dbg[160];
+    char dbg[192];
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-        "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p",
-        g_k2.magic, g_k2.item, g_k2.weapon);
+        "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p",
+        g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command);
     Log::Write(dbg);
+
+    InterlockedExchange(&g_k2_scan_busy, 0);
 }
 
 // Decode entry `entry` of a kernel2 text section into `out`.
@@ -1274,6 +1300,337 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         pending_s0_idx   = flash_idx;
         pending_deadline = GetTickCount64() + 2500;
         wcscpy_s(pending_actor, actor_label);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Battle COMMAND MENU navigation TTS thread (v2.9).
+//
+// Speaks the battle menu as the player navigates it: the command under the
+// cursor (Attack/Magic/Item/Limit...), magic and item list entries BY NAME,
+// and the target selection cursor. This was the single largest accessibility
+// gap left in the mod — battles were playable only by memorizing menu
+// layouts and counting presses.
+//
+// Addresses: ff7_addresses.h SECTION 1c2. Solved by static disassembly
+// 2026-07-12 (three failed live-scan sessions prior), live-confirmed the
+// same day by investigate/ff7_battle_menu_cursor_live_verify.py.
+//
+// WHY POLLING (not hooks): same reason as BattleActionThread — FFNx
+// trampolines battle menu functions (battle_menu_update's dispatcher call
+// site is one of its replace_call_function targets), so entry-point hooks
+// would intercept FFNx, not the game. Polling at 50ms reads the same state
+// the draw code reads, with zero patching. Cursor repeat-rate in FF7 is
+// ~8/s at the fastest; 50ms polling cannot skip a resting position, only
+// intermediate positions mid-repeat (which a sighted player also ignores).
+//
+// LIST NAME RESOLUTION: a list entry's u16 id packs the action index in
+// the LOW byte (high byte = flag bits — live: Ice showed 0x41E = spell 30
+// + flag 0x04). Which name section that index refers to depends on which
+// COMMAND opened the list, so we reuse the v2.7 dispatch machinery:
+// BATTLE_ISSUED_CMD holds the opening command (written at list-open,
+// live-verified), its dispatch branch (BATTLE_DISPATCH_BYTE_TABLE) picks
+// the section, and ResolveActionName does the lookup. This also keeps the
+// item/weapon namespace split (ids 128+ = thrown weapons) working without
+// duplicating it. For magic-family branches (0/1/2/6/7) the index is the
+// low byte; for the item branch the u16 is the id (kept whole so thrown
+// weapons at 128-255 resolve).
+//
+// TARGETING: after Confirm, the game returns BATTLE_MENU_STATE to 0 and
+// runs target selection there (prev state 0x91EF98 keeps the menu it came
+// from) — state 0 is ALSO the idle ATB-wait state, so raw "state == 0"
+// cannot gate target announcements. We announce target changes only while
+// `targeting` is set, which we arm on a menu-state -> 0 transition and
+// disarm on 0xFFFF (turn executing), a new menu opening, or leaving
+// battle. The initial target is announced on arming (the game always
+// writes TARGET_INDEX at Confirm time — live: it landed the same 50ms
+// poll as the state transition).
+//
+// Target labels: party slots 0-2, enemy slots 4-9 (same actor-slot space
+// BattleActionThread uses). Slot 0 = the party leader's real name from
+// the savemap; other slots get positional labels ("ally 2", "enemy 1").
+// Naming every actor (party member 2/3 names, real enemy names from
+// scene.bin) is a known follow-up, not v2.9.
+//
+// Gated by Config::Get().speak_battle_menu (separate from speak_battle so
+// menu narration and action narration can be toggled independently).
+// ---------------------------------------------------------------------------
+
+// Resolve a battle COMMAND id to its display name.
+// Priority: (1) hardcoded names for ids the kernel command-name table does
+// not cover 1:1 — the Defend/Change-row pseudo-commands and Limit (which
+// keeps its unshifted kernel id, live-confirmed); (2) the kernel2 command-
+// name section at entry id-1 (ids are 1-based, table is 0-based); (3) the
+// v2.7 generic label ("command N" worst case). Returns via `out`.
+static void CommandMenuName(uint8_t id, std::wstring& out)
+{
+    switch (id) {
+    case 0x12: out = L"Defend";     return;  // Left at column edge
+    case 0x13: out = L"Change row"; return;  // Right at column edge
+    case 0x14: out = L"Limit";      return;  // replaces Attack at full gauge
+    default:
+        break;
+    }
+    if (id != 0 && SectionEntryText(g_k2.command, static_cast<uint32_t>(id) - 1, out))
+        return;
+    wchar_t generic_buf[32];
+    out = GenericActionLabel(id, generic_buf, _countof(generic_buf));
+}
+
+static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
+{
+    // Same default English names as BattleActionThread (slot 0 = leader).
+    static const wchar_t* const kCharNames[] = {
+        L"Cloud", L"Barret", L"Tifa", L"Aerith", L"Red XIII",
+        L"Yuffie", L"Cait Sith", L"Vincent", L"Cid"
+    };
+    static const uint32_t kCharNameCount =
+        static_cast<uint32_t>(sizeof(kCharNames) / sizeof(kCharNames[0]));
+
+    uint16_t  last_state    = FF7Addr::BMENU_STATE_CLOSED;
+    uint32_t  last_cmd_key  = 0xFFFFFFFF;  // slot<<16 | col<<8 | row
+    uint32_t  last_list_key = 0xFFFFFFFF;  // state<<16 | index
+    bool      targeting     = false;
+    uint8_t   last_target   = 0xFF;
+    ULONGLONG next_scan_tick = 0;
+
+    const auto reset_all = [&]() {
+        last_state    = FF7Addr::BMENU_STATE_CLOSED;
+        last_cmd_key  = 0xFFFFFFFF;
+        last_list_key = 0xFFFFFFFF;
+        targeting     = false;
+        last_target   = 0xFF;
+    };
+
+    // Label an actor slot for target announcements (see header comment).
+    const auto target_label = [&](uint8_t slot, wchar_t* buf, size_t buf_count) {
+        if (slot == 0) {
+            const uint8_t leader_id =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
+            const wchar_t* cname =
+                (leader_id < kCharNameCount) ? kCharNames[leader_id] : L"ally 1";
+            _snwprintf_s(buf, buf_count, _TRUNCATE, L"%ls", cname);
+        } else if (slot <= 2) {
+            _snwprintf_s(buf, buf_count, _TRUNCATE, L"ally %u",
+                         static_cast<unsigned>(slot + 1u));
+        } else if (slot >= 4 && slot <= 9) {
+            _snwprintf_s(buf, buf_count, _TRUNCATE, L"enemy %u",
+                         static_cast<unsigned>(slot - 3u));
+        } else {
+            _snwprintf_s(buf, buf_count, _TRUNCATE, L"target %u",
+                         static_cast<unsigned>(slot));
+        }
+    };
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_battle_menu) {
+            reset_all();
+            continue;
+        }
+
+        // Battle module active? (GAME_MODE live values: 2 = battle.)
+        const uint8_t mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+        if (mode != 2) {
+            reset_all();
+            continue;
+        }
+
+        const uint16_t state =
+            *reinterpret_cast<const volatile uint16_t*>(FF7Addr::BATTLE_MENU_STATE);
+        const uint8_t slot =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::BATTLE_ACTIVE_SLOT);
+
+        if (state != last_state) {
+            // Arm targeting on any menu-widget -> 0 transition; disarm on
+            // anything else. (0 also = plain ATB wait, but we only ARM when
+            // coming FROM a menu, so idle state-0 stretches stay silent.)
+            const bool from_menu =
+                last_state == FF7Addr::BMENU_STATE_COMMAND     ||
+                last_state == FF7Addr::BMENU_STATE_ITEM_LIST   ||
+                last_state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
+                last_state == FF7Addr::BMENU_STATE_SUMMON_LIST;
+            targeting   = (state == FF7Addr::BMENU_STATE_TARGETING) && from_menu;
+            last_target = 0xFF;   // re-announce the first target when armed
+
+            // Force a fresh announce of whatever widget we landed in — this
+            // is also what announces "the menu opened" (the command under
+            // the cursor speaks immediately on the state-1 entry poll).
+            last_cmd_key  = 0xFFFFFFFF;
+            last_list_key = 0xFFFFFFFF;
+
+            if (Config::Get().debug_log) {
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU state %u -> %u (slot %u)",
+                    static_cast<unsigned>(last_state),
+                    static_cast<unsigned>(state),
+                    static_cast<unsigned>(slot));
+                Log::Write(dbg);
+            }
+            last_state = state;
+        }
+
+        // All widget reads index by party slot; anything else means the
+        // block is mid-update or we're between menus.
+        if (slot > 2)
+            continue;
+
+        // Lazily locate the kernel2 sections (shared with BattleActionThread;
+        // the scan guard makes concurrent triggers harmless). The command
+        // section is the one this thread depends on most — without it the
+        // command menu still speaks via the hardcoded/generic fallbacks.
+        if ((!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command) &&
+            GetTickCount64() >= next_scan_tick) {
+            ScanKernel2Sections();
+            next_scan_tick = GetTickCount64() + 60000;
+        }
+
+        if (state == FF7Addr::BMENU_STATE_COMMAND) {
+            // ---- command grid cursor -----------------------------------
+            const uint32_t widget = FF7Addr::BATTLE_WIDGET_BASE
+                + slot * FF7Addr::BATTLE_WIDGET_SLOT_STRIDE
+                + FF7Addr::BWIDGET_COMMAND;
+            const uint32_t col =
+                *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_HORIZ);
+            const uint32_t row =
+                *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_VERT);
+            // Grid bounds: 4 rows (AND 3 wrap in the handler), max 5 columns
+            // (the 20-entry table / 4 rows). Out-of-range = mid-update; skip.
+            if (col > 4 || row > 3)
+                continue;
+
+            const uint32_t key = (static_cast<uint32_t>(slot) << 16) |
+                                 (col << 8) | row;
+            if (key == last_cmd_key)
+                goto targeting_check;
+            last_cmd_key = key;
+
+            {
+                // entry index = row + col*4 (column-major grid, see 1c2)
+                const uint32_t entry = FF7Addr::BATTLE_CHAR_BLOCK
+                    + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
+                    + FF7Addr::BCHAR_OFF_CMD_TABLE
+                    + (row + col * 4) * 6;
+                const uint8_t cmd_id =
+                    *reinterpret_cast<const volatile uint8_t*>(entry);
+                // 0xFF = empty cell. The game's own navigation skips these,
+                // so the cursor only reads one transiently mid-move — stay
+                // silent rather than speak "empty" for a cell the cursor
+                // will have left by the next frame.
+                if (cmd_id == 0xFF || cmd_id == 0)
+                    continue;
+
+                std::wstring name;
+                CommandMenuName(cmd_id, name);
+                char dbg[128];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU cmd slot=%u col=%u row=%u id=0x%02X => %ls",
+                    static_cast<unsigned>(slot), col, row,
+                    static_cast<unsigned>(cmd_id), name.c_str());
+                Log::Write(dbg);
+                TTS::Speak(name, /*interrupt=*/true);
+            }
+        } else if (state == FF7Addr::BMENU_STATE_ITEM_LIST   ||
+                   state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
+                   state == FF7Addr::BMENU_STATE_SUMMON_LIST) {
+            // ---- list widget cursor (magic / item / summon) -------------
+            uint32_t woff, table;
+            if (state == FF7Addr::BMENU_STATE_MAGIC_LIST) {
+                woff  = FF7Addr::BWIDGET_MAGIC_LIST;
+                table = FF7Addr::BATTLE_CHAR_BLOCK
+                      + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
+                      + FF7Addr::BCHAR_OFF_MAGIC_LIST;
+            } else if (state == FF7Addr::BMENU_STATE_SUMMON_LIST) {
+                woff  = FF7Addr::BWIDGET_SUMMON_LIST;
+                table = FF7Addr::BATTLE_CHAR_BLOCK
+                      + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
+                      + FF7Addr::BCHAR_OFF_SUMMON_LIST;
+            } else {
+                woff  = FF7Addr::BWIDGET_ITEM_LIST;
+                table = FF7Addr::BATTLE_ITEM_LIST_TABLE;
+            }
+            const uint32_t widget = FF7Addr::BATTLE_WIDGET_BASE
+                + slot * FF7Addr::BATTLE_WIDGET_SLOT_STRIDE + woff;
+            const uint32_t w0 =
+                *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_HORIZ);
+            const uint32_t w4 =
+                *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_VERT);
+            const uint32_t scroll =
+                *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_SCROLL);
+            const uint32_t index = w0 + w4 + scroll;
+            // Battle lists are small (magic <= 96 entries, inventory shows
+            // <= 320); a huge sum means the widget is mid-initialization.
+            if (index > 0x200)
+                continue;
+
+            const uint32_t key = (static_cast<uint32_t>(state) << 16) | index;
+            if (key == last_list_key)
+                goto targeting_check;
+            last_list_key = key;
+
+            {
+                const uint16_t id16 = *reinterpret_cast<const volatile uint16_t*>(
+                    table + index * 6);
+                if (id16 == 0xFFFF || id16 == 0)
+                    continue;   // empty/padding row — silent (see cmd 0xFF note)
+
+                // Pick the name section via the command that OPENED the list
+                // (see header comment). Branches 0/1/2/6/7 are magic-family:
+                // the index is the low byte (high byte = flags). Branch 3/5
+                // (item) uses the id whole so thrown weapons (128+) resolve.
+                const uint8_t open_cmd =
+                    *reinterpret_cast<const volatile uint8_t*>(FF7Addr::BATTLE_ISSUED_CMD);
+                uint8_t branch = 0xFF;
+                if (open_cmd <= FF7Addr::BATTLE_DISPATCH_MAX_CMD)
+                    branch = *reinterpret_cast<const uint8_t*>(
+                        FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + open_cmd);
+                const uint32_t idx =
+                    (branch == 3 || branch == 5) ? id16 : (id16 & 0xFFu);
+
+                std::wstring name;
+                bool ok = ResolveActionName(open_cmd, idx, name);
+                if (!ok) {
+                    // Unknown command/section: still give positional feedback
+                    // so the list is navigable by count.
+                    wchar_t rowbuf[32];
+                    _snwprintf_s(rowbuf, _countof(rowbuf), _TRUNCATE,
+                                 L"row %u", index + 1u);
+                    name = rowbuf;
+                }
+                char dbg[144];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU list state=%u idx=%u id=0x%04X cmd=0x%02X => %ls",
+                    static_cast<unsigned>(state), index,
+                    static_cast<unsigned>(id16),
+                    static_cast<unsigned>(open_cmd), name.c_str());
+                Log::Write(dbg);
+                TTS::Speak(name, /*interrupt=*/true);
+            }
+        }
+
+targeting_check:
+        // ---- target selection cursor ------------------------------------
+        if (targeting) {
+            const uint8_t target =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::BATTLE_TARGET_INDEX);
+            if (target != last_target) {
+                last_target = target;
+                wchar_t label[32];
+                target_label(target, label, _countof(label));
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU target=%u => %ls",
+                    static_cast<unsigned>(target), label);
+                Log::Write(dbg);
+                TTS::Speak(label, /*interrupt=*/true);
+            }
+        }
     }
 
     return 0;
@@ -2020,6 +2377,18 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start battle action thread.");
         }
 
+        // Battle command-menu navigation TTS (v2.9). Polls the battle menu
+        // widget state machine solved 2026-07-12: BATTLE_MENU_STATE=0x91EF9C,
+        // widget block 0xDC20A0+slot*0x700, command table 0xDBA4E4+slot*0x440,
+        // target index 0xDC3C94 — all live-confirmed by
+        // ff7_battle_menu_cursor_live_verify.py before implementation.
+        g_battlemenu_thread = CreateThread(nullptr, 0, BattleMenuThread, nullptr, 0, nullptr);
+        if (g_battlemenu_thread) {
+            Log::Write("[FF7Access] Battle menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start battle menu thread.");
+        }
+
         // Wall-bump navigation tone. Addresses resolved statically via FFNx's
         // discovery chains (ff7_wall_nav_static.py) and the detection signal
         // verified live (ff7_wall_nav_verify.py), both 2026-07-09 — see the
@@ -2048,7 +2417,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         }
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
-            !g_battle_thread && !g_wallbump_thread && !g_nameentry_thread) {
+            !g_battle_thread && !g_battlemenu_thread &&
+            !g_wallbump_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -2180,6 +2550,11 @@ void Shutdown()
         WaitForSingleObject(g_battle_thread, 500);
         CloseHandle(g_battle_thread);
         g_battle_thread = nullptr;
+    }
+    if (g_battlemenu_thread) {
+        WaitForSingleObject(g_battlemenu_thread, 500);
+        CloseHandle(g_battlemenu_thread);
+        g_battlemenu_thread = nullptr;
     }
     if (g_wallbump_thread) {
         WaitForSingleObject(g_wallbump_thread, 500);

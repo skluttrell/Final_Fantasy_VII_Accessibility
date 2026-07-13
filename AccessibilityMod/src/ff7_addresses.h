@@ -661,6 +661,126 @@ constexpr uint32_t BATTLE_COMMAND_ID_OFFSET   = 0x23;   // commandID (uint8_t) i
 constexpr uint32_t BATTLE_ACTION_IDX_OFFSET   = 0x3E;   // actionIdx (uint16_t) in small elem
 
 // ---------------------------------------------------------------------------
+// SECTION 1c2: Battle COMMAND MENU (the in-battle Attack/Magic/Item cursor)
+//
+// Solved 2026-07-12 after three failed live-scanning sessions, by static
+// FFNx-chain resolution + capstone disassembly of the battle menu's state
+// handler table (investigate/ff7_battle_menu_static.py + the two disasm
+// scripts), then LIVE-CONFIRMED the same day by
+// investigate/ff7_battle_menu_cursor_live_verify.py across two battles
+// (command names, magic list rows, target cursor, and the Limit-replaces-
+// Attack swap all spoken correctly in real time).
+//
+// ARCHITECTURE (the PSX decomp's widget prediction, carried over intact):
+//   The battle menu is a state machine. BATTLE_MENU_STATE selects the
+//   active widget; a 64-entry function table (0x91E6B8, resolved from
+//   battle_sub_6DB0EE+0x1B4 exactly as FFNx does) holds one update handler
+//   per state. Handlers move cursors by calling a shared navigation helper
+//   (0x6F4DB2) with a WIDGET STRUCT pointer — which is why no live scan
+//   ever found an absolute-address cursor write.
+//
+// LIVE-CONFIRMED STATE VALUES (see the research doc §4 for the full table):
+//   1      = command menu open (the Attack/Magic/Item window)
+//   6      = magic list        (per-actor spell table)
+//   24     = limit select      (opened by confirming the Limit command)
+//   0      = no menu ATB wait, AND post-Confirm target selection
+//   0xFFFF = menu closed / turn executing
+//   Static-only (not yet crossed live): 5 = item list (its table is
+//   party-global — inventory), 7 = summon list, 2/3 = Defend/Change-row
+//   dispatch, 0x18/0x1A/0x1B = limit widgets, 26/27 = Cait/Tifa slots.
+//
+// WIDGET STRUCTS: 0x38 bytes each, one block of them per party slot at
+//   BATTLE_WIDGET_BASE + slot*0x700:
+//     +0x00 command widget   +0x38 state-5 list widget
+//     +0x70 state-6 (magic)  +0xA8 state-7 list widget
+//   Fields (from the nav helper 0x6F4DB2's disassembly):
+//     +0x00 u32 horizontal cursor (LEFT 0x8000 / RIGHT 0x2000)
+//     +0x04 u32 vertical cursor   (UP 0x1000 / DOWN 0x4000)
+//     +0x08 u32 horizontal wrap count   +0x0C u32 visible rows
+//     +0x14 u32 scroll offset (top row) +0x1C u32 total entries
+//     +0x28/+0x2C u32 per-axis behavior +0x30 u32 scroll-busy flag
+//
+// COMMAND MENU SELECTION: the grid is COLUMN-MAJOR, 4 rows per column
+//   (matching the on-screen layout: Attack/Magic/Summon/Item down the
+//   first column, extra columns to the right with more materia commands):
+//     entry index = row + col*4      (row = widget+4, col = widget+0)
+//     col wraps mod u8[CHAR_BLOCK + slot*0x440 + 0x21] (column count)
+//     row wraps mod 4 (an AND 3 in the handler)
+//   Entries: 6 bytes each at CHAR_BLOCK + slot*0x440 + 0x4C:
+//     u8[+0] = command id, u8[+1] = action type (drives the Confirm jump
+//     table), u8[+2] = action id for direct-dispatch commands.
+//     0xFF = empty cell (the game's own cursor-skip loop tests this).
+//
+// COMMAND IDS ARE 1-BASED for the basic commands — live-corrected after
+//   run 1 spoke everything one command off: 1=Attack, 2=Magic, 3=Summon,
+//   4=Item (0 = none). This is the SAME id space BattleActionThread's
+//   flash struct uses (its live-verified values: 0x02 Magic, 0x04 Item),
+//   so the v2.7 dispatch-table/name machinery applies directly. Limit is
+//   NOT shifted: it keeps 0x14 and REPLACES Attack's row-0 entry when the
+//   gauge fills (live: id 1 -> 20 in place, Confirm -> state 24). The
+//   Defend/Change-row pseudo-commands (0x12/0x13) are written by the
+//   handler's Left/Right-at-edge paths, never stored in the table.
+//
+// LIST WIDGETS (magic/item/summon): selected index = w+0 + w+4 + w+0x14
+//   (cursor + scroll summed — verified live against the magic list).
+//   Entries are 6 bytes; u16[+0] = packed id: LOW byte = action index,
+//   HIGH byte = flag bits (live: Ice showed 0x41E = spell 30 + flag 0x04,
+//   and ISSUED_ACTION received exactly 30 on Confirm). 0xFFFF = empty.
+//   Tables: magic = CHAR_BLOCK+slot*0x440+0x108 (state 6, per-actor),
+//   summon = +0x2C8 (state 7), item = global 0x9AC354 (state 5).
+//
+// CONFIRM FLOW (what the game writes when the player picks something):
+//   command id  -> 0xDC3C70 (u8,  = FFNx issued_command_id;  live: 1/2/20)
+//   action id   -> 0xDC3C78 (u16, = FFNx issued_action_id;   live: 30=Ice)
+//   target type -> 0xDC3C90, target index -> 0xDC3C94 (u8 pair)
+//   target pointer actor -> 0xDC3C98 (= FFNx targeting_actor_id_DC3C98)
+//   TARGETING runs with BATTLE_MENU_STATE == 0 (prev state 0x91EF98 holds
+//   the menu it came from) — NOT state 19 as the fn-table position
+//   suggested. TARGET_INDEX tracks the moving selection (live: 4<->5
+//   across enemies, 0 = party slot 0; actor slots: party 0-2, enemy 4-9).
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t BATTLE_MENU_STATE       = 0x0091EF9C; // u16 current widget
+constexpr uint32_t BATTLE_MENU_PREV_STATE  = 0x0091EF98; // u16 previous widget
+constexpr uint32_t BATTLE_ACTIVE_SLOT      = 0x00DC3C7C; // u8 party slot 0-2
+constexpr uint32_t BATTLE_MENU_BUSY        = 0x00DC35AC; // u32 transition flag
+
+// Live-confirmed BATTLE_MENU_STATE values the mod reacts to.
+constexpr uint16_t BMENU_STATE_TARGETING   = 0;      // also plain ATB wait
+constexpr uint16_t BMENU_STATE_COMMAND     = 1;
+constexpr uint16_t BMENU_STATE_ITEM_LIST   = 5;      // static-only so far
+constexpr uint16_t BMENU_STATE_MAGIC_LIST  = 6;      // live-confirmed
+constexpr uint16_t BMENU_STATE_SUMMON_LIST = 7;      // static-only so far
+constexpr uint16_t BMENU_STATE_CLOSED      = 0xFFFF;
+
+// Per-slot widget block and the widget offsets within it.
+constexpr uint32_t BATTLE_WIDGET_BASE        = 0x00DC20A0;
+constexpr uint32_t BATTLE_WIDGET_SLOT_STRIDE = 0x700;
+constexpr uint32_t BWIDGET_COMMAND     = 0x00;
+constexpr uint32_t BWIDGET_ITEM_LIST   = 0x38;   // state-5 widget
+constexpr uint32_t BWIDGET_MAGIC_LIST  = 0x70;   // state-6 widget
+constexpr uint32_t BWIDGET_SUMMON_LIST = 0xA8;   // state-7 widget
+constexpr uint32_t BWIDGET_OFF_HORIZ   = 0x00;
+constexpr uint32_t BWIDGET_OFF_VERT    = 0x04;
+constexpr uint32_t BWIDGET_OFF_SCROLL  = 0x14;
+
+// Per-slot battle character data block (command table, list tables).
+constexpr uint32_t BATTLE_CHAR_BLOCK        = 0x00DBA498;
+constexpr uint32_t BATTLE_CHAR_SLOT_STRIDE  = 0x440;
+constexpr uint32_t BCHAR_OFF_CMD_NCOLS      = 0x21;   // u8 command column count
+constexpr uint32_t BCHAR_OFF_CMD_TABLE      = 0x4C;   // 6-byte entries
+constexpr uint32_t BCHAR_OFF_MAGIC_LIST     = 0x108;  // 6-byte entries
+constexpr uint32_t BCHAR_OFF_SUMMON_LIST    = 0x2C8;  // 6-byte entries
+constexpr uint32_t BATTLE_ITEM_LIST_TABLE   = 0x009AC354; // global, 6-byte entries
+
+// Confirm-flow staging block (all = FFNx externals, resolved + live-checked).
+constexpr uint32_t BATTLE_ISSUED_CMD        = 0x00DC3C70; // u8
+constexpr uint32_t BATTLE_ISSUED_ACTION     = 0x00DC3C78; // u16
+constexpr uint32_t BATTLE_TARGET_TYPE       = 0x00DC3C90; // u8
+constexpr uint32_t BATTLE_TARGET_INDEX      = 0x00DC3C94; // u8 moving selection
+constexpr uint32_t BATTLE_TARGETING_ACTOR   = 0x00DC3C98; // u8 pointer actor
+
+// ---------------------------------------------------------------------------
 // SECTION 1d: Field navigation addresses (wall-bump tone feature)
 //
 // All resolved statically from the exe on disk by
