@@ -2220,12 +2220,11 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // DIRECTION: world angle of (player -> nearest point), then rotated by the
 // header's control_direction byte — the SAME per-field value the engine
 // uses to rotate d-pad input to match the camera — and mapped to 8 d-pad
-// sectors. CONVENTION CONFIRMED by the 2026-07-13 calibration walkabout
-// (see the formula comment at the directions handler): control_direction
-// is the world bearing of screen-DOWN, screen angle = world + control−180.
-// ⚠ Left/right MIRROR still unverified (Up/Down samples cannot distinguish
-// rotation from reflection) — the debug line prints the mirrored candidate
-// until an exit toward screen-left/right is ear-checked.
+// sectors. CONVENTION FULLY CONFIRMED 2026-07-13: the calibration
+// walkabout fixed the rotation (control_direction is the world bearing of
+// screen-DOWN, screen angle = world + control−180), and the user's
+// follow-up play test confirmed left/right land correctly too — the
+// mapping is a pure rotation, no mirror.
 //
 // HOTKEYS use GetAsyncKeyState edges, gated on the game window being
 // focused (GetForegroundWindow's process == ours) so typing in another app
@@ -2546,27 +2545,24 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // World bearing 0 = +Y axis, clockwise toward +X.
         const float world_deg = atan2f(dx, dy) * (180.0f / 3.14159265f);
 
-        // Screen/d-pad angle. CONFIRMED by the 2026-07-13 calibration
-        // walkabout (md1stin, control_dir=124 -> 174.4°): pressing Up moved
-        // the player at world bearing 5.6° = 180° − control_deg exactly,
-        // and Down at 185.6° — so control_direction is the world bearing of
-        // screen-DOWN, and screen angle = world + control − 180. The first
-        // guess (world − control) was 180° off ("down" for an exit dead
-        // ahead). ⚠ MIRROR still unverified: Up/Down samples cannot
-        // distinguish rotation from reflection, so left/right may be
-        // swapped — the debug line prints the mirrored candidate too, and
-        // one exit toward screen-left or -right settles it.
-        const float input_deg     = world_deg + control_deg - 180.0f;
-        const float input_deg_mir = 180.0f - control_deg - world_deg;
+        // Screen/d-pad angle. FULLY CONFIRMED 2026-07-13 in two steps:
+        // calibration walkabout (md1stin, control_dir=124 -> 174.4°:
+        // pressing Up moved the player at world bearing 5.6° = 180° −
+        // control_deg exactly, Down at 185.6°) fixed the rotation —
+        // control_direction is the world bearing of screen-DOWN — and the
+        // follow-up play test confirmed left/right land correctly, so the
+        // mapping is a pure rotation with no mirror. (The first guess,
+        // world − control, was 180° off: "down" for a dead-ahead exit.)
+        const float input_deg = world_deg + control_deg - 180.0f;
 
         if (Config::Get().debug_log) {
             char dbg[224];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] NAV dir %ls line=(%d,%d)-(%d,%d) player=(%d,%d) "
-                "dist=%.0f world_deg=%.1f ctrl=%u dir=%ls mir=%ls",
+                "dist=%.0f world_deg=%.1f ctrl=%u dir=%ls",
                 d.name, d.line_x1, d.line_y1, d.line_x2, d.line_y2,
                 px, py, dist, world_deg, static_cast<unsigned>(control_dir),
-                DpadSectorName(input_deg), DpadSectorName(input_deg_mir));
+                DpadSectorName(input_deg));
             Log::Write(dbg);
         }
 

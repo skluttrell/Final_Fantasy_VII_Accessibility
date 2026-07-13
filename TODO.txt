@@ -190,6 +190,20 @@ Shift+K, \, P, M). Still unmapped, waiting on features:
   - Game Keys F1 (walk/run toggle) and F3 (random encounter toggle) are
     game-altering features, not announcements — decide separately.
 
+[NAV] Pathfinder lists exits that are not open yet
+----------------------------------------------------
+Player observation 2026-07-13 (accepted for v1): the destination browser
+tracked an exit that was not yet usable (story-locked). Gateways in the
+triggers header exist whether or not the field script currently allows
+passage. Possible detection routes when this gets annoying:
+  - the four unknown bytes at field_gateway +0x14 may hold an
+    enabled/disabled flag — diff them on a field with a locked exit
+    before/after it unlocks;
+  - the show_arrow_flag[12] array (header +0x1B8, per FFNx ff7.h) likely
+    mirrors "the game draws this exit's arrow" — sighted players see
+    arrows only on usable exits, so gating on it would also restore
+    information parity.
+
 [NAV] Friendly map names for the M announce
 --------------------------------------------
 M currently speaks the field's INTERNAL name ("md1stin") from the triggers
