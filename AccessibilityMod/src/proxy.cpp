@@ -1301,22 +1301,40 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     ULONGLONG pending_deadline  = 0;
     wchar_t   pending_actor[64] = {};   // 64: fits a 32-char enemy name + " A" suffix
 
+    // v2.13: announces that land close together must CHAIN, not clobber.
+    // The v2.12 traces showed the pending-flash flush ("MP B, attacks") and
+    // the next turn's announce ("Cloud, Attack") firing in the SAME 50ms
+    // tick — the second's interrupt=true cancelled the first before a
+    // syllable played, so enemy actions were routinely inaudible whenever
+    // the player's turn arrived at the same instant. An announce within
+    // ANNOUNCE_CHAIN_MS of the previous one therefore queues
+    // (interrupt=false) behind it instead of interrupting; both are per-turn
+    // battle events the player needs to hear, and both are short. Announces
+    // farther apart keep interrupt=true (stale leftover speech SHOULD be
+    // cut off by a fresh turn).
+    ULONGLONG last_announce_tick = 0;
+    constexpr ULONGLONG ANNOUNCE_CHAIN_MS = 1500;
+
     // Announce helper: "[actor], [name-or-generic]".  Written as a lambda so
     // both the immediate path and the deferred flash path share it.
-    const auto announce = [](const wchar_t* actor_label, uint8_t command_id,
-                             const std::wstring* exact_name) {
+    const auto announce = [&](const wchar_t* actor_label, uint8_t command_id,
+                              const std::wstring* exact_name) {
         wchar_t generic_buf[32];
         const wchar_t* action = exact_name ? exact_name->c_str()
             : GenericActionLabel(command_id, generic_buf, _countof(generic_buf));
         wchar_t msg[128] = {};
         _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls, %ls", actor_label, action);
+        const ULONGLONG now = GetTickCount64();
+        const bool chain = (now - last_announce_tick) < ANNOUNCE_CHAIN_MS;
+        last_announce_tick = now;
         char dbg[160];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] BATTLE cmd=0x%02X %ls => %ls",
+            "[FF7Access] BATTLE cmd=0x%02X %ls%ls => %ls",
             static_cast<unsigned>(command_id),
-            exact_name ? L"named" : L"generic", msg);
+            exact_name ? L"named" : L"generic",
+            chain ? L" chained" : L"", msg);
         Log::Write(dbg);
-        TTS::Speak(msg, /*interrupt=*/true);
+        TTS::Speak(msg, /*interrupt=*/!chain);
     };
 
     for (;;) {

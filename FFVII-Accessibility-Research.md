@@ -596,8 +596,24 @@ low-priority battle announcement must use this two-sided quiet-gap
 pattern** — the battle threads' interrupt=true bursts arrive in same-tick
 clusters, and the triggering event IS the burst. (Same trace also showed
 the phase-2 flush "MP B, attacks" being instantly clobbered by "Cloud,
-Attack" — the pending-flush announce is inaudible in this collision case;
-noted as a known polish item, not fixed here.)
+Attack" — fixed in v2.13 below.)
+
+### v2.13 (2026-07-13): Chained action announcements (enemy actions no longer clobbered)
+
+The v2.12 traces showed BattleActionThread's own announces clobbering each
+other: the pending-flash flush ("MP B, attacks") and the next turn's
+announce ("Cloud, Attack") fire in the SAME 50ms tick, and the second's
+interrupt=true cancelled the first before a syllable played — enemy actions
+were routinely inaudible whenever the player's turn arrived at the same
+instant. Fix: an announce within ANNOUNCE_CHAIN_MS (1500ms) of the previous
+one now queues (interrupt=false) behind it instead of interrupting — the
+player hears "MP B, attacks" then "Cloud, Attack" in sequence. Announces
+farther apart keep interrupt=true (a fresh turn SHOULD cut off stale
+speech). Debug log marks chained announces with "chained".
+
+Party-KO announcements added to TODO.txt with full implementation notes
+(same watcher + quiet-gap patterns; deferred at the user's request until
+their party has more members to test with).
 
 ---
 
@@ -830,7 +846,7 @@ CONFIG_ROW != 1.
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
 | Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
-| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10), ~~Sense HP readout during targeting~~ (DONE v2.11), ~~enemy defeat announcements~~ (DONE v2.12, 2026-07-13), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits), party-KO announcements (same watcher pattern as v2.12, slots 0-2) |
+| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10), ~~Sense HP readout during targeting~~ (DONE v2.11), ~~enemy defeat announcements~~ (DONE v2.12, 2026-07-13), ~~same-tick action-announce clobber~~ (DONE v2.13, chained announces), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits), party-KO announcements (in TODO.txt with implementation notes — awaiting a fuller party to test) |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |
