@@ -166,18 +166,19 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_PLAYER_MODEL_ID` | `0x00CC162C` | u16 player index into event-data array (player ≠ always model 0) |
 | `FIELD_N_MODELS` | `0x00CFF73E` | u16 model count on current field |
 | `FIELD_MOVIE_PLAYING` | `0x00CC1638` | u16 nonzero while movie plays on field. FFNx movie test: `word && !BGMOVIE_flag` |
-| `BATTLE_MENU_STATE` | `0x0091EF9C` | u16, current battle menu widget: 0=waiting/ATB, **1=command menu**, 2/3=Defend/Change-row pseudo-commands, 5/6/7=action lists, 19=targeting, 24–28=limit/slots widgets. The "current widget" global the PSX architecture predicted. Static chain 2026-07-12 (all 3 FFNx cross-checks passed), live verify pending |
+| `BATTLE_MENU_STATE` | `0x0091EF9C` | u16, current battle menu widget — **LIVE-CONFIRMED 2026-07-12** (two runs, logs battle_menu_live_20260712_2136/2144): **1=command menu, 6=magic list, 24=limit select, 0=waiting/ATB AND post-Confirm targeting (with PREV=1), 0xFFFF=menu closed/turn executing**. 3=Change-row dispatch (fired on Right press). Statics: 5=item list (global inventory table), 7=summon list, 2=Defend dispatch — not yet crossed live. ⚠ targeting does NOT use state 19 in the normal flow |
 | `BATTLE_MENU_PREV_STATE` | `0x0091EF98` | u16, written on every state transition (static 2026-07-12) |
 | `BATTLE_MENU_FN_TABLE` | `0x0091E6B8` | uint32[64] per-state handler table (= FFNx battle_menu_state_fn_table; resolved from battle_sub_6DB0EE+0x1B4) |
-| `BATTLE_ACTIVE_SLOT` | `0x00DC3C7C` | u8 party slot (0–2) whose battle menu is open; selects the widget block AND the char data block below (static 2026-07-12) |
+| `BATTLE_ACTIVE_SLOT` | `0x00DC3C7C` | u8 party slot (0–2) whose battle menu is open; selects the widget block AND the char data block below (✓ live 2026-07-12, slot=0) |
 | `BATTLE_MENU_BUSY` | `0x00DC35AC` | u32, 1 = menu transition/animation in progress; handlers skip input while set (static 2026-07-12) |
-| `BATTLE_WIDGET_BLOCK` | `0x00DC20A0` | **THE BATTLE MENU CURSOR** (static 2026-07-12, live verify pending). Per-slot block at +slot·0x700; 0x38-byte widget structs: +0x00 command widget, +0x38 state-5 list, +0x70 state-6 list, +0xA8 state-7 list. Widget fields: +0 horiz cursor (LEFT/RIGHT), +4 vert cursor (UP/DOWN), +0x08 horiz wrap count, +0x0C visible rows, +0x14 scroll offset, +0x1C total entries, +0x28/+0x2C axis modes, +0x30 scroll-busy. Command menu: selected entry index = **row + col·4** (column-major, 4 rows/col, `and 3` wrap); col wraps mod u8[0xDBA4B9+slot·0x440]. List widgets: selected index = w0+w4+scroll |
-| `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+col·4: u8[+0] command id (0xFF=empty, cursor skips), u8[+1] action type (Confirm jump-table selector 0–0xB), u8[+2] action id; +0x108 (0xDBA5A0) state-6 list, +0x2C8 (0xDBA760) state-7 list, both 6-byte entries |
-| `BATTLE_LIST5_TABLE` | `0x009AC354` | Global (not per-slot) 6-byte entries for the state-5 list (magic-shaped): u16[+0] action id (0xFFFF=empty), u8[+3] → 0xDC3C84 on Confirm, u8[+4] enable-flag bits |
-| `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id; entry[0] copied here on Confirm (also 0x12/0x13 written by the Defend/Change-row left/right paths) |
-| `BATTLE_ISSUED_ACTION` | `0x00DC3C78` | u16 = FFNx issued_action_id; list entry id copied here on list Confirm |
-| `BATTLE_TARGET_TYPE/INDEX` | `0x00DC3C90/94` | u8 pair = FFNx issued_action_target_type/index (via set_battle_targeting_data 0x6E5C52) |
-| `BATTLE_TARGETING_ACTOR` | `0x00DC3C98` | u8 = FFNx targeting_actor_id_DC3C98 — **the live target-selection cursor** (which actor the pointer is on during state 19) |
+| `BATTLE_WIDGET_BLOCK` | `0x00DC20A0` | **THE BATTLE MENU CURSOR — LIVE-CONFIRMED 2026-07-12** (spoke Attack/Magic/Item correctly through two full battles). Per-slot block at +slot·0x700; 0x38-byte widget structs: +0x00 command widget, +0x38 state-5 (item) list, +0x70 state-6 (magic) list, +0xA8 state-7 (summon) list. Widget fields: +0 horiz cursor (LEFT/RIGHT), +4 vert cursor (UP/DOWN), +0x08 horiz wrap count, +0x0C visible rows, +0x14 scroll offset, +0x1C total entries, +0x28/+0x2C axis modes, +0x30 scroll-busy. Command menu: selected entry index = **row + col·4** (column-major, 4 rows/col, `and 3` wrap); col wraps mod u8[0xDBA4B9+slot·0x440]. List widgets: selected index = w0+w4+scroll (✓ live for magic list) |
+| `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+col·4: u8[+0] command id, u8[+1] action type (Confirm jump-table selector 0–0xB), u8[+2] action id. **Command ids are 1-BASED for basic commands** (✓ live: 1=Attack, 2=Magic, 4=Item; 0xFF=empty cell) **but Limit keeps kernel id 0x14=20** (✓ live: replaces Attack's row-0 entry when the gauge fills; Confirm → state 24). +0x108 (0xDBA5A0) magic list (✓ live via state 6), +0x2C8 (0xDBA760) summon list, both 6-byte entries |
+| `BATTLE_LIST5_TABLE` | `0x009AC354` | Global (not per-slot) 6-byte entries for the state-5 list = ITEM list (inventory is party-wide; the magic guess was wrong — magic is the per-actor state-6 table): u16[+0] entry id (0xFFFF=empty), u8[+3] → 0xDC3C84 on Confirm, u8[+4] enable-flag bits |
+| *(list entry format)* | — | List entry u16 = **low byte action index + high byte flags** (✓ live: Ice showed 0x41E = spell 30 + flag 0x04; ISSUED_ACTION received 30 on Confirm — same index v2.7 logged for Ice). id 0 = empty/padding row |
+| `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id (✓ live: 1 on Attack confirm, 2 on Magic, 19=0x13 on Right press = Change-row, 20 on Limit) |
+| `BATTLE_ISSUED_ACTION` | `0x00DC3C78` | u16 = FFNx issued_action_id (✓ live: 30 after confirming Ice) |
+| `BATTLE_TARGET_TYPE/INDEX` | `0x00DC3C90/94` | u8 pair = FFNx issued_action_target_type/index. INDEX tracks the moving target selection live (✓: 4↔5 across enemies, 0 = party slot 0) |
+| `BATTLE_TARGETING_ACTOR` | `0x00DC3C98` | u8 = FFNx targeting_actor_id_DC3C98 — live target cursor actor id (✓ 2026-07-12: 4/5 = enemy slots, party 0–2). Updates during state-0 targeting after a Confirm |
 
 ---
 
@@ -818,8 +819,10 @@ module block at 0xDC20A0+slot·0x700 (see §4 BATTLE_WIDGET_BLOCK). The three
 live-scan sessions failed because the cursor is two u32 components inside a
 0x38-byte struct at an address 0x1000+ bytes from any then-known anchor, in a
 region that also hosts constantly-churning scroll/animation fields (+0x24/+0x30
-change during list scrolling — classic delta-scan poison). Live verify:
-`ff7_battle_menu_cursor_live_verify.py`.
+change during list scrolling — classic delta-scan poison).
+**LIVE-CONFIRMED 2026-07-12** by `ff7_battle_menu_cursor_live_verify.py`
+(two battles: command names, magic-list rows incl. Ice by name, target cursor,
+and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 
 ### Field module block: 0xCBF578 – 0xCC1B42
 

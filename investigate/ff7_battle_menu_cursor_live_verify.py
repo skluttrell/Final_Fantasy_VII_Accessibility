@@ -105,25 +105,52 @@ TARGET_TYPE        = 0x00DC3C90   # u8  (FFNx issued_action_target_type)
 TARGET_INDEX       = 0x00DC3C94   # u8  (FFNx issued_action_target_index)
 TARGETING_ACTOR    = 0x00DC3C98   # u8  (FFNx targeting_actor_id_DC3C98)
 
-# Kernel command ids -> names (standard US kernel order). Unknown ids are
-# spoken as "command N" -- if one shows up in the log we learn something.
+# Command ids -> names. LIVE-CORRECTED 2026-07-12 (first run, log
+# battle_menu_live_20260712_213654.log): the entry id byte is 1-BASED
+# (kernel command index + 1; 0 = none/empty row). Proof: cursor row 0
+# (Attack) read id=1, row 1 (Magic) id=2, row 3 (Item) id=4; Confirm on
+# Attack wrote ISSUED_CMD=1; pressing Right wrote 19 (=0x13 Change-row
+# pseudo-command, matching the state-1 disasm constant exactly).
 COMMAND_NAMES = {
-    0x00: "Attack",   0x01: "Magic",    0x02: "Summon",  0x03: "Item",
-    0x04: "Steal",    0x05: "Sense",    0x06: "Coin",    0x07: "Throw",
-    0x08: "Morph",    0x09: "Deathblow",0x0A: "Manipulate", 0x0B: "Mime",
-    0x0C: "Enemy Skill", 0x0D: "Mug",
+    0x01: "Attack",   0x02: "Magic",    0x03: "Summon",  0x04: "Item",
+    0x05: "Steal",    0x06: "Sense",    0x07: "Coin",    0x08: "Throw",
+    0x09: "Morph",    0x0A: "Deathblow",0x0B: "Manipulate", 0x0C: "Mime",
+    0x0D: "Enemy Skill", 0x0E: "Mug",
     0x12: "Defend",   0x13: "Change row",
+    # LIVE-CONFIRMED run 2 (battle_menu_live_20260712_214425.log): when the
+    # limit gauge filled, row 0's id changed 1 -> 20 (0x14) and Confirm
+    # opened state 24 with ISSUED_CMD=20. So Limit keeps its kernel id
+    # 0x14 -- the +1 shift applies to the basic commands, not the whole
+    # range. W-commands etc. still unverified guesses (kernel id +1).
     0x14: "Limit",
-    0x17: "W-Magic",  0x18: "W-Summon", 0x19: "W-Item",
-    0x1A: "Slash-All",0x1B: "2x-Cut",   0x1C: "Flash",   0x1D: "4x-Cut",
+    0x18: "W-Magic",  0x19: "W-Summon", 0x1A: "W-Item",
+    0x1B: "Slash-All",0x1C: "2x-Cut",   0x1D: "Flash",   0x1E: "4x-Cut",
 }
 
+# LIVE-CORRECTED 2026-07-12: Confirm on Magic (cmd 2) opened state 6 --
+# so the per-actor list (0xDBA5A0) is MAGIC. The global list (0x9AC354,
+# state 5) must be ITEM (inventory is party-wide). State 7 (per-actor,
+# 0xDBA760) is presumed SUMMON. 0xFFFF = menu closed / turn executing.
+# NOTE: after Confirm-on-Attack, TARGETING runs with state=0 and
+# prev_state=1 (targeting_actor_id live-updates there), NOT state 19;
+# 19 may be a different targeting flavor (e.g. re-target on death).
 STATE_NAMES = {
-    0: "waiting/ATB", 1: "COMMAND MENU", 2: "defend?", 3: "change-row?",
-    4: "state4-list", 5: "list A (magic?)", 6: "list B", 7: "list C (item?)",
-    9: "state9", 11: "state11", 19: "TARGETING",
+    0: "waiting-or-targeting", 1: "COMMAND MENU",
+    2: "defend-dispatch", 3: "change-row-dispatch",
+    4: "state4-list", 5: "ITEM LIST", 6: "MAGIC LIST", 7: "SUMMON LIST?",
+    9: "state9", 11: "state11", 19: "targeting-alt?",
     0x14: "state20-eskill?", 0x18: "limit A", 0x1A: "limit B",
     0x1B: "limit C", 26: "cait slots", 27: "tifa slots", 28: "state28",
+    0xFFFF: "menu closed",
+}
+
+# Spell names for the magic list (kernel magic index = low byte of the
+# 6-byte entry's u16; high byte = flag bits, e.g. Ice showed 0x41E ->
+# spell 0x1E=30 + flags 0x04). Only the handful needed to make this
+# verify run speak sensibly; the real mod resolves names from the
+# kernel2 heap block like v2.7 does.
+SPELL_NAMES = {
+    30: "Ice",
 }
 
 POLL_INTERVAL = 0.04
@@ -361,7 +388,17 @@ def main():
                               + (" (0xFFFF empty)" if eid == 0xFFFF else ""))
                         winsound.Beep(1000, 30)
                         if eid is not None and eid != 0xFFFF:
-                            speak_async(f"row {idx}, id {eid}")
+                            # u16 entry = low byte action index + high byte
+                            # flags (magic: Ice logged as 0x41E = 30 + 0x04)
+                            action = eid & 0xFF
+                            if state == 6:
+                                nm = SPELL_NAMES.get(action,
+                                                     f"spell {action}")
+                            elif state == 5:
+                                nm = f"item {action}"
+                            else:
+                                nm = f"summon {action}"
+                            speak_async(f"{nm}, row {idx}")
 
             # -- confirm/targeting flow ---------------------------------
             for key, addr, rd in (
@@ -373,7 +410,11 @@ def main():
                 v = rd(handle, addr)
                 if changed(key, v):
                     print(f"[{ts:7.2f}s] {key.upper()} -> {v}")
-                    if key == 'targeting_actor' and state == 19:
+                    # Targeting live-runs in state 0 (prev_state=1) after a
+                    # Confirm -- corrected from first run; 19 kept in case
+                    # the alt targeting flavor shows up.
+                    if key in ('targeting_actor', 'target_index') \
+                            and state in (0, 19):
                         winsound.Beep(900, 30)
                         speak_async(f"target {v}")
 
