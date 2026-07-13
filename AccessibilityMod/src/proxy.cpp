@@ -2493,13 +2493,40 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             continue;
         }
 
+        // ---- apply state mutations BEFORE building the list ---------------
+        // v2.15.2 bug fix: the list used to be built first, so a category
+        // change announced the PREVIOUS category's count ("Exits, 8" when
+        // arriving from All, "Exits, 6" when arriving from People — the
+        // reported direction-dependent numbers). Category/field mutations
+        // now happen first and the list is built for the NEW state.
+        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2 };
+
+        // Field change invalidates selection and category.
+        if (field_id != nav_field_id) {
+            nav_field_id = field_id;
+            category  = 0;
+            selection = 0;
+        }
+
+        bool announce_cat = false;
+        if (act_prev_cat || act_next_cat) {
+            category += act_next_cat ? 1 : -1;
+            if (category < 0) category = kCategoryCount - 1;
+            if (category >= kCategoryCount) category = 0;
+            selection = 0;
+            announce_cat = true;
+        } else if (act_reset_cat) {
+            category  = 0;
+            selection = 0;
+            announce_cat = true;
+        }
+
         // ---- rebuild the destination list (fresh every keypress) ---------
         // Max 12 gateways + 32 models — rebuilding on demand is cheaper
         // than any caching scheme and always reflects the live field
         // (NPCs move; a fresh read gives their current position). Slot
         // order is the destination's IDENTITY: "Exit 2" / "Person 3" keep
         // their names as the player moves — never renumbered by distance.
-        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2 };
         constexpr int kMaxDests =
             FF7Addr::FTRIG_GATEWAY_COUNT + 32;   // exits + model cap
         NavDest dests[kMaxDests];
@@ -2528,16 +2555,18 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // People (v2.15): every non-player model standing on the walkmesh.
         // A model is stored as a degenerate line (both vertices = its
         // position) so the shared nearest-point math needs no special case.
-        // Party members' field models carry their character_id, which names
-        // them for free ("Barret"); everyone else is "Person N" numbered by
-        // MODEL SLOT (stable per field — a filtered-out model does not
-        // shift its neighbors' numbers). Off-mesh models (triangle_id < 0:
-        // hidden, despawned, or scripted-away) are skipped.
+        // Everyone is "Person N" numbered by MODEL SLOT (stable per field —
+        // a filtered-out model does not shift its neighbors' numbers).
+        // Off-mesh models (triangle_id < 0: hidden, despawned, or
+        // scripted-away) are skipped.
+        //
+        // v2.15.2: the character_id (+0x6C) naming idea was REMOVED after
+        // live testing — an ordinary NPC announced as "Red XIII" in the
+        // first reactor (long before that character joins), so the field
+        // holds 0-8 values for regular NPCs too and is NOT a party-
+        // membership indicator. It stays in the debug log for future
+        // investigation; naming needs a validated signal (see TODO.txt).
         if (category == CAT_ALL || category == CAT_PEOPLE) {
-            static const wchar_t* const kFieldCharNames[] = {
-                L"Cloud", L"Barret", L"Tifa", L"Aerith", L"Red XIII",
-                L"Yuffie", L"Cait Sith", L"Vincent", L"Cid"
-            };
             // The array span was not fully validated above (only the
             // player's element) — probe the last model's element too before
             // walking all of them.
@@ -2578,25 +2607,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     continue;   // off the walkmesh = not a reachable person
 
                 NavDest& d = dests[n_dests++];
-                if (char_id >= 0 &&
-                    char_id < static_cast<int>(_countof(kFieldCharNames)))
-                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                                 L"%ls", kFieldCharNames[char_id]);
-                else
-                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                                 L"Person %u", m + 1u);
+                _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                             L"Person %u", m + 1u);
                 d.line_x1 = d.line_x2 = static_cast<int16_t>(mx);
                 d.line_y1 = d.line_y2 = static_cast<int16_t>(my);
                 d.model_slot = m;
             }
         }
 
-        // Field change invalidates selection and category.
-        if (field_id != nav_field_id) {
-            nav_field_id = field_id;
-            category  = 0;
-            selection = 0;
-        }
         if (selection >= n_dests)
             selection = (n_dests > 0) ? n_dests - 1 : 0;
 
@@ -2627,17 +2645,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 Beep(WANDER_BEEP_HZ, WANDER_BEEP_MS);
         };
 
-        if (act_prev_cat || act_next_cat) {
-            category += act_next_cat ? 1 : -1;
-            if (category < 0) category = kCategoryCount - 1;
-            if (category >= kCategoryCount) category = 0;
-            selection = 0;
-            speak_category();
-            continue;
-        }
-        if (act_reset_cat) {
-            category  = 0;
-            selection = 0;
+        // Category changes were applied BEFORE the list build (v2.15.2 fix)
+        // — only the announcement remains to be made here, with the count
+        // of the list actually built for the new category.
+        if (announce_cat) {
             speak_category();
             continue;
         }

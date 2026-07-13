@@ -986,9 +986,12 @@ constexpr uint32_t FIELD_MOVIE_PLAYING  = 0x00CC1638; // word_CC1638 (FFNx name)
 constexpr uint32_t FIELD_EVENT_DATA_STRIDE = 0x88; // sizeof(field_event_data)
 constexpr uint32_t FIELD_EVENT_MODEL_POS   = 0x0C; // vector3<int32> model_pos
 constexpr uint32_t FIELD_EVENT_ENTITY_ID   = 0x5D; // u8, owning script entity
-constexpr uint32_t FIELD_EVENT_CHARACTER_ID = 0x6C; // s16, party char id 0-8 when
-                                                    // this model IS a party member
-                                                    // (names field models for free)
+constexpr uint32_t FIELD_EVENT_CHARACTER_ID = 0x6C; // s16 — ⚠ NOT a party-membership
+                                                    // indicator: live 2026-07-13 an
+                                                    // ordinary reactor NPC carried 4
+                                                    // ("Red XIII"); naming from this
+                                                    // field was removed (v2.15.2),
+                                                    // kept only in the debug log
 constexpr uint32_t FIELD_EVENT_TALK_RADIUS = 0x74; // s16, talk interaction radius
 constexpr uint32_t FIELD_EVENT_TRIANGLE_ID = 0x78; // s16, walkmesh triangle the
                                                    // model stands on (<0 = off-mesh)
