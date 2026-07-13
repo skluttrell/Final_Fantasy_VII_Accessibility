@@ -49,6 +49,21 @@ inline void Speak(const std::wstring& text, bool interrupt = true) {
 }
 
 /*
+ * LastSpeakTick: GetTickCount64() timestamp of the most recent Speak() call
+ * from any thread (0 if nothing has spoken yet).
+ *
+ * WHY THIS EXISTS (v2.12.1): low-priority announcements (enemy defeats) must
+ * wait for a QUIET GAP before speaking — the v2.12 debug log proved a defeat
+ * spoken in the same 50ms tick as action announcements gets cancelled
+ * instantly by their interrupt=true. Pollers compare against this stamp to
+ * find a moment when nothing has been issued recently, across ALL speaking
+ * threads. Note it stamps when Speak() was CALLED, not when playback ends —
+ * a queued follow-up (interrupt=false) after a quiet gap still plays after
+ * any in-flight speech, which is exactly the behavior wanted.
+ */
+unsigned long long LastSpeakTick();
+
+/*
  * Silence: Cancel any currently-playing speech immediately.
  * No-op if Tolk is not initialized or not playing anything.
  */

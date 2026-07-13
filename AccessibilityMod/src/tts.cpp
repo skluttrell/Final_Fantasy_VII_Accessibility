@@ -58,6 +58,12 @@ namespace {
     bool             g_initialized = false;
     CRITICAL_SECTION g_speak_cs;   // serializes Speak/Silence; initialized in Init()
 
+    // Tick of the most recent Speak() call from ANY thread (v2.12.1).
+    // volatile is sufficient: single aligned 64-bit store on x86 under the
+    // critical section; readers only need "roughly how long ago", not
+    // cross-field consistency.
+    volatile ULONGLONG g_last_speak_tick = 0;
+
     // Helper: resolve a named export from Tolk.dll.
     // Returns nullptr (silently) if the export is absent — allowing forward
     // compatibility with older Tolk versions that may lack newer exports.
@@ -187,9 +193,16 @@ void Speak(const wchar_t* text, bool interrupt)
     // after FreeLibrary — any caller blocked here sees g_initialized=false
     // when it acquires the lock and returns without touching g_Tolk_Speak.
     EnterCriticalSection(&g_speak_cs);
-    if (g_initialized && g_Tolk_Speak)
+    if (g_initialized && g_Tolk_Speak) {
         g_Tolk_Speak(text, do_interrupt);
+        g_last_speak_tick = GetTickCount64();
+    }
     LeaveCriticalSection(&g_speak_cs);
+}
+
+ULONGLONG LastSpeakTick()
+{
+    return g_last_speak_tick;
 }
 
 void Silence()

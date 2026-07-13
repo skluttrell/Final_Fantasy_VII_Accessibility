@@ -1270,6 +1270,26 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // (index 0 = slot 4). Reset whenever the battle module is not active.
     bool enemy_was_alive[6] = {};
 
+    // v2.12.1: defeats are NOT spoken at detection time. The v2.12 debug log
+    // proved the killing blow's tick also fires action announcements (flash
+    // resolution + next-turn) whose interrupt=true cancelled the queued
+    // defeat speech within the same millisecond, every time. Instead,
+    // detected defeats accumulate here and speak (interrupt=false, so they
+    // queue after in-flight playback) once NO thread has issued speech for
+    // DEFEAT_QUIET_MS — the first quiet gap after the action burst. The 5s
+    // cap guarantees delivery even under pathological continuous chatter.
+    std::wstring pending_defeats;
+    ULONGLONG    first_defeat_tick = 0;
+    constexpr ULONGLONG DEFEAT_QUIET_MS = 600;
+    constexpr ULONGLONG DEFEAT_MAX_WAIT_MS = 5000;
+
+    // v2.12.1 diagnostics (debug_log only): last observed (cur, max, status)
+    // per enemy slot, so every real change gets one log line — the in-game
+    // trail for diagnosing WHY a defeat did or didn't announce.
+    int32_t  dbg_last_cur[6]    = {};
+    int32_t  dbg_last_max[6]    = {};
+    uint32_t dbg_last_status[6] = {};
+
     // Rate limiter for kernel2 section re-scans while sections are missing.
     ULONGLONG next_scan_tick = 0;
 
@@ -1342,6 +1362,26 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                                        !(status & 0x01);
 
                     bool& was_alive = enemy_was_alive[slot - 4];
+
+                    // v2.12.1 diagnostics: one line per real value change.
+                    if (Config::Get().debug_log) {
+                        const uint8_t di = slot - 4;
+                        if (cur != dbg_last_cur[di] || max != dbg_last_max[di] ||
+                            status != dbg_last_status[di]) {
+                            dbg_last_cur[di]    = cur;
+                            dbg_last_max[di]    = max;
+                            dbg_last_status[di] = status;
+                            char dbg[160];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] BATTLE hpwatch slot=%u cur=%ld max=%ld "
+                                "status=%08lX alive=%d dead=%d was_alive=%d",
+                                static_cast<unsigned>(slot),
+                                static_cast<long>(cur), static_cast<long>(max),
+                                static_cast<unsigned long>(status),
+                                alive ? 1 : 0, dead ? 1 : 0, was_alive ? 1 : 0);
+                            Log::Write(dbg);
+                        }
+                    }
                     if (was_alive && dead) {
                         was_alive = false;
                         std::wstring name;
@@ -1354,15 +1394,37 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                         name += L" defeated";
                         char dbg[128];
                         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                            "[FF7Access] BATTLE defeat slot=%u => %ls",
+                            "[FF7Access] BATTLE defeat detected slot=%u => %ls",
                             static_cast<unsigned>(slot), name.c_str());
                         Log::Write(dbg);
-                        // Queue (don't interrupt): a defeat usually lands
-                        // right after damage/action speech that should finish.
-                        TTS::Speak(name, /*interrupt=*/false);
+                        // Deferred: see pending_defeats above for why this
+                        // must NOT speak here.
+                        if (pending_defeats.empty())
+                            first_defeat_tick = GetTickCount64();
+                        else
+                            pending_defeats += L". ";
+                        pending_defeats += name;
                     } else if (alive) {
                         was_alive = true;
                     }
+                }
+            }
+
+            // Speak accumulated defeats at the first quiet gap (or on
+            // leaving battle, so a battle-ending kill is never dropped).
+            if (!pending_defeats.empty()) {
+                const ULONGLONG now = GetTickCount64();
+                const bool quiet   = now - TTS::LastSpeakTick() >= DEFEAT_QUIET_MS;
+                const bool overdue = now - first_defeat_tick >= DEFEAT_MAX_WAIT_MS;
+                if (quiet || overdue || game_mode != 2) {
+                    char dbg[192];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] BATTLE defeat spoken (%s) => %ls",
+                        quiet ? "quiet gap" : (overdue ? "overdue" : "battle exit"),
+                        pending_defeats.c_str());
+                    Log::Write(dbg);
+                    TTS::Speak(pending_defeats, /*interrupt=*/false);
+                    pending_defeats.clear();
                 }
             }
         }
