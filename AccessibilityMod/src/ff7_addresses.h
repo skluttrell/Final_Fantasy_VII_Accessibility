@@ -979,9 +979,19 @@ constexpr uint32_t FIELD_UC_LOCK        = 0x00CC0DBA; // modules_global_object +
 constexpr uint32_t FIELD_BGMOVIE_FLAG   = 0x00CC0DC2; // modules_global_object + 0x3A
 constexpr uint32_t FIELD_MOVIE_PLAYING  = 0x00CC1638; // word_CC1638 (FFNx name)
 
-// field_event_data struct layout (FFNx ff7.h).
+// field_event_data struct layout (FFNx ff7.h). Offsets below are computed
+// from the struct's field order; the layout is anchored by movement_speed
+// at +0x76, which v2.6 verified LIVE (displacement = movement_speed × 32
+// per 50ms, exactly) — the neighbors inherit that confidence.
 constexpr uint32_t FIELD_EVENT_DATA_STRIDE = 0x88; // sizeof(field_event_data)
-constexpr uint32_t FIELD_EVENT_MODEL_POS   = 0x0C; // vector3<int32> model_pos offset
+constexpr uint32_t FIELD_EVENT_MODEL_POS   = 0x0C; // vector3<int32> model_pos
+constexpr uint32_t FIELD_EVENT_ENTITY_ID   = 0x5D; // u8, owning script entity
+constexpr uint32_t FIELD_EVENT_CHARACTER_ID = 0x6C; // s16, party char id 0-8 when
+                                                    // this model IS a party member
+                                                    // (names field models for free)
+constexpr uint32_t FIELD_EVENT_TALK_RADIUS = 0x74; // s16, talk interaction radius
+constexpr uint32_t FIELD_EVENT_TRIANGLE_ID = 0x78; // s16, walkmesh triangle the
+                                                   // model stands on (<0 = off-mesh)
 
 // Digested-input direction bits (current_key_input_status). Confirmed live
 // 2026-07-09: all four values observed individually during the Phase A walk.

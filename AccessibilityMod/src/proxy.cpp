@@ -2196,11 +2196,13 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 //   Shift+K            reset category to All
 //   \ or P             directions to the selected destination
 //   M                  announce the current map's name
-// Categories today: All, Exits (identical until NPC/save-point/LINE-trigger
-// categories arrive — the mechanism ships first so the keys behave like the
-// other games from day one). Unimplemented FF4 keys (Shift+\ valid-path
-// filter, Ctrl+\ layer filter, Ctrl+arrows teleport, Shift+M exit filter)
-// are silently ignored; listed in TODO.txt for when prerequisites exist.
+// Categories: All, Exits, People (v2.15 — every non-player model on the
+// walkmesh; party members' field models announce by NAME via their
+// character_id, everyone else is "Person N" by model slot). Save points
+// and LINE trigger zones are future categories. Unimplemented FF4 keys
+// (Shift+\ valid-path filter, Ctrl+\ layer filter, Ctrl+arrows teleport,
+// Shift+M exit filter) are silently ignored; listed in TODO.txt for when
+// prerequisites exist.
 //
 // DATA SOURCE (ff7_addresses.h SECTION 1e): the engine's parsed field-file
 // section 8 behind FIELD_TRIGGERS_HEADER_PTR (0xCFF454, resolved statically
@@ -2277,8 +2279,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // Browser state. Selection and category persist while the player stays
     // on one field (opening the menu or fighting a battle does NOT reset
     // them); a field change resets both.
-    static const wchar_t* const kCategoryNames[] = { L"All", L"Exits" };
-    constexpr int kCategoryCount = 2;
+    static const wchar_t* const kCategoryNames[] = { L"All", L"Exits", L"People" };
+    constexpr int kCategoryCount = 3;
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
@@ -2439,25 +2441,99 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         // ---- rebuild the destination list (fresh every keypress) ---------
-        // 12 gateway slots max — rebuilding on demand is cheaper than any
-        // caching scheme and always reflects the live field. Slot order is
-        // the destination's IDENTITY: "Exit 2" keeps its name as the player
-        // moves. Both categories currently contain exactly the exits.
-        NavDest dests[FF7Addr::FTRIG_GATEWAY_COUNT];
+        // Max 12 gateways + 32 models — rebuilding on demand is cheaper
+        // than any caching scheme and always reflects the live field
+        // (NPCs move; a fresh read gives their current position). Slot
+        // order is the destination's IDENTITY: "Exit 2" / "Person 3" keep
+        // their names as the player moves — never renumbered by distance.
+        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2 };
+        constexpr int kMaxDests =
+            FF7Addr::FTRIG_GATEWAY_COUNT + 32;   // exits + model cap
+        NavDest dests[kMaxDests];
         int n_dests = 0;
-        for (uint32_t g = 0; g < FF7Addr::FTRIG_GATEWAY_COUNT; ++g) {
-            const uint8_t* gw = reinterpret_cast<const uint8_t*>(
-                hdr + FF7Addr::FTRIG_OFF_GATEWAYS + g * FF7Addr::FTRIG_GATEWAY_SIZE);
-            const int16_t* v = reinterpret_cast<const int16_t*>(gw);
-            const int16_t dest_id = *reinterpret_cast<const int16_t*>(gw + 0x12);
-            if (dest_id == FF7Addr::FTRIG_FIELD_ID_UNUSED || dest_id < 0)
-                continue;
-            if (v[0] == 0 && v[1] == 0 && v[3] == 0 && v[4] == 0)
-                continue;   // degenerate line = empty slot
-            NavDest& d = dests[n_dests++];
-            _snwprintf_s(d.name, _countof(d.name), _TRUNCATE, L"Exit %d", n_dests);
-            d.line_x1 = v[0]; d.line_y1 = v[1];
-            d.line_x2 = v[3]; d.line_y2 = v[4];
+
+        if (category == CAT_ALL || category == CAT_EXITS) {
+            int exit_no = 0;
+            for (uint32_t g = 0; g < FF7Addr::FTRIG_GATEWAY_COUNT; ++g) {
+                const uint8_t* gw = reinterpret_cast<const uint8_t*>(
+                    hdr + FF7Addr::FTRIG_OFF_GATEWAYS + g * FF7Addr::FTRIG_GATEWAY_SIZE);
+                const int16_t* v = reinterpret_cast<const int16_t*>(gw);
+                const int16_t dest_id = *reinterpret_cast<const int16_t*>(gw + 0x12);
+                if (dest_id == FF7Addr::FTRIG_FIELD_ID_UNUSED || dest_id < 0)
+                    continue;
+                if (v[0] == 0 && v[1] == 0 && v[3] == 0 && v[4] == 0)
+                    continue;   // degenerate line = empty slot
+                NavDest& d = dests[n_dests++];
+                _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                             L"Exit %d", ++exit_no);
+                d.line_x1 = v[0]; d.line_y1 = v[1];
+                d.line_x2 = v[3]; d.line_y2 = v[4];
+            }
+        }
+
+        // People (v2.15): every non-player model standing on the walkmesh.
+        // A model is stored as a degenerate line (both vertices = its
+        // position) so the shared nearest-point math needs no special case.
+        // Party members' field models carry their character_id, which names
+        // them for free ("Barret"); everyone else is "Person N" numbered by
+        // MODEL SLOT (stable per field — a filtered-out model does not
+        // shift its neighbors' numbers). Off-mesh models (triangle_id < 0:
+        // hidden, despawned, or scripted-away) are skipped.
+        if (category == CAT_ALL || category == CAT_PEOPLE) {
+            static const wchar_t* const kFieldCharNames[] = {
+                L"Cloud", L"Barret", L"Tifa", L"Aerith", L"Red XIII",
+                L"Yuffie", L"Cait Sith", L"Vincent", L"Cid"
+            };
+            // The array span was not fully validated above (only the
+            // player's element) — probe the last model's element too before
+            // walking all of them.
+            const uint8_t* last_elem = reinterpret_cast<const uint8_t*>(
+                arr + (nmod - 1u) * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+            const bool span_ok =
+                VirtualQuery(last_elem + FF7Addr::FIELD_EVENT_DATA_STRIDE - 1,
+                             &mbi, sizeof(mbi)) != 0 &&
+                mbi.State == MEM_COMMIT &&
+                !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+            for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
+                if (m == pmid)
+                    continue;
+                const uint8_t* me = reinterpret_cast<const uint8_t*>(
+                    arr + m * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+                const int32_t* mpos = reinterpret_cast<const int32_t*>(
+                    me + FF7Addr::FIELD_EVENT_MODEL_POS);
+                const int16_t tri = *reinterpret_cast<const int16_t*>(
+                    me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
+                const int16_t char_id = *reinterpret_cast<const int16_t*>(
+                    me + FF7Addr::FIELD_EVENT_CHARACTER_ID);
+                const int32_t mx = mpos[0] >> 12;
+                const int32_t my = mpos[1] >> 12;
+
+                if (Config::Get().debug_log) {
+                    char dbg[160];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] NAV person m=%u tri=%d char=%d "
+                        "ent=%u talk=%d pos=(%ld,%ld)",
+                        m, tri, char_id,
+                        *reinterpret_cast<const uint8_t*>(me + FF7Addr::FIELD_EVENT_ENTITY_ID),
+                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_TALK_RADIUS),
+                        static_cast<long>(mx), static_cast<long>(my));
+                    Log::Write(dbg);
+                }
+
+                if (tri < 0)
+                    continue;   // off the walkmesh = not a reachable person
+
+                NavDest& d = dests[n_dests++];
+                if (char_id >= 0 &&
+                    char_id < static_cast<int>(_countof(kFieldCharNames)))
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls", kFieldCharNames[char_id]);
+                else
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"Person %u", m + 1u);
+                d.line_x1 = d.line_x2 = static_cast<int16_t>(mx);
+                d.line_y1 = d.line_y2 = static_cast<int16_t>(my);
+            }
         }
 
         // Field change invalidates selection and category.

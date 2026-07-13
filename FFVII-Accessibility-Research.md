@@ -188,6 +188,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
 | *(control_direction semantics)* | — | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180, a PURE ROTATION — left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124→174.4°; Up motion 5.6°, Down −174.4°. First guess world − control was 180° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
+| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x5D u8 entity_id, +0x6C s16 character_id (0-8 = party member — names field models for free), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15, 2026-07-13) |
 
 ---
 
@@ -649,6 +650,22 @@ no mirror (the mirrored-candidate debug output was removed). Known accepted
 limitation: story-locked exits are still listed (detection routes in
 TODO.txt: gateway unknown bytes +0x14, or show_arrow_flag[12] at header
 +0x1B8 for arrow-visibility parity).
+
+### v2.15 (2026-07-13): People category in the pathfinder
+
+The destination browser gains its third category: **People** — every
+non-player model standing on the walkmesh (field_event_data array, the
+same structs the v2.6 wall tone reads). Party members' field models are
+announced BY NAME via the struct's character_id (+0x6C, 0-8 → Cloud..Cid);
+everyone else is "Person N" numbered by MODEL SLOT, so a person keeps
+their number as models around them come and go. Off-mesh models
+(field_triangle_id +0x78 < 0 — hidden/despawned) are filtered out. A
+person is stored as a degenerate exit line (both vertices = its position)
+so the direction/distance math is shared unchanged; positions re-read at
+every query, so moving NPCs track correctly. Struct offsets are anchored
+by the live-verified movement_speed +0x76 (v2.6). Debug log prints every
+model's tri/char/entity/talk/pos when enabled — the dataset for future
+refinement (talk_radius gating, save-point identification).
 
 **Derivation — fully static** (`ff7_field_triggers_static.py`): the engine's
 parsed field-file section 8 sits behind ONE global, FFNx's
