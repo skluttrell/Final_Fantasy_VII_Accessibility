@@ -1196,6 +1196,54 @@ static bool EnemySlotName(uint8_t slot, std::wstring& out)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// HP readout for target announcements (v2.11).
+//
+// Speaks "HP <current> of <max>" for the actor under the target cursor,
+// with exact information parity to the sighted target window (see
+// ff7_addresses.h SECTION 1c4): party slots always (their HP is always
+// on-screen in battle), enemy slots only after Sense set their display
+// flag. HP is read as the full i32 pair from the battle actor-vars struct
+// (FFNx battle_actor_vars), NOT the game's u16 display words, so
+// >65535-HP bosses can't truncate.
+//
+// Returns false (caller speaks the bare name) for non-actor slots,
+// un-Sensed enemies, or implausible values (battle module mid-init).
+// ---------------------------------------------------------------------------
+static bool TargetHPText(uint8_t slot, std::wstring& out)
+{
+    bool show = false;
+    if (slot <= 2) {
+        show = true;
+    } else if (slot >= 4 && slot <= 9) {
+        const uint8_t flags = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::BATTLE_SENSED_FLAG_TABLE +
+            static_cast<uint32_t>(slot) * FF7Addr::BATTLE_DUP_LETTER_STRIDE);
+        show = (flags & FF7Addr::BATTLE_SENSED_FLAG_BIT) != 0;
+    }
+    if (!show)
+        return false;
+
+    const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
+        static_cast<uint32_t>(slot) * FF7Addr::BATTLE_ACTOR_VARS_STRIDE;
+    const int32_t cur = *reinterpret_cast<const volatile int32_t*>(
+        base + FF7Addr::BAVARS_OFF_CURRENT_HP);
+    const int32_t max = *reinterpret_cast<const volatile int32_t*>(
+        base + FF7Addr::BAVARS_OFF_MAX_HP);
+
+    // Plausibility gate: max must be positive and current within [0, max].
+    // 10,000,000 comfortably exceeds the biggest HP in the game (Ruby/
+    // Emerald Weapon: 800k/1M) while rejecting uninitialized garbage.
+    if (max <= 0 || max > 10000000 || cur < 0 || cur > max)
+        return false;
+
+    wchar_t buf[48];
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"HP %d of %d",
+                 static_cast<int>(cur), static_cast<int>(max));
+    out = buf;
+    return true;
+}
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
     // Default English party names indexed by character ID (0=Cloud … 8=Cid).
@@ -1425,7 +1473,9 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // letter suffix (v2.10, EnemySlotName above), falling back to "enemy N";
 // party slots 1-2 keep positional labels ("ally 2") — naming party members
 // 2/3 is still a follow-up (their names come from the menu module, not
-// get_kernel_text section 7).
+// get_kernel_text section 7). v2.11 appends "HP <cur> of <max>" to the
+// label whenever the sighted target window would show HP (TargetHPText
+// above: party always, enemies once Sensed).
 //
 // Gated by Config::Get().speak_battle_menu (separate from speak_battle so
 // menu narration and action narration can be toggled independently).
@@ -1700,12 +1750,20 @@ targeting_check:
                 last_target = target;
                 wchar_t label[64];   // 64: fits a 32-char enemy name + " A" suffix
                 target_label(target, label, _countof(label));
-                char dbg[128];
+                // v2.11: append the HP readout when the game would show it
+                // (party always; enemies once Sensed).
+                std::wstring spoken = label;
+                std::wstring hp;
+                if (TargetHPText(target, hp)) {
+                    spoken += L", ";
+                    spoken += hp;
+                }
+                char dbg[192];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] BMENU target=%u => %ls",
-                    static_cast<unsigned>(target), label);
+                    static_cast<unsigned>(target), spoken.c_str());
                 Log::Write(dbg);
-                TTS::Speak(label, /*interrupt=*/true);
+                TTS::Speak(spoken.c_str(), /*interrupt=*/true);
             }
         }
     }

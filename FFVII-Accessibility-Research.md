@@ -182,7 +182,9 @@ every confirmed address — the clustering itself is a discovery tool.
 | `BATTLE_FORMATION_SLOTS` | `0x009A8794` | Per-enemy-slot formation table, stride 0x10: u16 (movsx→signed, -1 = empty) = index into the loaded enemy records, indexed by enemy list index 0–5 (= actor slot − 4). From get_kernel_text SECTION 7 = the game's own target-name lookup (jump table 0x419A38, handler 0x4197D3; static disasm 2026-07-13, v2.10) |
 | `BATTLE_ENEMY_RECORDS` | `0x009A8E9C` | The 3 loaded scene.bin enemy records, stride 0xB8 (= exact scene.bin record size); FF7-encoded display name = bytes 0–0x1F, 0xFF-padded but possibly UNterminated at 0x20 — the game copies max 0x20 then writes its own 0xFF (0x41999B); never Decode() in place (v2.10) |
 | `BATTLE_DUP_LETTER_TABLE` | `0x009A8B1F` | Per-ACTOR-SLOT duplicate-name letter, stride 0x44: u8 index appended as FF7-char(dword[0x9AB070]+idx) → "MP A"/"MP B"; 0xFF = enemy type unique in formation. dword[0x9AB070] = encoded 'A' base (v2.10) |
-| *(target-name extras)* | `0x9AB0E0/0x9A8B39` | Same disasm, documented not used: u32[0x9AB0E0+slot·0x68] bit 0x40 → game appends kernel string 0x71; u8[0x9A8B39+slot·0x44] bit 0x40 → Sense-style readout formatting u16[0x9A8B4C+slot·0x44] + u16[0x9AB10C+slot·0x68] (HP pair) via kernel strings 0x7F/0x72. 0x9A80F0 = the game's target-name scratch buffer (write-on-render only — do NOT poll) |
+| *(target-name extras)* | `0x9AB0E0/0x9A8B39` | From the v2.10 disasm, identities RESOLVED in v2.11 via BATTLE_ACTOR_VARS below: u32[0x9AB0E0+slot·0x68] = actor_vars stateFlags (+0x04), bit 0x40 → game appends kernel string 0x71 (unused); u8[0x9A8B39+slot·0x44] bit 0x40 = **SENSED display flag** → game formats "cur/max" HP from u16[0x9A8B4C+slot·0x44] (display-cached cur) + u16[0x9AB10C+slot·0x68] (= actor_vars maxHP low word) via kernel strings 0x7F/0x72. 0x9A80F0 = the game's target-name scratch buffer (write-on-render only — do NOT poll) |
+| `BATTLE_ACTOR_VARS` | `0x009AB0DC` | FFNx battle_ai_context::actor_vars — per-actor battle stats, 10 slots × stride 0x68 (= sizeof battle_actor_vars). Static, two agreeing derivations (ff7_sense_hp_static.py, v2.11): (1) FFNx chain battle_context = u32 operand at 0x41CCB2+0x5F = 0x9AB0A0, actor_vars = +0x3C; the operand sits in "mov edi,0x9AB0A0 / rep stosd" — sub_41CCB2 is the battle-init memset whose OTHER memsets clear exactly the v2.10 formation/enemy-record regions; (2) section 7's reads land on named fields with this base. Key offsets: +0x04 stateFlags, +0x24 formationID (u16, = FFNx voice enemy_id), +0x28/+0x2A cur/max MP (u16), **+0x2C/+0x30 cur/max HP (i32)** — read the i32s, not the game's u16 display words (>65535-HP bosses truncate) |
+| `BATTLE_SENSED_FLAG_TABLE` | `0x009A8B39` | u8 per actor slot, stride 0x44 (same display struct as the dup-letter byte); bit 0x40 = target window shows HP (set by Sense). v2.11 gates the enemy HP readout on it — exact info parity with the sighted window; party slots 0-2 speak HP unconditionally (party HP is always on-screen) |
 
 ---
 
@@ -522,6 +524,37 @@ HP pair (a future "Sense readout" feature), per-actor status dword 0x9AB0E0,
 and the game's target-name scratch buffer 0x9A80F0 (render-time only, not
 pollable).
 
+### v2.11 (2026-07-13): Sense HP readout during targeting
+
+Target announcements now append "HP \<current\> of \<max\>" whenever the
+sighted target window would show HP: party slots always (party HP is
+permanently on-screen in battle), enemy slots once Sense has set their
+display flag. "Guard Hound A, HP 120 of 460". `TargetHPText()` in proxy.cpp,
+spoken by BattleMenuThread's targeting path; no new config key (it is part
+of `speak_battle_menu`).
+
+**Derivation — fully static again** (`ff7_sense_hp_static.py`): the missing
+piece from v2.10 was WHICH battle struct the Sense path's HP word `0x9AB10C`
+belongs to. FFNx's own resolution chain (`battle_context =
+get_absolute_value(battle_sub_41CCB2, 0x5F)`) read off the exe gives
+`battle_context = 0x9AB0A0` → `actor_vars[0] = +0x3C = 0x9AB0DC`, stride
+0x68 = exact `sizeof(battle_actor_vars)` from FFNx ff7.h. Cross-checks that
+all landed: the operand sits inside `mov edi, 0x9AB0A0 / rep stosd` —
+sub_41CCB2 is the battle-state init memset, and its sibling memsets clear
+exactly the v2.10 regions (formation slots, enemy records, attack names);
+and with this base, section 7's two unexplained reads become named fields
+(`0x9AB0E0` = stateFlags+0x04, `0x9AB10C` = maxHP+0x30 low word — so the
+window's "cur/max" takes cur from the display struct's u16 cache at
+`0x9A8B4C+slot·0x44` and max from actor_vars).
+
+The mod reads the full i32 `currentHP`/`maxHP` pair at +0x2C/+0x30 instead
+of the game's u16 display words (Ruby/Emerald-class HP would truncate), and
+gates on the Sensed flag byte `u8[0x9A8B39 + slot·0x44] & 0x40` for enemies
+— exact information parity with the sighted window. Plausibility gate
+(max in (0, 10M], 0 ≤ cur ≤ max) drops garbage during battle init. MP
+(+0x28/+0x2A u16) is available in the same struct if a Sense MP readout is
+ever wanted.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -753,7 +786,7 @@ CONFIG_ROW != 1.
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
 | Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
 | Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
-| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10, 2026-07-13), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits), Sense HP readout during targeting (tables found in v2.10, see §4 target-name extras) |
+| ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10), ~~Sense HP readout during targeting~~ (DONE v2.11, 2026-07-13), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits) |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
 | Name entry screen cursor | Isolate scan while moving grid cursor |
 | Field navigation spatial audio | Entity position list + audio panning |
@@ -878,10 +911,10 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0x9A9484` | ENEMY_ATTACK_NAME_TABLE | CONFIRMED (was "section-8 table?"): current formation's attack names from scene.bin, stride 0x20; = get_kernel_text section 9 (`ret 0x9A9484 + idx*0x20`) |
 | `0x9A80F0` | target-name scratch buffer | get_kernel_text section 7 composes "name + dup letter (+ status/Sense text)" here on render; write-on-render only, do NOT poll (2026-07-13) |
 | `0x9A8794` | BATTLE_FORMATION_SLOTS | stride 0x10 × 6 enemy slots (ends 0x9A87F4); u16[+0] = loaded-record index, movsx (−1 = empty). Note 0x9A8729/2A pulse flags above sit INSIDE the region just before it — this 0x9A87xx area is the battle formation block (2026-07-13, v2.10) |
-| `0x9A8B1F` | BATTLE_DUP_LETTER_TABLE | per-actor-slot struct array, stride 0x44 (base ≤0x9A8B04, letter byte at 0x9A8B1F + slot·0x44); u8[0x9A8B39+slot·0x44] bit 0x40 = Sensed flag, u16[0x9A8B4C+slot·0x44] = HP for Sense readout (2026-07-13) |
+| `0x9A8B1F` | BATTLE_DUP_LETTER_TABLE | per-actor-slot DISPLAY struct array, stride 0x44 (letter byte at 0x9A8B1F + slot·0x44); u8[0x9A8B39+slot·0x44] bit 0x40 = **SENSED flag** (v2.11 gates the HP readout on it), u16[0x9A8B4C+slot·0x44] = display-cached CURRENT HP the game formats as "cur/max" (2026-07-13) |
 | `0x9A8E9C` | BATTLE_ENEMY_RECORDS | 3 × 0xB8 scene.bin enemy records (ends 0x9A90C4); name = bytes 0–0x1F, possibly unterminated. Sits between the formation/per-actor block and ENEMY_ATTACK_NAME_TABLE 0x9A9484 — one contiguous loaded-scene cluster 0x9A87xx–0x9A98xx (2026-07-13, v2.10) |
-| `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13) |
-| `0x9AB0E0` | per-actor status dwords | stride 0x68; bit 0x40 of u32[+0] makes the target-name path append kernel string 0x71; u16[0x9AB10C+slot·0x68] pairs with the Sense HP readout (2026-07-13, documented not used) |
+| `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13). Region 0x9AAD70–0x9AB070 (0x300 bytes) is cleared as one block by the battle-init memset |
+| `0x9AB0A0` | battle_ai_context (FFNx battle_context) | = u32 operand at 0x41CCB2+0x5F (FFNx's own chain; sub_41CCB2 = battle-init memset, clears 0x253 dwords from here). Header 0x3C bytes (10 flag bytes + 23 u16 masks + u32 partyGil), then **actor_vars[10] at 0x9AB0DC = BATTLE_ACTOR_VARS**, stride 0x68: +0x04 stateFlags (the 0x9AB0E0 read from the v2.10 disasm), +0x24 formationID, +0x28/+0x2A cur/max MP u16, +0x2C/+0x30 cur/max HP i32 (+0x30 low word = the 0x9AB10C read). Array ends 0x9AB4EC (v2.11, 2026-07-13) |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
 | *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon/etc. name sections resident for process lifetime; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists — the only exe-static pointers into the block are font tables (0xCFF3F8 cluster) |
 

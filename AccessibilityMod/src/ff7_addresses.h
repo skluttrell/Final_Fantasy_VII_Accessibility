@@ -834,6 +834,49 @@ constexpr uint32_t BATTLE_DUP_LETTER_TABLE      = 0x009A8B1F;
 constexpr uint32_t BATTLE_DUP_LETTER_STRIDE     = 0x44;
 
 // ---------------------------------------------------------------------------
+// SECTION 1c4: Battle actor variables + Sense HP readout (v2.11, 2026-07-13)
+//
+// BATTLE_ACTOR_VARS is FFNx's battle_ai_context::actor_vars — the per-actor
+// battle stat array (10 slots, party 0-2 / enemies 4-9, stride 0x68 = exact
+// sizeof(battle_actor_vars) in FFNx ff7.h). Resolved STATICALLY, two ways
+// that agree (investigate/ff7_sense_hp_static.py):
+//   1. FFNx's own chain: battle_context = get_absolute_value(0x41CCB2, 0x5F)
+//      = 0x9AB0A0; actor_vars = +0x3C (header: 10 bytes + 23 u16 masks +
+//      u32 partyGil) = 0x9AB0DC. The operand lives inside "mov edi,0x9AB0A0 /
+//      rep stosd" — sub_41CCB2 is the battle-state init memset, and its other
+//      memsets clear exactly the v2.10 regions (0x9A8748 covers the formation
+//      slots, 0x9A8B10 covers enemy records + attack names) — strong mutual
+//      confirmation that all these tables are one battle-state family.
+//   2. get_kernel_text section 7's own reads land on named fields with this
+//      base: its status-append gate 0x9AB0E0 = stateFlags (+0x04), and the
+//      HP word it formats after Sense, 0x9AB10C, = maxHP (+0x30). (Its other
+//      operand, u16[0x9A8B4C + slot*0x44], is the display struct's cached
+//      CURRENT HP — the window renders "cur/max".)
+//
+// The Sense gate: the game appends HP to a target-window name only when
+// u8[0x9A8B39 + slot*0x44] has bit 0x40 set (same 0x44-stride per-actor
+// display struct as the duplicate-letter byte). That flag is set by casting
+// Sense — the readout therefore has exact information parity with the
+// sighted target window. Party HP is always visible in battle, so the mod
+// speaks party slots' HP unconditionally.
+//
+// The mod reads the FULL i32 currentHP/maxHP from actor_vars rather than
+// the game's u16 display words, so >65535-HP bosses can't truncate.
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t BATTLE_ACTOR_VARS            = 0x009AB0DC;
+constexpr uint32_t BATTLE_ACTOR_VARS_STRIDE     = 0x68;
+constexpr uint32_t BAVARS_OFF_CURRENT_MP        = 0x28;   // u16
+constexpr uint32_t BAVARS_OFF_MAX_MP            = 0x2A;   // u16
+constexpr uint32_t BAVARS_OFF_CURRENT_HP        = 0x2C;   // i32
+constexpr uint32_t BAVARS_OFF_MAX_HP            = 0x30;   // i32
+
+// Per-actor-slot "show HP in the target window" flag byte (bit 0x40), set by
+// Sense; shares the 0x44-stride display struct with BATTLE_DUP_LETTER_TABLE.
+constexpr uint32_t BATTLE_SENSED_FLAG_TABLE     = 0x009A8B39;
+constexpr uint8_t  BATTLE_SENSED_FLAG_BIT       = 0x40;
+
+// ---------------------------------------------------------------------------
 // SECTION 1d: Field navigation addresses (wall-bump tone feature)
 //
 // All resolved statically from the exe on disk by
