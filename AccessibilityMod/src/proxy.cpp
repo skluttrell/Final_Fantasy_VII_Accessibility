@@ -2253,11 +2253,12 @@ static const wchar_t* DpadSectorName(float deg)
     return kSectors[sector];
 }
 
-// One browsable destination (currently always a gateway/exit; NPC and
-// save-point categories will add their own kinds here).
+// One browsable destination: a gateway/exit (line) or a person (point,
+// stored as a degenerate line so the distance math is shared).
 struct NavDest {
-    wchar_t name[24];      // spoken name, e.g. "Exit 2"
+    wchar_t name[24];      // spoken name, e.g. "Exit 2" / "Person 3"
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
+    int     model_slot;    // field model index for people; -1 for exits
 };
 
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
@@ -2289,6 +2290,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     ULONGLONG next_calib_tick = 0;
     int32_t   calib_last_x = 0, calib_last_y = 0;
     bool      calib_have_last = false;
+
+    // Per-model movement tracker (v2.15.1): last sampled position and the
+    // tick it last CHANGED, updated every 50ms poll while on a field. A
+    // person who moved within the last WANDER_WINDOW_MS gets a short high
+    // beep appended to their announcements — the cue that this target is
+    // WANDERING and directions may go stale (user request 2026-07-13).
+    // 880Hz keeps it clearly distinct from the 220Hz wall-bump tone.
+    int32_t   track_x[32] = {}, track_y[32] = {};
+    ULONGLONG track_move_tick[32] = {};
+    bool      track_valid[32] = {};
+    int16_t   track_field = 0;
+    constexpr ULONGLONG WANDER_WINDOW_MS = 1000;
+    constexpr WORD      WANDER_BEEP_HZ = 880, WANDER_BEEP_MS = 70;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
@@ -2348,6 +2362,45 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const uint8_t control_dir = *reinterpret_cast<const uint8_t*>(
             hdr + FF7Addr::FTRIG_OFF_CONTROL_DIR);
         const float control_deg = control_dir * (360.0f / 256.0f);
+
+        // ---- per-model movement tracking (every poll) --------------------
+        // Sample every model's position; stamp the tick when it changes.
+        // Field change invalidates the samples (positions jump between
+        // fields — without the reset every model would read as "wandering"
+        // for one window after each transition).
+        {
+            if (field_id != track_field) {
+                track_field = field_id;
+                memset(track_valid, 0, sizeof(track_valid));
+                memset(track_move_tick, 0, sizeof(track_move_tick));
+            }
+            const uint8_t* last_elem = reinterpret_cast<const uint8_t*>(
+                arr + (nmod - 1u) * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+            const bool span_ok =
+                VirtualQuery(last_elem + FF7Addr::FIELD_EVENT_DATA_STRIDE - 1,
+                             &mbi, sizeof(mbi)) != 0 &&
+                mbi.State == MEM_COMMIT &&
+                !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+            const ULONGLONG now = GetTickCount64();
+            for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
+                const int32_t* mpos = reinterpret_cast<const int32_t*>(
+                    arr + m * FF7Addr::FIELD_EVENT_DATA_STRIDE +
+                    FF7Addr::FIELD_EVENT_MODEL_POS);
+                const int32_t mx = mpos[0], my = mpos[1];
+                if (track_valid[m] && (mx != track_x[m] || my != track_y[m]))
+                    track_move_tick[m] = now;
+                track_x[m] = mx;
+                track_y[m] = my;
+                track_valid[m] = true;
+            }
+        }
+
+        // True while the model moved within the wandering window.
+        const auto is_wandering = [&](int slot) {
+            return slot >= 0 && slot < 32 &&
+                   track_move_tick[slot] != 0 &&
+                   GetTickCount64() - track_move_tick[slot] <= WANDER_WINDOW_MS;
+        };
 
         // ---- direction calibration logging (debug_log only) -------------
         // While a direction is held and the player moves, log the held bits
@@ -2468,6 +2521,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                              L"Exit %d", ++exit_no);
                 d.line_x1 = v[0]; d.line_y1 = v[1];
                 d.line_x2 = v[3]; d.line_y2 = v[4];
+                d.model_slot = -1;
             }
         }
 
@@ -2533,6 +2587,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                  L"Person %u", m + 1u);
                 d.line_x1 = d.line_x2 = static_cast<int16_t>(mx);
                 d.line_y1 = d.line_y2 = static_cast<int16_t>(my);
+                d.model_slot = m;
             }
         }
 
@@ -2566,6 +2621,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls",
                              dests[selection].name);
             TTS::Speak(msg, /*interrupt=*/true);
+            // Wandering cue: speech is async, so the beep overlaps the
+            // start of the announcement instead of delaying it.
+            if (is_wandering(dests[selection].model_slot))
+                Beep(WANDER_BEEP_HZ, WANDER_BEEP_MS);
         };
 
         if (act_prev_cat || act_next_cat) {
@@ -2655,6 +2714,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                          d.name, DpadSectorName(input_deg),
                          secs, secs == 1 ? L"second" : L"seconds");
         TTS::Speak(msg, /*interrupt=*/true);
+        // Wandering cue on the directions query too — a moving target's
+        // direction is a snapshot, and the beep says exactly that.
+        if (is_wandering(d.model_slot))
+            Beep(WANDER_BEEP_HZ, WANDER_BEEP_MS);
     }
 
     return 0;

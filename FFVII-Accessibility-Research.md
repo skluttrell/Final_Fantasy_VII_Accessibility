@@ -667,6 +667,13 @@ by the live-verified movement_speed +0x76 (v2.6). Debug log prints every
 model's tri/char/entity/talk/pos when enabled — the dataset for future
 refinement (talk_radius gating, save-point identification).
 
+**v2.15.1 — wandering cue** (user request, same day): the thread samples
+every model's position each 50ms poll; announcing (J/L/K/\) a person who
+moved within the last second appends a short 880Hz/70ms beep (distinct
+from the 220Hz wall tone) — the cue that the target is WALKING and the
+spoken direction is a snapshot. Tracker resets on field change so the
+position jump between fields can't read as movement.
+
 **Derivation — fully static** (`ff7_field_triggers_static.py`): the engine's
 parsed field-file section 8 sits behind ONE global, FFNx's
 `field_triggers_header`. FFNx resolves it from `field_main_loop` (needs a
