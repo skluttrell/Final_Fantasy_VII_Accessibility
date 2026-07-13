@@ -1412,9 +1412,16 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 
             // Speak accumulated defeats at the first quiet gap (or on
             // leaving battle, so a battle-ending kill is never dropped).
+            // The gap must be measured FORWARD from detection, not just
+            // backward from now: the death tick IS the action-burst tick
+            // (v2.12.1 play test — "defeat spoken" and the interrupt=true
+            // action announcements share one timestamp in the log), so a
+            // defeat younger than the quiet window must keep waiting even
+            // if nothing has spoken for a while BEFORE it.
             if (!pending_defeats.empty()) {
                 const ULONGLONG now = GetTickCount64();
-                const bool quiet   = now - TTS::LastSpeakTick() >= DEFEAT_QUIET_MS;
+                const bool quiet   = now - first_defeat_tick    >= DEFEAT_QUIET_MS &&
+                                     now - TTS::LastSpeakTick() >= DEFEAT_QUIET_MS;
                 const bool overdue = now - first_defeat_tick >= DEFEAT_MAX_WAIT_MS;
                 if (quiet || overdue || game_mode != 2) {
                     char dbg[192];
