@@ -674,6 +674,9 @@ from the 220Hz wall tone) — the cue that the target is WALKING and the
 spoken direction is a snapshot. Tracker resets on field change so the
 position jump between fields can't read as movement.
 
+**USER PLAY-TEST CONFIRMED 2026-07-13** (after v2.15.2): categories,
+counts, People browsing, and the wandering cue all working as intended.
+
 **v2.15.2 — two play-test bug fixes** (same day):
 1. character_id naming REMOVED: an ordinary reactor NPC announced as
    "Red XIII" — the +0x6C field carries 0-8 values for regular NPCs too
