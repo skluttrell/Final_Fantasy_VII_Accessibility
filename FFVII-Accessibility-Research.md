@@ -485,6 +485,10 @@ key `speak_battle_menu`):
 
 ### v2.10 (2026-07-13): Real enemy names in battle announcements
 
+**USER PLAY-TEST CONFIRMED 2026-07-13** (same pass also confirmed v2.9's
+command menu and submenus): enemy names with duplicate-letter suffixes spoken
+correctly in-game.
+
 Target selection and enemy-turn announcements now speak the actual enemy name
 ("Guard Hound", "MP A") instead of positional "enemy N"/"enemy" labels — for
 both BattleMenuThread targeting and BattleActionThread turn announces, via a
