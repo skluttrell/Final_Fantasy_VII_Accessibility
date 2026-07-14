@@ -748,6 +748,9 @@ guess reads wrong.
 
 ### v2.17 (2026-07-14): Triggers category — LINE trigger zones
 
+**USER PLAY-TEST CONFIRMED 2026-07-14 (same day): the Triggers category
+works and trigger zones are announced correctly in-game.**
+
 Fifth pathfinder category **Triggers**: the script-created LINE zones
 (ladders, elevators, touch/cross zones) that sighted players infer from
 scenery. Lines are real segments, so the exit direction/distance math is
