@@ -210,14 +210,35 @@ DONE 2026-07-13: people are named from the model loader section's
 descriptive .char names ("shinra hei", "main ballet"), duplicates get
 slot-order ordinals. PLAY-TEST CONFIRMED 2026-07-14 (names correct
 in-game). Residuals:
-  - Save-point detection is a HEURISTIC (label contains "save") until the
-    player reaches the first real save point — confirm from the debug log
-    or a J/L pass there, then harden (exact label match if needed).
+  - ~~Save-point detection is a HEURISTIC~~ CONFIRMED game-wide 2026-07-14
+    by the flevel catalog: "fieldbg saveicn" is the only "save" label in
+    all 720 fields.
   - Labels are developer romaji ("ballet" = Barret, "hei" = soldier). A
     small translation table for the most common role words could polish
-    them later ("shinra hei" -> "Shinra soldier") — collect labels from
-    play before building it.
+    them later ("shinra hei" -> "Shinra soldier") — the v2.18 catalog log
+    (investigate/flevel_models_catalog_*.log) now has the COMPLETE label
+    list with frequencies to build it from; no play collection needed.
   - The old character_id (+0x6C) route stays DISPROVED — never name from it.
+
+[NAV] Items category (v2.18): chest open/closed state — LIVE INVESTIGATION
+---------------------------------------------------------------------------
+Floor pickups (potion/materia/sparkle/key) despawn when collected and drop
+out of the list via the off-mesh filter — no work needed. CHESTS stay on
+the walkmesh with an open lid; "Chest" should ideally announce "opened" or
+be filterable. Plan when the player reaches the first chest (catalog says
+chests appear in delmin12, elmtow, gidun_2, mds7_w2, kuro_*, jail2...;
+earliest on the story path is likely the Sector 7 area / Shinra HQ):
+  1. Write ff7_chest_state_watch.py: identify the chest's model slot (label
+     match), then dump its full field_event_data entry (0x88 bytes) + the
+     field_animation_data entry each second while the player opens it.
+     The lid state should show as a persistent byte change (likely the
+     current-animation id — chest scripts flip idle animation via DFANM).
+  2. Confirm the byte holds the OPEN value on field re-entry (scripts
+     restore chest state from savemap event flags at field load).
+  3. Announce "Chest, opened" / skip-opened-chests config, whichever the
+     player prefers.
+Note: "fieldbg taru" (barrels, chrin_2) excluded from Items — no evidence
+they give items; revisit if play shows otherwise.
 
 [NAV] Triggers category (v2.17) residuals
 -------------------------------------------

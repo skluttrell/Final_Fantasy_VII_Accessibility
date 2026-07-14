@@ -2198,9 +2198,15 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 //   M                  announce the current map's name
 // Categories: All, Exits, People (v2.15 — every non-player model on the
 // walkmesh, named from the model-loader section's dev names in v2.16),
-// Save points (v2.16 — models whose label contains "save"), and Triggers
-// (v2.17 — script-created LINE zones: ladders, elevators, touch/cross
-// zones, named by owning entity's dev name). Unimplemented FF4 keys
+// Save points (v2.16 — "save" labels; CONFIRMED game-wide by the v2.18
+// flevel catalog: "fieldbg saveicn" is the only save label in all 720
+// fields), Triggers (v2.17 — script-created LINE zones: ladders,
+// elevators, touch/cross zones, named by owning entity's dev name), and
+// Items (v2.18 — chests/materia/pickups/keys classified by the
+// catalog-confirmed "fieldbg" prop labels; collected floor pickups
+// despawn off-mesh and drop out of the list automatically, which IS the
+// taken/remaining state for them — chest open/closed state is a live
+// investigation TODO). Unimplemented FF4 keys
 // (Shift+\ valid-path filter, Ctrl+\ layer filter, Ctrl+arrows teleport,
 // Shift+M exit filter) are silently ignored; listed in TODO.txt for when
 // prerequisites exist.
@@ -2438,9 +2444,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // on one field (opening the menu or fighting a battle does NOT reset
     // them); a field change resets both.
     static const wchar_t* const kCategoryNames[] = {
-        L"All", L"Exits", L"People", L"Save points", L"Triggers"
+        L"All", L"Exits", L"People", L"Save points", L"Triggers", L"Items"
     };
-    constexpr int kCategoryCount = 5;
+    constexpr int kCategoryCount = 6;
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
@@ -2659,7 +2665,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // reported direction-dependent numbers). Category/field mutations
         // now happen first and the list is built for the NEW state.
         enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3,
-               CAT_TRIGGERS = 4 };
+               CAT_TRIGGERS = 4, CAT_ITEMS = 5 };
 
         // Field change invalidates selection and category.
         if (field_id != nav_field_id) {
@@ -2724,14 +2730,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // FieldModelLabel; duplicates get " 2"/" 3" ordinals in slot order
         // (like the battle "MP A"/"MP B" letters). Parse failure falls back
         // to "Person N" by model slot. A label containing "save" classifies
-        // the model as a SAVE POINT — its own category, named "Save point"
-        // — a HEURISTIC until the first real save-point field confirms the
-        // dev naming convention (expected; the .char names seen so far are
-        // developer role names). v2.15.2 note kept for history: the
+        // the model as a SAVE POINT — originally a heuristic, CONFIRMED
+        // game-wide by the v2.18 offline flevel catalog ("fieldbg saveicn"
+        // ×57 is the only save label in all 720 fields). Item props
+        // (chests, materia, pickups, keys) classify into the ITEMS
+        // category the same way — catalog evidence at the classification
+        // block in pass 1 below. v2.15.2 note kept for history: the
         // character_id (+0x6C) naming idea was live-DISPROVED (an NPC read
         // as "Red XIII") — never name from that field.
         if (category == CAT_ALL || category == CAT_PEOPLE ||
-            category == CAT_SAVE) {
+            category == CAT_SAVE || category == CAT_ITEMS) {
             // The array span was not fully validated above (only the
             // player's element) — probe the last model's element too before
             // walking all of them.
@@ -2743,9 +2751,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 mbi.State == MEM_COMMIT &&
                 !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
 
-            // Pass 1: eligibility, positions, labels, save classification.
+            // Pass 1: eligibility, positions, labels, save/item
+            // classification.
             bool     eligible[32] = {};
             bool     is_save[32]  = {};
+            bool     is_item[32]  = {};
             int16_t  ex[32], ey[32];
             wchar_t  labels[32][24] = {};
             for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
@@ -2785,6 +2795,39 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 if (have_lbl) {
                     wcsncpy_s(labels[m], lbl.c_str(), _TRUNCATE);
                     is_save[m] = (lbl.find(L"save") != std::wstring::npos);
+
+                    // Item/chest classification (v2.18) — grounded in the
+                    // COMPLETE game dataset, not a guess: the offline
+                    // catalog of all 720 fields' model labels
+                    // (ff7_flevel_models_catalog.py, 2026-07-14) shows the
+                    // devs prefixed every interactable prop "fieldbg" and
+                    // named the item props consistently: "trb *" =
+                    // treasure boxes (wood/mety/glow/metb/trbox k),
+                    // "mtra*" = materia orbs (incl. hmtra/kuromtra),
+                    // "potion *" = pickup bottles (color variants — the
+                    // BOTTLE is the visual; the script decides the actual
+                    // item, so they speak as generic "Item"), "sparkle" =
+                    // sparkle pickups, "key"/"coralkey" = key items. No
+                    // other label in the game contains these substrings,
+                    // so fieldbg+substring is exact, not heuristic. The
+                    // friendly name REPLACES the label so the existing
+                    // duplicate-ordinal pass yields "Chest 2", "Materia 3".
+                    if (lbl.find(L"fieldbg") != std::wstring::npos) {
+                        const wchar_t* friendly = nullptr;
+                        if (lbl.find(L"trb") != std::wstring::npos)
+                            friendly = L"Chest";
+                        else if (lbl.find(L"mtra") != std::wstring::npos)
+                            friendly = L"Materia";
+                        else if (lbl.find(L"potion")  != std::wstring::npos ||
+                                 lbl.find(L"sparkle") != std::wstring::npos)
+                            friendly = L"Item";
+                        else if (lbl.find(L"key") != std::wstring::npos)
+                            friendly = L"Key";
+                        if (friendly) {
+                            is_item[m] = true;
+                            wcsncpy_s(labels[m], friendly, _TRUNCATE);
+                        }
+                    }
                 }
             }
 
@@ -2794,10 +2837,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             for (uint16_t m = 0; m < 32; ++m) {
                 if (!eligible[m])
                     continue;
+                // Each model belongs to exactly ONE of Save points /
+                // Items / People (plus All) — a save icon is never a
+                // person, a chest is never a person.
                 const bool sv = is_save[m];
+                const bool it = is_item[m] && !sv;
                 if (sv  && !(category == CAT_ALL || category == CAT_SAVE))
                     continue;
-                if (!sv && !(category == CAT_ALL || category == CAT_PEOPLE))
+                if (it  && !(category == CAT_ALL || category == CAT_ITEMS))
+                    continue;
+                if (!sv && !it &&
+                    !(category == CAT_ALL || category == CAT_PEOPLE))
                     continue;
 
                 // Ordinal among same-label models before this slot.

@@ -701,9 +701,10 @@ clean, walk ended exactly at the section boundary).
 
 Fourth category **Save points**: a model whose label contains "save" is
 classified as a save point (named "Save point", excluded from People).
-⚠ HEURISTIC until the player reaches the first real save point — the
-naming convention is expected from the dev-name pattern but not yet
-observed; the debug log prints every model's label for confirmation.
+~~⚠ HEURISTIC until the player reaches the first real save point~~
+**CONFIRMED game-wide 2026-07-14 by the v2.18 offline flevel catalog**:
+"fieldbg saveicn" (HRC AVFE.HRC, ×57) is the ONLY label containing "save"
+across all 720 field files — the substring match is exact, not heuristic.
 
 **v2.15.2 — two play-test bug fixes** (same day):
 1. character_id naming REMOVED: an ordinary reactor NPC announced as
@@ -786,6 +787,43 @@ the pathfinder; a keypress racing a field transition can at worst read a
 stale line once (bounds are enforced by the 0x20 cap on both count and
 index). Lines don't participate in the wandering-cue tracker (SLINE moves
 are rare scripted events, not continuous NPC motion).
+
+### v2.18 (2026-07-14): Items category — chests, materia, pickups, keys
+
+Sixth pathfinder category **Items**, classified from the COMPLETE game
+dataset rather than play-collected guesses: a new offline pass
+(`ff7_flevel_models_catalog.py`) parses flevel.lgp directly — LGP TOC,
+LZS decompression with early stop at the end of the model section, then
+the exact v2.16 model-loader walk — and catalogs every model label in all
+720 field files (557 distinct labels). The developer convention fell
+straight out: interactable props are prefixed **"fieldbg"**, and item
+props use consistent role words:
+
+| Label pattern | Meaning | HRCs | Count |
+|---|---|---|---|
+| `fieldbg trb wood/mety/glow/metb`, `trbox k` | treasure chests | AVHE/BYDD/AWAE/HRCE/HJGA | ~110 |
+| `fieldbg mtra3–8`, `hmtra`, `kuromtra*` | materia orbs | ATEB/BYIB/DABF/AWBE/AUDE/CTBE/… | ~70 |
+| `fieldbg potion` (+b/g/r/1–4 variants) | pickup bottles | CCHA/BYGF/DCFB/FAAE/FABE/FABB/FSDD/FADC | ~50 |
+| `fieldbg sparkle` | sparkle pickups | GWIB | 4 |
+| `fieldbg key`, `fieldbg coralkey` | key items | EOAC/HOBD | 4 |
+| `fieldbg saveicn` | save points | AVFE | 57 |
+
+No other label in the game contains "trb"/"mtra"/"potion"/"sparkle"/
+"key"/"save" — so `fieldbg` + substring is EXACT classification, and the
+v2.16 save-point heuristic is retroactively confirmed. Spoken names are
+friendly ("Chest", "Materia", "Item" for bottles/sparkles — the bottle
+model is only the visual, the script decides the actual item — "Key"),
+and the existing duplicate-ordinal pass yields "Chest 2"/"Materia 3".
+Items are excluded from People; each model belongs to exactly one of
+Save points / Items / People.
+
+**State tracking**: collected FLOOR pickups (potion/materia/sparkle/key)
+despawn — the existing off-mesh filter (triangle_id < 0) drops them from
+the list automatically, so "still listed" = "still collectible", exact
+parity with what a sighted player sees. CHESTS stay on the walkmesh with
+an open lid; detecting open vs closed needs a live look at the chest
+model's animation-state bytes and is deferred until the player reaches
+one (plan in TODO.txt).
 
 ---
 
