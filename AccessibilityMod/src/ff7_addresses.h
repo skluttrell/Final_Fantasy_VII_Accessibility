@@ -1086,6 +1086,60 @@ constexpr uint32_t FIELD_SECTION_TABLE_OFF   = 6;   // nine u32 offsets at buf+6
 constexpr uint32_t FIELD_MODEL_SECTION_INDEX = 2;   // model loader section
 constexpr uint32_t FMODEL_LIGHT_BLOCK_SIZE   = 30;  // fixed light-data bytes
 
+// ---------------------------------------------------------------------------
+// SECTION 1g: LINE trigger zones (v2.17 — "Triggers" pathfinder category)
+//
+// Field scripts create invisible trigger LINES on the walkmesh (ladders,
+// elevators, touch/cross zones) with three opcodes: LINE 0xD0 (declare),
+// LINON 0xD1 (enable/disable), SLINE 0xD3 (move). The engine stores them in
+// ONE static array that all three opcode handlers write — found STATICALLY
+// (investigate/ff7_line_triggers_static.py, 2026-07-14) by resolving
+// execute_opcode_table from the exe on disk via the mod's own Resolve()
+// chain (grc(0x60BACF,0x80) → gav(^,0x10D) = table at 0x9055A0; validated by
+// table[0x40] MESSAGE having FFNx's expected E8 CALL at +0x3B) and
+// disassembling the three handlers:
+//
+//   LINE  handler 0x6111D8: writes vertices to 0xCC1F70 + n*0x18, sets
+//         +0x0C = 1, +0x0D = entity id, increments count at 0xCC088C,
+//         refuses when count >= 0x20
+//   LINON handler 0x6115AD: writes its script arg byte to the SAME
+//         +0x0C (the enable flag), clears +0x0E on disable
+//   SLINE handler 0x6114D0: rewrites the SAME six vertex words
+//
+// Three independent handlers agreeing on base/stride/offsets = the same
+// cross-validation standard as the FFNx-chain finds. LIVE-VERIFIED
+// 2026-07-14 (ff7_line_triggers_verify.py): see research doc §4/§8.
+//
+// Array entry layout (stride 0x18):
+//   +0x00 s16 x1  +0x02 s16 y1  +0x04 s16 z1   (walkmesh coords — the LINE
+//   +0x06 s16 x2  +0x08 s16 y2  +0x0A s16 z2    opcode args are stored raw;
+//                                               same units as model_pos>>12)
+//   +0x0C u8 enabled   (1 = active; LINON writes its arg byte here)
+//   +0x0D u8 entity id (which script entity owns this line)
+//   +0x0E u8 state latch (engine's "player inside" tracking)
+//   +0x0F..+0x17 unknown
+//
+// The count is NOT reset-checked here: field load re-runs the init scripts,
+// which re-declare every line, and the LINE handler resets come from the
+// field module's own state clear (count observed correct per-field live).
+//
+// ENTITY NAMES: field script section 0 (behind FIELD_SCRIPT_PTR) carries an
+// 8-char ASCII dev name per entity at +0x20 + id*8 (header: u16 unknown,
+// u8 nEntities, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale,
+// u8 blank[6], char creator[8], char name[8] = 0x20 bytes; community-
+// documented layout, live-verified by the same verify script). nEntities
+// sits at +2 (the mod's long-standing field-header knowledge).
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t FIELD_LINE_COUNT       = 0x00CC088C;  // u16, 0..32
+constexpr uint32_t FIELD_LINE_ARRAY       = 0x00CC1F70;  // 32 × 0x18 bytes
+constexpr uint32_t FLINE_STRIDE           = 0x18;
+constexpr uint32_t FLINE_MAX              = 32;
+constexpr uint32_t FLINE_OFF_ENABLED      = 0x0C;        // u8
+constexpr uint32_t FLINE_OFF_ENTITY       = 0x0D;        // u8
+constexpr uint32_t FSCRIPT_NENTITIES_OFF  = 2;           // u8 in section-0 header
+constexpr uint32_t FSCRIPT_ENTITY_NAMES_OFF = 0x20;      // char[8] per entity
+
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different
 // code paths. We patch those call sites to intercept world map dialog.

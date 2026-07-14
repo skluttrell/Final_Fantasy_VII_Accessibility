@@ -219,6 +219,20 @@ in-game). Residuals:
     play before building it.
   - The old character_id (+0x6C) route stays DISPROVED — never name from it.
 
+[NAV] Triggers category (v2.17) residuals
+-------------------------------------------
+Shipped 2026-07-14: LINE trigger zones as the 5th category, named by
+owning entity dev name ('evb', 'drE'). Possible refinements from play:
+  - The +0x0E state latch may mean "player currently inside the zone" —
+    if confirmed by observation it could announce "you are on the
+    trigger" instead of a distance.
+  - Entity dev names are terse; if common ones recur ("dr"=door,
+    "ev"=elevator, "kaidan"=stairs), fold them into the same romaji
+    translation table planned for People labels.
+  - Trigger lines whose script does nothing until a story flag are still
+    listed while enabled — same accepted limitation as story-locked
+    exits.
+
 [NAV] Friendly map names for the M announce
 --------------------------------------------
 M currently speaks the field's INTERNAL name ("md1stin") from the triggers

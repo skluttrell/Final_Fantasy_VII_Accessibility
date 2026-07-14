@@ -2197,9 +2197,10 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 //   \ or P             directions to the selected destination
 //   M                  announce the current map's name
 // Categories: All, Exits, People (v2.15 — every non-player model on the
-// walkmesh; party members' field models announce by NAME via their
-// character_id, everyone else is "Person N" by model slot). Save points
-// and LINE trigger zones are future categories. Unimplemented FF4 keys
+// walkmesh, named from the model-loader section's dev names in v2.16),
+// Save points (v2.16 — models whose label contains "save"), and Triggers
+// (v2.17 — script-created LINE zones: ladders, elevators, touch/cross
+// zones, named by owning entity's dev name). Unimplemented FF4 keys
 // (Shift+\ valid-path filter, Ctrl+\ layer filter, Ctrl+arrows teleport,
 // Shift+M exit filter) are silently ignored; listed in TODO.txt for when
 // prerequisites exist.
@@ -2253,8 +2254,10 @@ static const wchar_t* DpadSectorName(float deg)
     return kSectors[sector];
 }
 
-// One browsable destination: a gateway/exit (line) or a person/save point
-// (point, stored as a degenerate line so the distance math is shared).
+// One browsable destination: a gateway/exit (line), a person/save point
+// (point, stored as a degenerate line so the distance math is shared), or a
+// LINE trigger zone (v2.17 — script-created lines: ladders, elevators,
+// touch/cross zones — a real segment, exactly like an exit).
 struct NavDest {
     wchar_t name[32];      // spoken name, e.g. "Exit 2" / "shinra guard 3"
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
@@ -2370,6 +2373,51 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Script entity dev-name from field-file section 0 (v2.17).
+//
+// The script section header carries an 8-char ASCII name per entity at
+// +0x20 + id*8 ("cloud", "svisen1", "yubiwa"...) — the same
+// developer-naming trick that labels people (v2.16), applied to the entity
+// that OWNS a LINE trigger zone. Underscores become spaces for speech.
+// Returns false (caller falls back to "Trigger N") when the pointer is
+// torn mid field-transition, the id is out of range, or the name bytes
+// aren't printable ASCII.
+// ---------------------------------------------------------------------------
+static bool FieldEntityName(int entity_id, std::wstring& out)
+{
+    const uint32_t script = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_SCRIPT_PTR);
+    if (script < 0x401000)
+        return false;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(reinterpret_cast<const void*>(script), &mbi, sizeof(mbi)) == 0 ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return false;
+
+    const uint8_t n_entities = *reinterpret_cast<const uint8_t*>(
+        script + FF7Addr::FSCRIPT_NENTITIES_OFF);
+    if (entity_id < 0 || entity_id >= n_entities)
+        return false;
+    const uint8_t* name = reinterpret_cast<const uint8_t*>(
+        script + FF7Addr::FSCRIPT_ENTITY_NAMES_OFF + entity_id * 8);
+    if (VirtualQuery(name + 7, &mbi, sizeof(mbi)) == 0 ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return false;
+
+    out.clear();
+    for (int i = 0; i < 8 && name[i] != 0; ++i) {
+        if (name[i] < 0x20 || name[i] > 0x7E)
+            return false;   // not ASCII = wrong data, don't speak garbage
+        out += (name[i] == '_') ? L' ' : static_cast<wchar_t>(name[i]);
+    }
+    while (!out.empty() && out.back() == L' ')
+        out.pop_back();
+    return !out.empty();
+}
+
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
     // The FF4-scheme hotkeys we poll, with per-key previous-state for edge
@@ -2390,9 +2438,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // on one field (opening the menu or fighting a battle does NOT reset
     // them); a field change resets both.
     static const wchar_t* const kCategoryNames[] = {
-        L"All", L"Exits", L"People", L"Save points"
+        L"All", L"Exits", L"People", L"Save points", L"Triggers"
     };
-    constexpr int kCategoryCount = 4;
+    constexpr int kCategoryCount = 5;
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
@@ -2610,7 +2658,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // arriving from All, "Exits, 6" when arriving from People — the
         // reported direction-dependent numbers). Category/field mutations
         // now happen first and the list is built for the NEW state.
-        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3 };
+        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3,
+               CAT_TRIGGERS = 4 };
 
         // Field change invalidates selection and category.
         if (field_id != nav_field_id) {
@@ -2639,7 +2688,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // order is the destination's IDENTITY: "Exit 2" / "Person 3" keep
         // their names as the player moves — never renumbered by distance.
         constexpr int kMaxDests =
-            FF7Addr::FTRIG_GATEWAY_COUNT + 32;   // exits + model cap
+            FF7Addr::FTRIG_GATEWAY_COUNT + 32    // exits + model cap
+            + FF7Addr::FLINE_MAX;                // + LINE trigger zones
         NavDest dests[kMaxDests];
         int n_dests = 0;
 
@@ -2778,6 +2828,51 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 d.line_x1 = d.line_x2 = ex[m];
                 d.line_y1 = d.line_y2 = ey[m];
                 d.model_slot = m;
+            }
+        }
+
+        // LINE trigger zones (v2.17): script-created lines — ladders,
+        // elevators, touch/cross zones. Stored in the engine's static line
+        // array (see ff7_addresses.h SECTION 1g for the full derivation:
+        // three opcode handlers disassembled, all agreeing on the layout).
+        // Disabled lines (LINON 0) are skipped — the script has switched
+        // that zone off, so walking to it does nothing; this also gives
+        // information parity with what the zone would DO for a sighted
+        // player right now. Named by the owning entity's dev name
+        // ("yubiwa", "svisen1"); slot order is the identity, so "Trigger 3"
+        // keeps its number as the player moves, same rule as exits.
+        if (category == CAT_ALL || category == CAT_TRIGGERS) {
+            const uint16_t n_lines = *reinterpret_cast<const volatile uint16_t*>(
+                FF7Addr::FIELD_LINE_COUNT);
+            for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
+                const uint8_t* le = reinterpret_cast<const uint8_t*>(
+                    FF7Addr::FIELD_LINE_ARRAY + i * FF7Addr::FLINE_STRIDE);
+                if (le[FF7Addr::FLINE_OFF_ENABLED] == 0)
+                    continue;
+                const int16_t* v = reinterpret_cast<const int16_t*>(le);
+
+                NavDest& d = dests[n_dests++];
+                std::wstring ename;
+                if (FieldEntityName(le[FF7Addr::FLINE_OFF_ENTITY], ename))
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls", ename.c_str());
+                else
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"Trigger %u", i + 1u);
+                // x1,y1,z1,x2,y2,z2 — Z ignored like exits (2D walking).
+                d.line_x1 = v[0]; d.line_y1 = v[1];
+                d.line_x2 = v[3]; d.line_y2 = v[4];
+                d.model_slot = -1;
+
+                if (Config::Get().debug_log) {
+                    char dbg[160];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] NAV line %u ent=%u '%ls' "
+                        "(%d,%d,%d)-(%d,%d,%d)",
+                        i, le[FF7Addr::FLINE_OFF_ENTITY], d.name,
+                        v[0], v[1], v[2], v[3], v[4], v[5]);
+                    Log::Write(dbg);
+                }
             }
         }
 

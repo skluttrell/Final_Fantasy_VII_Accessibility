@@ -189,6 +189,10 @@ every confirmed address — the clustering itself is a discovery tool.
 | *(control_direction semantics)* | — | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180, a PURE ROTATION — left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124→174.4°; Up motion 5.6°, Down −174.4°. First guess world − control was 180° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
 | *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x5D u8 entity_id, +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15, 2026-07-13) |
+| `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
+| `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
+| `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
+| *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
 
 ---
 
@@ -742,6 +746,44 @@ gateway plus a once-per-second input-vs-motion calibration line while
 walking — one debug-logged walkabout pins the true convention if the first
 guess reads wrong.
 
+### v2.17 (2026-07-14): Triggers category — LINE trigger zones
+
+Fifth pathfinder category **Triggers**: the script-created LINE zones
+(ladders, elevators, touch/cross zones) that sighted players infer from
+scenery. Lines are real segments, so the exit direction/distance math is
+reused unchanged; disabled lines (LINON 0) are skipped for information
+parity (the zone would do nothing for a sighted player either). Each line
+speaks its owning entity's 8-char dev name from the section-0 entity-name
+table ("evb", "drE") — the v2.16 model-naming trick applied to script
+entities — falling back to "Trigger N" by array slot.
+
+**Derivation — fully static in one pass** (`ff7_line_triggers_static.py`):
+resolved `execute_opcode_table` from the exe ON DISK via the mod's own
+Resolve() chain (grc(0x60BACF,0x80) → gav(^,0x10D) = 0x9055A0; validated by
+FFNx's own MESSAGE-handler check, E8 CALL at table[0x40]+0x3B), then
+capstone-disassembled the three line opcode handlers. All three agree on
+one array (see §4 FIELD_LINE_ARRAY row) — LINE 0x6111D8 creates (flag=1,
+entity id stamped, count++ at 0xCC088C, cap 0x20), LINON 0x6115AD writes
+its arg to the same +0x0C flag, SLINE 0x6114D0 rewrites the same six
+vertex words. Bonus finds from the same listing: the LADER handler
+confirmed field_event_data +0x63 movement-phase byte and +0x7C/+0x80/+0x84
+as the <<12 movement target — and script arg coords are plain walkmesh
+units (LADER shifts them <<12 before comparing to model_pos), which is why
+the line vertices compare directly to player pos >> 12.
+
+**LIVE-VERIFIED same day** (`ff7_line_triggers_verify.py`, read-only
+attach while the player walked the reactor route): fields 116–119 report
+0 lines, field 120 reports 2 — both enabled, sane on-mesh segments at
+plausible distances, entity ids < nEntities, names 'evb'/'drE' clean
+ASCII via the +0x20 table, count stable on field re-entry. Every check
+green on the first run; no code changes needed after verification.
+
+Design note: the browse read is gated on GAME_MODE==0 like the rest of
+the pathfinder; a keypress racing a field transition can at worst read a
+stale line once (bounds are enforced by the 0x20 cap on both count and
+index). Lines don't participate in the wandering-cue tracker (SLINE moves
+are rare scripted events, not continuous NPC motion).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -1130,14 +1172,16 @@ change during list scrolling — classic delta-scan poison).
 (two battles: command names, magic-list rows incl. Ice by name, target cursor,
 and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 
-### Field module block: 0xCBF578 – 0xCC1B42
+### Field module block: 0xCBF578 – 0xCC2270
 
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0xCBF578` | DIALOG_TEXT_PTRS[8] | authoritative dialog text pointers |
 | `0xCBF5E8` | field_script_ptr | section 0 pointer |
+| `0xCBF600` | FIELD_ENTITY_LINE_SLOT | u8 per entity → line index (v2.17); sits right after the script pointer |
 | `0xCBF9D8` | field_global_object_ptr | → modules_global_object |
 | `0xCC0418` | current_dialog_message_speed | from ff7.h comment (unused by us so far) |
+| `0xCC088C` | FIELD_LINE_COUNT | u16, LINE zones on this field (v2.17) |
 | `0xCC0960` | field_entity_id_list | |
 | `0xCC0964` | current_entity_id | |
 | `0xCC0B60` | field_event_data_ptr | → 0xCC1670 (observed) |
@@ -1148,6 +1192,7 @@ and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 | `0xCC1638` | FIELD_MOVIE_PLAYING word | |
 | `0xCC1670` | field_event_data array (static) | stride 0x88 per model |
 | `0xCC1B42` | field-script variable | FALSE cursor candidate (freezes when menu opens) |
+| `0xCC1F70` | FIELD_LINE_ARRAY | 32 × 0x18 LINE trigger zones (v2.17); starts 0x80 past the event-data array's 16-model end (0xCC1EF0) — same allocation neighborhood, as the cluster rule predicts |
 
 Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quotes):
 
