@@ -16,4 +16,4 @@ scratchpad_ff7text.cpp
 investigate/*.log
 investigate/**/*.log
 investigate/venv/
-investigate/__pycache__/
+investigate/__pycache__/walkthrough.txt
