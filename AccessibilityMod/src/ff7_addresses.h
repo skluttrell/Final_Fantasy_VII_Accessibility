@@ -1053,6 +1053,39 @@ constexpr uint32_t FTRIG_GATEWAY_COUNT       = 12;
 constexpr int16_t  FTRIG_FIELD_ID_UNUSED     = 0x7FFF;
 constexpr float    WALKMESH_UNITS_PER_SEC    = 160.0f; // walking pace
 
+// ---------------------------------------------------------------------------
+// Field-file MODEL LOADER section (v2.16 — People names + save points).
+//
+// The raw field file behind FIELD_FILE_BUFFER has nine sections; the table
+// of nine u32 offsets sits at buf+6, each offset pointing at a 4-byte size
+// prefix followed by the section data (research doc §5). Section index 2 is
+// the MODEL LOADER — format LIVE-DECODED 2026-07-13 from a full hex dump of
+// md1stin (investigate/ff7_field_models_dump.py; header count matched
+// FIELD_N_MODELS exactly and every entry walked cleanly):
+//
+//   header: u16 blank, u16 nModels, u16 scale
+//   per model:
+//     u16 len, char name[len]   descriptive! "md1stinmain_n_cloud.char",
+//                               "md1stinshinra_hei.char", "...ballet.char"
+//     u16 unknown               (0 on the first entry, 1 on later ones)
+//     char hrc[8]               "AAAA.HRC"
+//     char scale[4]             ASCII "512\0"
+//     u16 nAnimations
+//     byte light_data[30]
+//     nAnimations × { u16 len, char name[len], u16 unknown }
+//
+// Model entry order = model LOAD order = field_event_data array order
+// (v2.6: "fields load models in file order"), so entry i names model i.
+// The .char names strip to speakable labels ("shinra hei", "ballet") and
+// the save-point model is expected to carry a "save"-style name (to be
+// confirmed the first time the player reaches one — heuristic documented
+// at the call site in proxy.cpp).
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t FIELD_SECTION_TABLE_OFF   = 6;   // nine u32 offsets at buf+6
+constexpr uint32_t FIELD_MODEL_SECTION_INDEX = 2;   // model loader section
+constexpr uint32_t FMODEL_LIGHT_BLOCK_SIZE   = 30;  // fixed light-data bytes
+
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different
 // code paths. We patch those call sites to intercept world map dialog.

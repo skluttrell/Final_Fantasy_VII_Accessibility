@@ -204,19 +204,19 @@ passage. Possible detection routes when this gets annoying:
     arrows only on usable exits, so gating on it would also restore
     information parity.
 
-[NAV] Naming people in the pathfinder (beyond "Person N")
------------------------------------------------------------
-v2.15 tried naming party-member field models via field_event_data
-character_id (+0x6C) — DISPROVED live 2026-07-13: an ordinary reactor NPC
-carried 4 ("Red XIII"), so the field is not a party-membership indicator.
-Candidate signals for a future pass:
-  - field file section 3 (model loader) has per-model HRC names; a
-    model-name -> label table ("save point", "shop keeper") could both
-    name people AND identify save points for their own category;
-  - the debug log already records entity_id/char_id/talk_radius per model
-    — collect a few fields' worth and look for a discriminating pattern;
-  - PSX decomp / Makou Reactor may document which field of the model
-    entry carries the "playable character" binding the CHAR/PC opcodes use.
+[NAV] People naming: RESOLVED v2.16 (model-loader labels); residuals
+----------------------------------------------------------------------
+DONE 2026-07-13: people are named from the model loader section's
+descriptive .char names ("shinra hei", "main ballet"), duplicates get
+slot-order ordinals. Residuals:
+  - Save-point detection is a HEURISTIC (label contains "save") until the
+    player reaches the first real save point — confirm from the debug log
+    or a J/L pass there, then harden (exact label match if needed).
+  - Labels are developer romaji ("ballet" = Barret, "hei" = soldier). A
+    small translation table for the most common role words could polish
+    them later ("shinra hei" -> "Shinra soldier") — collect labels from
+    play before building it.
+  - The old character_id (+0x6C) route stays DISPROVED — never name from it.
 
 [NAV] Friendly map names for the M announce
 --------------------------------------------

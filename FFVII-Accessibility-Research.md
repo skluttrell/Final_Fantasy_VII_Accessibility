@@ -202,13 +202,13 @@ FF7 field files have 9 sections (indices 0–8). For the bombers_start field (co
 |---------|--------|---------|
 | 0 | 0x2A | **Script** — entity bytecodes + dialog text strings at the end |
 | 1 | 0x17EA | Camera placement data |
-| 2 | 0x183A | (empty/padding) |
-| 3 | 0x1844 | Walkmesh / collision data |
-| 4 | 0x2054 | Tile map |
-| 5 | 0x22B4 | Encounter table |
+| 2 | 0x183A | **MODEL LOADER** — ⚠ the original "(empty/padding)" label was WRONG (corrected 2026-07-13 via the md1stin live dump, where section 2 held all 10 model entries and the walk matched FIELD_N_MODELS exactly). Format: u16 blank / u16 nModels / u16 scale header, then per model: u16-len-prefixed descriptive .char name ("md1stinshinra_hei.char"), u16 unknown, char[8] HRC, char[4] ASCII scale, u16 nAnims, 30-byte light block, nAnims × (u16 len + name + u16). **Entry order = model load order = field_event_data array order** — entry i names model i (v2.16) |
+| 3 | 0x1844 | Walkmesh / collision data *(June content guess — unverified)* |
+| 4 | 0x2054 | Tile map *(June content guess — unverified)* |
+| 5 | 0x22B4 | Encounter table *(June content guess — unverified)* |
 | 6 | 0x43B0 | (empty) |
-| 7 | 0x43E4 | **Background** ("blackb..." — background layer data) |
-| 8 | 0x46CC | Triggers |
+| 7 | 0x43E4 | Triggers *(md1stin dump: raw section 7 begins with the field name, exactly like the parsed trigger header — the June "Background" label belonged here)* |
+| 8 | 0x46CC | Background *(md1stin dump: section 8 = 385KB starting "PALETTE...BACK")* |
 
 There is **no separate text section** in this field file. The dialog strings live at the end of section 0,
 after all entity bytecodes. `field_text_box_window_create_631586` reads the text from within section 0
@@ -676,6 +676,26 @@ position jump between fields can't read as movement.
 
 **USER PLAY-TEST CONFIRMED 2026-07-13** (after v2.15.2): categories,
 counts, People browsing, and the wandering cue all working as intended.
+
+### v2.16 (2026-07-13): Model names + Save points category
+
+The pathfinder now names people from the field file's MODEL LOADER section
+(raw section index 2 — the June §5 dump had mislabeled it "(empty)"; the
+md1stin live dump decoded the full format, see §5). The .char entries carry
+DESCRIPTIVE developer names that strip to speakable labels: "main ballet"
+(Barret), "shinra hei", "midgal avawoman", "shinra guard"... Duplicates get
+slot-order ordinals ("shinra guard", "shinra guard 2", "shinra guard 3" —
+same idea as the battle MP A/B letters). Parse failure falls back to
+"Person N". `FieldModelLabel()` in proxy.cpp walks the section with every
+step bounds-checked against its size prefix; the walk was live-verified
+model-for-model against md1stin (ff7_field_models_verify.py: 10/10 labels
+clean, walk ended exactly at the section boundary).
+
+Fourth category **Save points**: a model whose label contains "save" is
+classified as a save point (named "Save point", excluded from People).
+⚠ HEURISTIC until the player reaches the first real save point — the
+naming convention is expected from the dev-name pattern but not yet
+observed; the debug log prints every model's label for confirmation.
 
 **v2.15.2 — two play-test bug fixes** (same day):
 1. character_id naming REMOVED: an ordinary reactor NPC announced as

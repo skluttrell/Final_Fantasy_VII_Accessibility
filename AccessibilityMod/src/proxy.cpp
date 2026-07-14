@@ -2253,13 +2253,122 @@ static const wchar_t* DpadSectorName(float deg)
     return kSectors[sector];
 }
 
-// One browsable destination: a gateway/exit (line) or a person (point,
-// stored as a degenerate line so the distance math is shared).
+// One browsable destination: a gateway/exit (line) or a person/save point
+// (point, stored as a degenerate line so the distance math is shared).
 struct NavDest {
-    wchar_t name[24];      // spoken name, e.g. "Exit 2" / "Person 3"
+    wchar_t name[32];      // spoken name, e.g. "Exit 2" / "shinra guard 3"
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
     int     model_slot;    // field model index for people; -1 for exits
 };
+
+// ---------------------------------------------------------------------------
+// Field model label from the raw MODEL LOADER section (v2.16).
+//
+// Walks section 2 of the field file buffer (format decoded live 2026-07-13,
+// see ff7_addresses.h) to the requested model index and converts its .char
+// name into a speakable label: "md1stinshinra_hei.char" -> "shinra hei"
+// (strip the current field-name prefix and the ".char" suffix, lowercase,
+// underscores to spaces). Every step is bounds-checked against the
+// section's size prefix — a torn buffer mid field-transition returns false
+// (callers fall back to "Person N") rather than reading garbage.
+// ---------------------------------------------------------------------------
+static bool FieldModelLabel(int model_idx, const char* field_name,
+                            std::wstring& out)
+{
+    const uint32_t buf = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_FILE_BUFFER);
+    if (buf < 0x401000)
+        return false;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(reinterpret_cast<const void*>(buf), &mbi, sizeof(mbi)) == 0 ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return false;
+
+    const uint32_t sec_off = *reinterpret_cast<const uint32_t*>(
+        buf + FF7Addr::FIELD_SECTION_TABLE_OFF +
+        FF7Addr::FIELD_MODEL_SECTION_INDEX * 4);
+    if (sec_off < FF7Addr::FIELD_SECTION_TABLE_OFF || sec_off > 0x200000)
+        return false;
+    const uint8_t* sec = reinterpret_cast<const uint8_t*>(buf + sec_off);
+    const uint32_t sec_size = *reinterpret_cast<const uint32_t*>(sec);
+    if (sec_size < 8 || sec_size > 0x10000)
+        return false;
+    const uint8_t* p   = sec + 4;
+    const uint8_t* end = p + sec_size;
+    if (VirtualQuery(end - 1, &mbi, sizeof(mbi)) == 0 ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return false;
+
+    const auto rd16 = [](const uint8_t* q) {
+        return static_cast<uint16_t>(q[0] | (q[1] << 8));
+    };
+    const uint16_t n_models = rd16(p + 2);
+    if (n_models > 64 || model_idx >= static_cast<int>(n_models))
+        return false;
+    p += 6;
+
+    for (int m = 0; m < static_cast<int>(n_models); ++m) {
+        if (p + 2 > end) return false;
+        const uint16_t nlen = rd16(p);
+        p += 2;
+        if (nlen == 0 || nlen > 64 || p + nlen > end)
+            return false;
+
+        if (m == model_idx) {
+            // Build the label: ASCII only, lowercase, strip field-name
+            // prefix and ".char" suffix, underscores become spaces.
+            char raw[65] = {};
+            memcpy(raw, p, nlen);
+            for (char& c : raw) {
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                else if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
+            }
+            size_t len = strlen(raw);
+            if (len > 5 && memcmp(raw + len - 5, ".char", 5) == 0) {
+                raw[len - 5] = '\0';
+                len -= 5;
+            }
+            if (field_name && field_name[0]) {
+                char fn[16] = {};
+                for (size_t i = 0; i < 9 && field_name[i]; ++i)
+                    fn[i] = (field_name[i] >= 'A' && field_name[i] <= 'Z')
+                        ? static_cast<char>(field_name[i] - 'A' + 'a')
+                        : field_name[i];
+                const size_t fl = strlen(fn);
+                if (fl > 0 && len > fl && memcmp(raw, fn, fl) == 0) {
+                    memmove(raw, raw + fl, len - fl + 1);
+                    len -= fl;
+                }
+            }
+            out.clear();
+            for (size_t i = 0; raw[i]; ++i)
+                out += (raw[i] == '_') ? L' ' : static_cast<wchar_t>(raw[i]);
+            while (!out.empty() && out.front() == L' ')
+                out.erase(out.begin());
+            while (!out.empty() && out.back() == L' ')
+                out.pop_back();
+            return !out.empty();
+        }
+
+        p += nlen;
+        p += 2 + 8 + 4;               // unknown, HRC name, scale string
+        if (p + 2 > end) return false;
+        const uint16_t nanim = rd16(p);
+        p += 2;
+        if (nanim > 64) return false;
+        p += FF7Addr::FMODEL_LIGHT_BLOCK_SIZE;
+        for (uint16_t a = 0; a < nanim; ++a) {
+            if (p + 2 > end) return false;
+            const uint16_t alen = rd16(p);
+            p += 2;
+            if (alen > 64 || p + alen + 2 > end) return false;
+            p += alen + 2;            // name + trailing u16
+        }
+    }
+    return false;
+}
 
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
@@ -2280,8 +2389,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // Browser state. Selection and category persist while the player stays
     // on one field (opening the menu or fighting a battle does NOT reset
     // them); a field change resets both.
-    static const wchar_t* const kCategoryNames[] = { L"All", L"Exits", L"People" };
-    constexpr int kCategoryCount = 3;
+    static const wchar_t* const kCategoryNames[] = {
+        L"All", L"Exits", L"People", L"Save points"
+    };
+    constexpr int kCategoryCount = 4;
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
@@ -2499,7 +2610,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // arriving from All, "Exits, 6" when arriving from People — the
         // reported direction-dependent numbers). Category/field mutations
         // now happen first and the list is built for the NEW state.
-        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2 };
+        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3 };
 
         // Field change invalidates selection and category.
         if (field_id != nav_field_id) {
@@ -2552,21 +2663,25 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
         }
 
-        // People (v2.15): every non-player model standing on the walkmesh.
-        // A model is stored as a degenerate line (both vertices = its
-        // position) so the shared nearest-point math needs no special case.
-        // Everyone is "Person N" numbered by MODEL SLOT (stable per field —
-        // a filtered-out model does not shift its neighbors' numbers).
-        // Off-mesh models (triangle_id < 0: hidden, despawned, or
-        // scripted-away) are skipped.
+        // People + Save points (v2.15/v2.16): every non-player model
+        // standing on the walkmesh. A model is stored as a degenerate line
+        // (both vertices = its position) so the shared nearest-point math
+        // needs no special case. Off-mesh models (triangle_id < 0: hidden,
+        // despawned, or scripted-away) are skipped.
         //
-        // v2.15.2: the character_id (+0x6C) naming idea was REMOVED after
-        // live testing — an ordinary NPC announced as "Red XIII" in the
-        // first reactor (long before that character joins), so the field
-        // holds 0-8 values for regular NPCs too and is NOT a party-
-        // membership indicator. It stays in the debug log for future
-        // investigation; naming needs a validated signal (see TODO.txt).
-        if (category == CAT_ALL || category == CAT_PEOPLE) {
+        // NAMES (v2.16): the raw model-loader section supplies each model's
+        // descriptive .char label ("shinra hei", "ballet") via
+        // FieldModelLabel; duplicates get " 2"/" 3" ordinals in slot order
+        // (like the battle "MP A"/"MP B" letters). Parse failure falls back
+        // to "Person N" by model slot. A label containing "save" classifies
+        // the model as a SAVE POINT — its own category, named "Save point"
+        // — a HEURISTIC until the first real save-point field confirms the
+        // dev naming convention (expected; the .char names seen so far are
+        // developer role names). v2.15.2 note kept for history: the
+        // character_id (+0x6C) naming idea was live-DISPROVED (an NPC read
+        // as "Red XIII") — never name from that field.
+        if (category == CAT_ALL || category == CAT_PEOPLE ||
+            category == CAT_SAVE) {
             // The array span was not fully validated above (only the
             // player's element) — probe the last model's element too before
             // walking all of them.
@@ -2577,6 +2692,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                              &mbi, sizeof(mbi)) != 0 &&
                 mbi.State == MEM_COMMIT &&
                 !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+
+            // Pass 1: eligibility, positions, labels, save classification.
+            bool     eligible[32] = {};
+            bool     is_save[32]  = {};
+            int16_t  ex[32], ey[32];
+            wchar_t  labels[32][24] = {};
             for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
                 if (m == pmid)
                     continue;
@@ -2586,31 +2707,76 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     me + FF7Addr::FIELD_EVENT_MODEL_POS);
                 const int16_t tri = *reinterpret_cast<const int16_t*>(
                     me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
-                const int16_t char_id = *reinterpret_cast<const int16_t*>(
-                    me + FF7Addr::FIELD_EVENT_CHARACTER_ID);
                 const int32_t mx = mpos[0] >> 12;
                 const int32_t my = mpos[1] >> 12;
 
+                std::wstring lbl;
+                const bool have_lbl = FieldModelLabel(m, fname, lbl);
+
                 if (Config::Get().debug_log) {
-                    char dbg[160];
+                    char dbg[192];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] NAV person m=%u tri=%d char=%d "
-                        "ent=%u talk=%d pos=(%ld,%ld)",
-                        m, tri, char_id,
+                        "[FF7Access] NAV person m=%u tri=%d ent=%u talk=%d "
+                        "pos=(%ld,%ld) label='%ls'",
+                        m, tri,
                         *reinterpret_cast<const uint8_t*>(me + FF7Addr::FIELD_EVENT_ENTITY_ID),
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_TALK_RADIUS),
-                        static_cast<long>(mx), static_cast<long>(my));
+                        static_cast<long>(mx), static_cast<long>(my),
+                        have_lbl ? lbl.c_str() : L"(none)");
                     Log::Write(dbg);
                 }
 
                 if (tri < 0)
-                    continue;   // off the walkmesh = not a reachable person
+                    continue;   // off the walkmesh = not a reachable target
+
+                eligible[m] = true;
+                ex[m] = static_cast<int16_t>(mx);
+                ey[m] = static_cast<int16_t>(my);
+                if (have_lbl) {
+                    wcsncpy_s(labels[m], lbl.c_str(), _TRUNCATE);
+                    is_save[m] = (lbl.find(L"save") != std::wstring::npos);
+                }
+            }
+
+            // Pass 2: duplicate-label counts (so "shinra guard" ×3 becomes
+            // "shinra guard", "shinra guard 2", "shinra guard 3").
+            // Pass 3: emit destinations in slot order per category rules.
+            for (uint16_t m = 0; m < 32; ++m) {
+                if (!eligible[m])
+                    continue;
+                const bool sv = is_save[m];
+                if (sv  && !(category == CAT_ALL || category == CAT_SAVE))
+                    continue;
+                if (!sv && !(category == CAT_ALL || category == CAT_PEOPLE))
+                    continue;
+
+                // Ordinal among same-label models before this slot.
+                int ordinal = 1, total = 0;
+                if (labels[m][0]) {
+                    for (uint16_t k = 0; k < 32; ++k) {
+                        if (!eligible[k] || !labels[k][0])
+                            continue;
+                        if (wcscmp(labels[k], labels[m]) == 0) {
+                            ++total;
+                            if (k < m) ++ordinal;
+                        }
+                    }
+                }
 
                 NavDest& d = dests[n_dests++];
-                _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                             L"Person %u", m + 1u);
-                d.line_x1 = d.line_x2 = static_cast<int16_t>(mx);
-                d.line_y1 = d.line_y2 = static_cast<int16_t>(my);
+                const wchar_t* base =
+                    sv ? L"Save point" : (labels[m][0] ? labels[m] : nullptr);
+                if (base && total > 1)
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls %d", base, ordinal);
+                else if (base)
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls", base);
+                else
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"Person %u", m + 1u);
+                d.line_x1 = d.line_x2 = ex[m];
+                d.line_y1 = d.line_y2 = ey[m];
                 d.model_slot = m;
             }
         }
