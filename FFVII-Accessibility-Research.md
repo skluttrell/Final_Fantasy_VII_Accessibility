@@ -679,6 +679,10 @@ counts, People browsing, and the wandering cue all working as intended.
 
 ### v2.16 (2026-07-13): Model names + Save points category
 
+**USER PLAY-TEST CONFIRMED 2026-07-14: the model-loader people names are
+correct in-game.** The Save points category remains heuristic-only — the
+player has not yet reached a field with a real save point (see TODO).
+
 The pathfinder now names people from the field file's MODEL LOADER section
 (raw section index 2 — the June §5 dump had mislabeled it "(empty)"; the
 md1stin live dump decoded the full format, see §5). The .char entries carry

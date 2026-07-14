@@ -208,7 +208,8 @@ passage. Possible detection routes when this gets annoying:
 ----------------------------------------------------------------------
 DONE 2026-07-13: people are named from the model loader section's
 descriptive .char names ("shinra hei", "main ballet"), duplicates get
-slot-order ordinals. Residuals:
+slot-order ordinals. PLAY-TEST CONFIRMED 2026-07-14 (names correct
+in-game). Residuals:
   - Save-point detection is a HEURISTIC (label contains "save") until the
     player reaches the first real save point — confirm from the debug log
     or a J/L pass there, then harden (exact label match if needed).
