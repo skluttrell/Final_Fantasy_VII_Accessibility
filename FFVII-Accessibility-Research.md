@@ -164,6 +164,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
 | `FIELD_EVENT_DATA_PTR` | `0x00CC0B60` | → per-model array, stride 0x88: model_pos 3×i32 at +0x0C, movement_speed u16 at +0x76. Observed target: static 0xCC1670 |
 | `FIELD_PLAYER_MODEL_ID` | `0x00CC162C` | u16 player index into event-data array (player ≠ always model 0) |
+| `FIELD_ANIM_DATA_PTR` | `0x00CFF738` | → field_animation_data array, stride 0x190 per model; kawai_opcode u8 at +0x21. Doubly confirmed 2026-07-14 (FFNx ff7.h address-in-comment + our LADER-handler disasm reads it with the same stride). Used by the chest-state investigation; not read by the shipped mod |
 | `FIELD_N_MODELS` | `0x00CFF73E` | u16 model count on current field |
 | `FIELD_MOVIE_PLAYING` | `0x00CC1638` | u16 nonzero while movie plays on field. FFNx movie test: `word && !BGMOVIE_flag` |
 | `BATTLE_MENU_STATE` | `0x0091EF9C` | u16, current battle menu widget — **LIVE-CONFIRMED 2026-07-12** (two runs, logs battle_menu_live_20260712_2136/2144): **1=command menu, 6=magic list, 24=limit select, 0=waiting/ATB AND post-Confirm targeting (with PREV=1), 0xFFFF=menu closed/turn executing**. 3=Change-row dispatch (fired on Right press). Statics: 5=item list (global inventory table), 7=summon list, 2=Defend dispatch — not yet crossed live. ⚠ targeting does NOT use state 19 in the normal flow |
@@ -855,7 +856,62 @@ all three states — never use them. The mod appends ", opened" AFTER the
 ordinal ("Chest 2, opened") so chest numbering stays stable when a chest
 opens (identity-stability rule). ⚠ Confirmed on the metal variant;
 wood/glow variants share the script mechanism, expected identical
-(TODO.txt watch item).
+(TODO.txt watch item). v2.18.2 tightened the test to lastFrame != 0 AND
+currentFrame == lastFrame<<4 (held at final frame) — see below.
+
+### v2.18.2 (2026-07-14): code-review fixes (8 angles, 21 verified findings)
+
+A full /code-review pass over v2.17–v2.18.1 (8 finder angles, per-cluster
+verification) surfaced 2 CONFIRMED behavior bugs, 3 PLAUSIBLE risks, and a
+set of verified cleanup items — all fixed:
+
+1. **Ordinal stability across despawns (CONFIRMED)**: duplicate ordinals
+   were counted over currently-eligible models only, so collecting "Item"
+   silently renamed the surviving "Item 2" to "Item". Labels/class are now
+   assigned to ALL labeled models and ordinals count eligible-or-not, so a
+   despawned pickup keeps reserving its ordinal. Corollary (accepted): a
+   never-on-mesh labeled model can make a field list "guard 2" with no
+   "guard" — slot order IS the identity.
+2. **Trigger duplicate names (CONFIRMED)**: two same-named lines spoke
+   identically. The trigger build now gathers first, then emits with the
+   same ordinal scheme as people/items ("ev1", "ev1 2").
+3. **Entity-name read hardening (PLAUSIBLE crash risk)**: the old
+   FieldEntityName probed only the script base page and name+7. Split into
+   FieldEntityNameTable (resolves + span-validates header AND the whole
+   name table ONCE per build — also the review's efficiency fix) +
+   EntityNameFromTable. New shared IsReadableSpan() walks every region of
+   a span; it replaced the ~9 inline single-byte VirtualQuery probes in
+   the nav path (wall-bump/battle threads untouched).
+4. **Chest false-open narrowing (PLAUSIBLE)**: is_open now requires
+   lastFrame != 0 AND currentFrame == lastFrame<<4 (lid HELD at final
+   frame — true in both confirmed open states), so a non-lid animation
+   that returns to rest can't read as opened; residual risk flips to a
+   missed "opened" (safer direction).
+5. **Cross-field stale-name guard (PLAUSIBLE)**: a line is only NAMED when
+   the engine's own entity→slot map (0xCBF600) confirms the slot belongs
+   to that entity; mismatches (mid-transition staleness, or an entity that
+   re-declared its line) fall back to "Trigger N" instead of a
+   plausible-but-wrong dev name. Stale geometry for one keypress remains
+   the accepted v2.17 tradeoff.
+6. **Classification altitude (CONFIRMED)**: one ClassifyModelLabel()
+   returns {class enum, friendly name}; CategoryForModelClass() makes the
+   emit filter a single comparison (the old sv/it boolean chain and the
+   wcscmp(friendly, L"Chest") state-on-display-string coupling are gone).
+   Sanitize policy unified: both name readers now REJECT non-ASCII data
+   (FieldModelLabel used to speak a truncated prefix).
+7. **Catalog evidence machine-checked (CONFIRMED)**: the flevel catalog
+   now validates its parse against the 10 live-dumped md1stin labels
+   (exact order) and asserts the shipped classifier substrings
+   (save/trb/mtra/potion/sparkle/key) appear ONLY in fieldbg props,
+   exiting nonzero on failure. Re-run 2026-07-14: both checks PASS on the
+   real archive. Dead code removed from the investigation scripts (unused
+   OPEN dict, summary dict, md1 placeholder, tautological condition) and
+   all five now restore stdout/close the log via atexit (script-logging
+   rule compliance).
+8. **Docs-rule omissions**: 0xCFF738 added to §4 + §14 field-statics
+   cluster; LINE/LINON/SLINE/LADER handlers added to §14's code table;
+   technique ranking updated (offline data catalog + opcode-handler
+   disasm entered at ranks 2–3).
 
 ---
 
@@ -1193,6 +1249,8 @@ Proven payoffs of cluster reasoning so far:
 | `0x6E6291` | battle_update_targeting_info (FFNx) | +0x684 → targeting_actor_id 0xDC3C98 |
 | `0x6D72E9` / `0x6D1CC0` | kernel2 request consumer / dispatcher | real CALL to 0x41963C at 0x6D72C6 |
 | `0x6E97E0` | build_dialog_window | |
+| `0x6111D8` / `0x6115AD` / `0x6114D0` | opcode LINE / LINON / SLINE handlers (table[0xD0]/[0xD1]/[0xD3]) | all three write FIELD_LINE_ARRAY 0xCC1F70 — the triple agreement that validated the v2.17 line-array layout; LINE also writes the entity→slot map 0xCBF600 and count 0xCC088C (ff7_line_triggers_static.py, 2026-07-14) |
+| `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |
 | `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
 | `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
 | `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
@@ -1299,6 +1357,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
 | `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | → field_trigger_header (field name, control_direction, gateways[12]) — the v2.14 pathfinder source; see §4. control_direction = world bearing of screen-DOWN (live-calibrated 2026-07-13); screen angle = world + ctrl − 180 |
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file |
+| `0xCFF738` | FIELD_ANIM_DATA_PTR | → field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
 
 ### Savemap: 0xDBFD38 – ≈0xDC0E2C (0x10F4 bytes)
@@ -1342,7 +1401,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDD46FC` | NAME_ENTRY_ACTIVE | 1 while naming screen open (v2.8 gate, with GAME_MODE==6) |
 | `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
 
-### Discovery techniques ranked by success rate (as of 2026-07-12)
+### Discovery techniques ranked by success rate (as of 2026-07-14)
 
 1. **Static chain resolution against the exe on disk** (v2.6; battle menu
    cursor 2026-07-12): replicate FFNx `ff7_data.h` chains on the file image;
@@ -1353,18 +1412,41 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
    "written by input handlers" with "read by draw code" — that intersection
    is tiny and cursor-shaped even when no single +-1 instruction exists
    (the mutation lived in a shared helper behind a struct pointer).
-2. **PSX decomp struct matching** (v2.6 UC lock): once a PC struct base is known,
+2. **Offline game-data catalog from the install's own archives** (NEW
+   2026-07-14, v2.18): parse flevel.lgp (or any LGP) directly — LGP TOC +
+   LZS decompress + the already-decoded section format — and derive facts
+   from the COMPLETE dataset instead of play-collected samples. One run
+   catalogued every model label in all 720 fields, turned the save-point
+   heuristic into a game-wide certainty, and grounded the entire Items
+   classification. Zero user effort, zero live process. Use whenever the
+   question is "what does the game's DATA say" rather than "where does the
+   ENGINE keep it"; validate the parser against one live-dumped reference
+   field (md1stin) before trusting it.
+3. **Opcode-handler disassembly via the opcode table** (NEW 2026-07-14,
+   v2.17): the mod's own Resolve() chain locates execute_opcode_table on
+   disk; table[opcode] + capstone gives the handler for ANY field script
+   opcode, and cross-agreement between related handlers (LINE/LINON/SLINE
+   all writing one array) self-validates the find. Cracked the LINE
+   trigger storage in a single pass with no live scanning at all.
+4. **PSX decomp struct matching** (v2.6 UC lock): once a PC struct base is known,
    align it with the PSX decomp's version and lift the PSX field comments.
-3. **Targeted isolate delta scan** (MENU_CURSOR, CONFIG_ROW, SOUND_CURSOR,
+5. **Targeted isolate delta scan** (MENU_CURSOR, CONFIG_ROW, SOUND_CURSOR,
    NAME_ENTRY_ROW/COL/BUFFER): two snapshot phases inside the same frozen
    context, subtract. Succeeded again v2.8 — and its validation phase
-   correctly EXPOSED a bad external anchor (see item 7).
-4. **Live change-monitor with the player narrating** (GAME_MODE values): passive
+   correctly EXPOSED a bad external anchor (see item 9).
+6. **Live change-monitor with the player narrating** (GAME_MODE values): passive
    500ms change-logger, no staged phases; good for enum-value discovery.
-5. **Full-heap delta scans**: FAILED at scale (battle cursor, ~1.5M bytes of
+   The v2.18.1 chest-state variant (full-struct diff against a stand-still
+   baseline that auto-excludes churning bytes, then a state-matrix check
+   across re-entry) found the lid signal in one session — but LESSON: a
+   state-matrix check is only valid when the precondition is observed in
+   the CURRENT game session; the first re-entry run was silently invalidated
+   by a game restart between runs (pid changed, "open" reference read
+   closed). Guard the precondition in-script before prompting the player.
+7. **Full-heap delta scans**: FAILED at scale (battle cursor, ~1.5M bytes of
    background churn per quiet window). Use only inside frozen contexts.
-6. **Hardware-breakpoint debugging**: game self-terminates (anti-debug). Never retry.
-7. **Third-party mod hext-patch labels**: UNRELIABLE (v2.8). The Echo mod's
+8. **Hardware-breakpoint debugging**: game self-terminates (anti-debug). Never retry.
+9. **Third-party mod hext-patch labels**: UNRELIABLE (v2.8). The Echo mod's
    '01 - Disable Name Change.txt' labeled 0xDD46F8 "name-entry cursor column";
    live scanning proved it's the character-being-named index — it never changes
    during grid navigation. The ADDRESS a patch touches is a useful region hint

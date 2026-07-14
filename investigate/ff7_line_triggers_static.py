@@ -68,6 +68,16 @@ def _tee(s):
     _log_file.write(s)
     _log_file.flush()
 sys.stdout.write = _tee
+# Always restore stdout and close the log, whatever the exit path (rule:
+# feedback_investigation_scripts.md; atexit runs on exceptions and Ctrl+C).
+import atexit
+def _restore_stdout():
+    sys.stdout.write = _orig_write
+    try:
+        _log_file.close()
+    except Exception:
+        pass
+atexit.register(_restore_stdout)
 print(f"Output saving to: {_log_path}\n")
 
 # -- locate the exe on disk ------------------------------------------------------
@@ -178,7 +188,7 @@ TARGETS = [
 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
 md.detail = True
 
-def disasm_handler(va, name, max_bytes=0x600):
+def disasm_handler(va, max_bytes=0x600):
     """Linear disassembly from va, extending past RETs that have forward
     jumps beyond them (compact handler heuristic). Returns (lines, writes,
     reads, indexed) where writes/reads are {abs_addr: [va,...]} for absolute
@@ -218,7 +228,6 @@ def disasm_handler(va, name, max_bytes=0x600):
             break
     return lines, writes, reads, indexed
 
-summary = {}
 for opc, name, desc in TARGETS:
     va = entries[opc]
     print(f"{'='*74}")
@@ -227,7 +236,7 @@ for opc, name, desc in TARGETS:
     if not (CODE_LO <= va <= CODE_HI):
         print("  ** handler address out of exe range -- skipped **\n")
         continue
-    lines, writes, reads, indexed = disasm_handler(va, name)
+    lines, writes, reads, indexed = disasm_handler(va)
     for ln in lines:
         print(ln)
     print(f"\n  -- {name} summary --")
@@ -247,7 +256,6 @@ for opc, name, desc in TARGETS:
         print("  (no absolute stores found -- storage is behind a register-held"
               " pointer; inspect the listing for the pointer's source global)")
     print()
-    summary[name] = (writes, indexed)
 
 print(f"{'='*74}")
 print("NEXT STEP: intersect LINE's write targets with LINON's -- the shared")

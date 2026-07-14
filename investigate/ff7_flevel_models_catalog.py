@@ -54,6 +54,16 @@ def _tee(s):
     _log_file.write(s)
     _log_file.flush()
 sys.stdout.write = _tee
+# Always restore stdout and close the log, whatever the exit path (rule:
+# feedback_investigation_scripts.md; atexit runs on exceptions and Ctrl+C).
+import atexit
+def _restore_stdout():
+    sys.stdout.write = _orig_write
+    try:
+        _log_file.close()
+    except Exception:
+        pass
+atexit.register(_restore_stdout)
 print(f"Output saving to: {_log_path}\n")
 
 # -- locate flevel.lgp -----------------------------------------------------------
@@ -182,6 +192,7 @@ def parse_field_models(payload, field_name):
 label_count = defaultdict(int)          # label -> total occurrences
 label_hrcs = defaultdict(set)           # label -> HRC files seen
 label_fields = defaultdict(list)        # label -> sample fields
+md1stin_labels = None                   # exact parse of the reference field
 parsed = skipped = 0
 
 for fname, foff in toc:
@@ -200,6 +211,8 @@ for fname, foff in toc:
         skipped += 1
         continue
     parsed += 1
+    if fname == 'md1stin':
+        md1stin_labels = [lbl for lbl, _ in models]
     for label, hrc in models:
         label_count[label] += 1
         label_hrcs[label].add(hrc)
@@ -208,14 +221,22 @@ for fname, foff in toc:
 
 print(f"Parsed {parsed} field files, skipped {skipped} non-field/unparsable.\n")
 
-# -- validation: md1stin ----------------------------------------------------------
-print("VALIDATION -- md1stin labels (expect the 10 from the v2.16 live dump):")
-md1 = [(lbl, h) for lbl in label_fields for h in ()  # placeholder
-       ]
-found_md1 = [lbl for lbl, flds in label_fields.items() if 'md1stin' in flds]
-for lbl in sorted(found_md1):
-    print(f"  {lbl!r}")
-print()
+# -- validation: md1stin against the v2.16 LIVE dump ------------------------------
+# ff7_field_models_verify.py (field_models_verify_20260713_210245.log) read
+# these 10 labels, in this order, from the running game's memory. The
+# catalog's offline LGP+LZS+section walk must reproduce them exactly or the
+# parser cannot be trusted (2026-07-14 review: the original 'validation'
+# printed a sample and always passed).
+EXPECTED_MD1STIN = [
+    'main n cloud', 'main ballet', 'shinra hei', 'shinra hei',
+    'midgal avaman', 'midgal avawoman', 'midgal avafat',
+    'shinra guard', 'shinra guard', 'shinra guard',
+]
+validation_ok = (md1stin_labels == EXPECTED_MD1STIN)
+print("VALIDATION -- md1stin vs the v2.16 live dump:")
+print(f"  parsed : {md1stin_labels}")
+print(f"  expect : {EXPECTED_MD1STIN}")
+print(f"  {'PASS' if validation_ok else '** FAIL -- do not trust this catalog **'}\n")
 
 # -- full catalog -------------------------------------------------------------------
 print(f"FULL CATALOG ({len(label_count)} distinct labels, by frequency):")
@@ -228,7 +249,8 @@ for lbl, cnt in sorted(label_count.items(), key=lambda kv: -kv[1]):
 KEYWORDS = ["save", "sebu",                      # save points
             "box", "takara", "tkr", "treasure",  # chests
             "potion", "posyon", "poshon", "item",
-            "materia", "mat ", "bin", "bottle", "kusuri"]
+            "materia", "mat ", "bin", "bottle", "kusuri",
+            "trb", "trbox", "mtra", "sparkle", "key"]   # shipped substrings
 print("\nKEYWORD SCAN (item/save candidates):")
 for kw in KEYWORDS:
     hits = [lbl for lbl in label_count if kw in lbl]
@@ -239,5 +261,26 @@ for kw in KEYWORDS:
     else:
         print(f"  '{kw}': no matches")
 
+# -- shipped-classifier uniqueness assertion (2026-07-14 review finding) -----------
+# The mod's ClassifyModelLabel (proxy.cpp) matches these substrings gated on
+# 'fieldbg'. Its correctness claim — no label in the game carries one of
+# these substrings WITHOUT being the corresponding item prop — must be
+# machine-checked here, not eyeballed off the full listing: any label that
+# contains a shipped substring but lacks 'fieldbg' would be a model the
+# classifier misfiles the moment such a field is visited.
+SHIPPED = ["save", "trb", "mtra", "potion", "sparkle", "key"]
+print("\nSHIPPED-CLASSIFIER UNIQUENESS CHECK:")
+uniqueness_ok = True
+for kw in SHIPPED:
+    outside = [lbl for lbl in label_count
+               if kw in lbl and 'fieldbg' not in lbl]
+    if outside:
+        uniqueness_ok = False
+        print(f"  '{kw}': ** {len(outside)} label(s) OUTSIDE fieldbg props: "
+              + '; '.join(repr(l) for l in sorted(outside)))
+    else:
+        print(f"  '{kw}': only in fieldbg props  OK")
+print(f"  {'PASS' if uniqueness_ok else '** FAIL -- classifier substrings are NOT unique **'}")
+
 print(f"\nLog saved to: {_log_path}")
-_log_file.close()
+sys.exit(0 if (validation_ok and uniqueness_ok) else 1)

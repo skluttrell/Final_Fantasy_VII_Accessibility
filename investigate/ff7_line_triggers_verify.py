@@ -46,6 +46,16 @@ def _tee(s):
     _log_file.write(s)
     _log_file.flush()
 sys.stdout.write = _tee
+# Always restore stdout and close the log, whatever the exit path (rule:
+# feedback_investigation_scripts.md; atexit runs on exceptions and Ctrl+C).
+import atexit
+def _restore_stdout():
+    sys.stdout.write = _orig_write
+    try:
+        _log_file.close()
+    except Exception:
+        pass
+atexit.register(_restore_stdout)
 print(f"Output saving to: {_log_path}\n")
 
 # -- speech + beep cues (player is blind; never require reading the console) ----

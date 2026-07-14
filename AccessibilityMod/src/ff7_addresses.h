@@ -1137,6 +1137,14 @@ constexpr uint32_t FLINE_STRIDE           = 0x18;
 constexpr uint32_t FLINE_MAX              = 32;
 constexpr uint32_t FLINE_OFF_ENABLED      = 0x0C;        // u8
 constexpr uint32_t FLINE_OFF_ENTITY       = 0x0D;        // u8
+// Per-entity line-slot map, u8[entity_id] = index into FIELD_LINE_ARRAY.
+// Written by the LINE handler together with the array entry; the mod uses
+// it as a consistency check (map[entity] == slot) before trusting a
+// line's entity id for NAMING — a mismatch means the entry is stale
+// (mid field-transition) or superseded (entity re-declared its line), so
+// the line speaks as "Trigger N" instead of a possibly-wrong dev name
+// (v2.18.2, from the 2026-07-14 code review).
+constexpr uint32_t FIELD_ENTITY_LINE_SLOT = 0x00CBF600;
 constexpr uint32_t FSCRIPT_NENTITIES_OFF  = 2;           // u8 in section-0 header
 constexpr uint32_t FSCRIPT_ENTITY_NAMES_OFF = 0x20;      // char[8] per entity
 
@@ -1156,8 +1164,12 @@ constexpr uint32_t FSCRIPT_ENTITY_NAMES_OFF = 0x20;      // char[8] per entity
 //   just opened:     currentFrame ramps, lastFrame=0x1D
 //   after leave+return SAME session: currentFrame=0x1D0, lastFrame=0x1D
 //     -> the field init script RE-POSES looted chests open from the
-//        savemap event flags, so lastFrame != 0 also detects chests
-//        opened in earlier sessions. THE SIGNAL: lastFrame != 0 = opened.
+//        savemap event flags, so the signal also detects chests opened
+//        in earlier sessions. THE SIGNAL (tightened v2.18.2): opened =
+//        lastFrame != 0 AND currentFrame == lastFrame << 4 (animation
+//        HELD at its final frame — true in both confirmed open states;
+//        the conjunct keeps a non-lid animation that returns to rest
+//        from reading as opened).
 // The glow-effect bytes (apply_kawai +0x00, anim kawai_opcode +0x21) are
 // NOT usable: they read differently in all three states (1/0x0D closed,
 // 2/0xFF just-opened, 0/0x00 after reload).
@@ -1166,7 +1178,13 @@ constexpr uint32_t FSCRIPT_ENTITY_NAMES_OFF = 0x20;      // char[8] per entity
 // another variant confirms (TODO.txt).
 // ---------------------------------------------------------------------------
 
-constexpr uint32_t FIELD_EVENT_LAST_FRAME = 0x6A;  // s16 in field_event_data
+constexpr uint32_t FIELD_EVENT_LAST_FRAME    = 0x6A;  // s16 in field_event_data
+// currentFrame, s16 at +0x68 — subframe units, frame << 4. The v2.18.2
+// opened test requires currentFrame == lastFrame << 4 (animation HELD at
+// its final frame — true in both confirmed open states) so a non-lid
+// animation that returns to rest cannot read as "opened"; residual risk
+// flips to a missed "opened", the safer direction.
+constexpr uint32_t FIELD_EVENT_CURRENT_FRAME = 0x68;
 
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different

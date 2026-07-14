@@ -2271,6 +2271,104 @@ struct NavDest {
 };
 
 // ---------------------------------------------------------------------------
+// Readability probe for an arbitrary byte span (v2.18.2).
+//
+// Replaces the per-site VirtualQuery idiom that had accumulated many inline
+// copies (2026-07-14 code review): walks the regions covering [p, p+len) and
+// requires every one committed and readable — strictly stronger than the
+// old copies, which probed only one or two single bytes of a span and could
+// pass while a MIDDLE page was decommitted (realistic during a field
+// transition, when the game frees one buffer while another stays live).
+// ---------------------------------------------------------------------------
+static bool IsReadableSpan(const void* p, size_t len)
+{
+    const uint8_t* cur = static_cast<const uint8_t*>(p);
+    const uint8_t* const end = cur + len;
+    while (cur < end) {
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQuery(cur, &mbi, sizeof(mbi)) == 0 ||
+            mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            return false;
+        cur = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pathfinder categories and field-model classification (v2.18.2).
+//
+// The Shift+J/L category ring. File-scope so the classifier below can map a
+// model class to its category — previously the enum lived inside the key
+// handler and classification knowledge was spread across three sites (the
+// 2026-07-14 code review's altitude finding).
+// ---------------------------------------------------------------------------
+enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3,
+       CAT_TRIGGERS = 4, CAT_ITEMS = 5 };
+
+// What a field model IS, decided in exactly one place from its dev label.
+enum ModelClass : uint8_t {
+    MC_PERSON = 0,   // any other model — browsable under People
+    MC_SAVE,         // save point icon
+    MC_CHEST,        // treasure box (lid state tracked via lastFrame)
+    MC_ITEM,         // materia orb / pickup bottle / sparkle / key item
+};
+
+// Classify a model's speakable label and pick its spoken base name.
+// Evidence (offline catalog of ALL 720 fields' model labels,
+// ff7_flevel_models_catalog.py, 2026-07-14): the devs prefixed every
+// interactable prop "fieldbg" and named item props consistently — "trb *" =
+// treasure boxes (wood/mety/glow/metb/trbox k), "mtra*" = materia orbs
+// (incl. hmtra/kuromtra), "potion *" = pickup bottles (color variants; the
+// BOTTLE is the visual, the script decides the actual item, hence generic
+// "Item"), "sparkle" = sparkle pickups, "key"/"coralkey" = key items,
+// "saveicn" = save points. No other label in the game contains these
+// substrings, so fieldbg+substring is exact, not heuristic. *friendly
+// stays null for MC_PERSON (callers speak the label itself).
+static ModelClass ClassifyModelLabel(const std::wstring& lbl,
+                                     const wchar_t** friendly)
+{
+    *friendly = nullptr;
+    if (lbl.find(L"save") != std::wstring::npos) {
+        *friendly = L"Save point";
+        return MC_SAVE;
+    }
+    if (lbl.find(L"fieldbg") == std::wstring::npos)
+        return MC_PERSON;
+    if (lbl.find(L"trb") != std::wstring::npos) {
+        *friendly = L"Chest";
+        return MC_CHEST;
+    }
+    if (lbl.find(L"mtra") != std::wstring::npos) {
+        *friendly = L"Materia";
+        return MC_ITEM;
+    }
+    if (lbl.find(L"potion")  != std::wstring::npos ||
+        lbl.find(L"sparkle") != std::wstring::npos) {
+        *friendly = L"Item";
+        return MC_ITEM;
+    }
+    if (lbl.find(L"key") != std::wstring::npos) {
+        *friendly = L"Key";
+        return MC_ITEM;
+    }
+    return MC_PERSON;
+}
+
+// Which category (besides All) a model class browses under. One mapping,
+// so the emit filter is a single comparison that cannot drift out of
+// mutual exclusion as classes are added.
+static int CategoryForModelClass(ModelClass c)
+{
+    switch (c) {
+        case MC_SAVE:  return CAT_SAVE;
+        case MC_CHEST:
+        case MC_ITEM:  return CAT_ITEMS;
+        default:       return CAT_PEOPLE;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Field model label from the raw MODEL LOADER section (v2.16).
 //
 // Walks section 2 of the field file buffer (format decoded live 2026-07-13,
@@ -2288,10 +2386,8 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
         FF7Addr::FIELD_FILE_BUFFER);
     if (buf < 0x401000)
         return false;
-    MEMORY_BASIC_INFORMATION mbi = {};
-    if (VirtualQuery(reinterpret_cast<const void*>(buf), &mbi, sizeof(mbi)) == 0 ||
-        mbi.State != MEM_COMMIT ||
-        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+    if (!IsReadableSpan(reinterpret_cast<const void*>(buf),
+                        FF7Addr::FIELD_SECTION_TABLE_OFF + 9 * 4))
         return false;
 
     const uint32_t sec_off = *reinterpret_cast<const uint32_t*>(
@@ -2300,14 +2396,14 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
     if (sec_off < FF7Addr::FIELD_SECTION_TABLE_OFF || sec_off > 0x200000)
         return false;
     const uint8_t* sec = reinterpret_cast<const uint8_t*>(buf + sec_off);
+    if (!IsReadableSpan(sec, 4))
+        return false;
     const uint32_t sec_size = *reinterpret_cast<const uint32_t*>(sec);
     if (sec_size < 8 || sec_size > 0x10000)
         return false;
     const uint8_t* p   = sec + 4;
     const uint8_t* end = p + sec_size;
-    if (VirtualQuery(end - 1, &mbi, sizeof(mbi)) == 0 ||
-        mbi.State != MEM_COMMIT ||
-        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+    if (!IsReadableSpan(p, sec_size))
         return false;
 
     const auto rd16 = [](const uint8_t* q) {
@@ -2326,13 +2422,20 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
             return false;
 
         if (m == model_idx) {
-            // Build the label: ASCII only, lowercase, strip field-name
-            // prefix and ".char" suffix, underscores become spaces.
+            // Build the label: lowercase, strip field-name prefix and
+            // ".char" suffix, underscores become spaces. Any non-ASCII
+            // byte inside the name means we're reading the wrong data —
+            // REJECT the whole name (callers fall back to "Person N").
+            // Policy unified with the entity-name reader 2026-07-14: this
+            // used to truncate at the first bad byte and speak the prefix,
+            // which could voice a misleading fragment; the 720-field
+            // catalog shows every real label is pure ASCII, so rejection
+            // never fires on genuine data.
             char raw[65] = {};
             memcpy(raw, p, nlen);
             for (char& c : raw) {
                 if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-                else if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
+                else if (c != '\0' && (c < 0x20 || c > 0x7E)) return false;
             }
             size_t len = strlen(raw);
             if (len > 5 && memcmp(raw + len - 5, ".char", 5) == 0) {
@@ -2380,39 +2483,57 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
 }
 
 // ---------------------------------------------------------------------------
-// Script entity dev-name from field-file section 0 (v2.17).
+// Script entity dev-names from field-file section 0 (v2.17, reworked
+// 2026-07-14 after code review).
 //
 // The script section header carries an 8-char ASCII name per entity at
 // +0x20 + id*8 ("cloud", "svisen1", "yubiwa"...) — the same
 // developer-naming trick that labels people (v2.16), applied to the entity
-// that OWNS a LINE trigger zone. Underscores become spaces for speech.
-// Returns false (caller falls back to "Trigger N") when the pointer is
-// torn mid field-transition, the id is out of range, or the name bytes
-// aren't printable ASCII.
+// that OWNS a LINE trigger zone.
+//
+// Split into resolve-once + read-per-entity so the trigger build validates
+// the WHOLE name table span exactly once per keypress instead of
+// re-reading the script pointer and re-probing pages for every line (the
+// review's efficiency finding), and so the validation actually covers
+// every byte that gets read — the old single function probed only the
+// header page and the LAST byte of one name, leaving the nEntities byte
+// and name[0..6] unguarded when they fell on a different page (the
+// review's crash-risk finding).
 // ---------------------------------------------------------------------------
-static bool FieldEntityName(int entity_id, std::wstring& out)
+static bool FieldEntityNameTable(const uint8_t** table_out,
+                                 uint8_t* count_out)
 {
     const uint32_t script = *reinterpret_cast<const volatile uint32_t*>(
         FF7Addr::FIELD_SCRIPT_PTR);
     if (script < 0x401000)
         return false;
-    MEMORY_BASIC_INFORMATION mbi = {};
-    if (VirtualQuery(reinterpret_cast<const void*>(script), &mbi, sizeof(mbi)) == 0 ||
-        mbi.State != MEM_COMMIT ||
-        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+    // Header span covers nEntities at +2 up through the name table start.
+    if (!IsReadableSpan(reinterpret_cast<const void*>(script),
+                        FF7Addr::FSCRIPT_ENTITY_NAMES_OFF))
         return false;
-
-    const uint8_t n_entities = *reinterpret_cast<const uint8_t*>(
+    const uint8_t n = *reinterpret_cast<const uint8_t*>(
         script + FF7Addr::FSCRIPT_NENTITIES_OFF);
+    if (n == 0)
+        return false;
+    const uint8_t* table = reinterpret_cast<const uint8_t*>(
+        script + FF7Addr::FSCRIPT_ENTITY_NAMES_OFF);
+    if (!IsReadableSpan(table, static_cast<size_t>(n) * 8))
+        return false;
+    *table_out = table;
+    *count_out = n;
+    return true;
+}
+
+// Speakable name for one entity from a table validated by the call above.
+// Underscores become spaces. Returns false (caller falls back to
+// "Trigger N") when the id is out of range or the bytes aren't printable
+// ASCII — same reject-garbage policy as FieldModelLabel.
+static bool EntityNameFromTable(const uint8_t* table, uint8_t n_entities,
+                                int entity_id, std::wstring& out)
+{
     if (entity_id < 0 || entity_id >= n_entities)
         return false;
-    const uint8_t* name = reinterpret_cast<const uint8_t*>(
-        script + FF7Addr::FSCRIPT_ENTITY_NAMES_OFF + entity_id * 8);
-    if (VirtualQuery(name + 7, &mbi, sizeof(mbi)) == 0 ||
-        mbi.State != MEM_COMMIT ||
-        (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-        return false;
-
+    const uint8_t* name = table + entity_id * 8;
     out.clear();
     for (int i = 0; i < 8 && name[i] != 0; ++i) {
         if (name[i] < 0x20 || name[i] > 0x7E)
@@ -2505,24 +2626,23 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             continue;
         const uint8_t* elem = reinterpret_cast<const uint8_t*>(
             arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-        MEMORY_BASIC_INFORMATION mbi = {};
-        if (VirtualQuery(elem, &mbi, sizeof(mbi)) == 0 ||
-            mbi.State != MEM_COMMIT ||
-            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        if (!IsReadableSpan(elem, FF7Addr::FIELD_EVENT_DATA_STRIDE))
             continue;
         const int32_t* pos = reinterpret_cast<const int32_t*>(
             elem + FF7Addr::FIELD_EVENT_MODEL_POS);
         const int32_t px = pos[0] >> 12;   // walkmesh coords
         const int32_t py = pos[1] >> 12;
 
-        // Triggers header for this field.
+        // Triggers header for this field. Span covers everything the
+        // build reads: name, control_direction, and all 12 gateways.
         const uint32_t hdr = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::FIELD_TRIGGERS_HEADER_PTR);
         if (hdr < 0x401000)
             continue;
-        if (VirtualQuery(reinterpret_cast<const void*>(hdr), &mbi, sizeof(mbi)) == 0 ||
-            mbi.State != MEM_COMMIT ||
-            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        if (!IsReadableSpan(reinterpret_cast<const void*>(hdr),
+                            FF7Addr::FTRIG_OFF_GATEWAYS +
+                            FF7Addr::FTRIG_GATEWAY_COUNT *
+                            FF7Addr::FTRIG_GATEWAY_SIZE))
             continue;
         const uint8_t control_dir = *reinterpret_cast<const uint8_t*>(
             hdr + FF7Addr::FTRIG_OFF_CONTROL_DIR);
@@ -2539,13 +2659,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 memset(track_valid, 0, sizeof(track_valid));
                 memset(track_move_tick, 0, sizeof(track_move_tick));
             }
-            const uint8_t* last_elem = reinterpret_cast<const uint8_t*>(
-                arr + (nmod - 1u) * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-            const bool span_ok =
-                VirtualQuery(last_elem + FF7Addr::FIELD_EVENT_DATA_STRIDE - 1,
-                             &mbi, sizeof(mbi)) != 0 &&
-                mbi.State == MEM_COMMIT &&
-                !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+            const uint32_t n_tracked = (nmod < 32u) ? nmod : 32u;
+            const bool span_ok = IsReadableSpan(
+                reinterpret_cast<const void*>(arr),
+                n_tracked * FF7Addr::FIELD_EVENT_DATA_STRIDE);
             const ULONGLONG now = GetTickCount64();
             for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
                 const int32_t* mpos = reinterpret_cast<const int32_t*>(
@@ -2664,8 +2781,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // arriving from All, "Exits, 6" when arriving from People — the
         // reported direction-dependent numbers). Category/field mutations
         // now happen first and the list is built for the NEW state.
-        enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3,
-               CAT_TRIGGERS = 4, CAT_ITEMS = 5 };
+        // (CAT_* constants are file-scope since v2.18.2 — see
+        // CategoryForModelClass above.)
 
         // Field change invalidates selection and category.
         if (field_id != nav_field_id) {
@@ -2741,24 +2858,28 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         if (category == CAT_ALL || category == CAT_PEOPLE ||
             category == CAT_SAVE || category == CAT_ITEMS) {
             // The array span was not fully validated above (only the
-            // player's element) — probe the last model's element too before
-            // walking all of them.
-            const uint8_t* last_elem = reinterpret_cast<const uint8_t*>(
-                arr + (nmod - 1u) * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-            const bool span_ok =
-                VirtualQuery(last_elem + FF7Addr::FIELD_EVENT_DATA_STRIDE - 1,
-                             &mbi, sizeof(mbi)) != 0 &&
-                mbi.State == MEM_COMMIT &&
-                !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+            // player's element) — validate every element this walk reads.
+            const uint32_t n_walk = (nmod < 32u) ? nmod : 32u;
+            const bool span_ok = IsReadableSpan(
+                reinterpret_cast<const void*>(arr),
+                n_walk * FF7Addr::FIELD_EVENT_DATA_STRIDE);
 
-            // Pass 1: eligibility, positions, labels, save/item
-            // classification.
-            bool     eligible[32] = {};
-            bool     is_save[32]  = {};
-            bool     is_item[32]  = {};
-            bool     is_open[32]  = {};   // chests only: lid state
-            int16_t  ex[32], ey[32];
-            wchar_t  labels[32][24] = {};
+            // Pass 1: labels/classification for EVERY model, eligibility
+            // and positions for on-mesh ones. Labels and class are
+            // assigned regardless of eligibility (v2.18.2): the ordinal
+            // pass counts by label over ALL labeled models so a collected
+            // pickup's despawn cannot rename its surviving sibling
+            // ("Item 2" stays "Item 2" after "Item" is taken — the
+            // identity-stability rule; the review confirmed the old
+            // eligible-only counting silently renumbered). Corollary: a
+            // never-on-mesh labeled model still reserves its ordinal, so a
+            // field can list "guard 2" with no "guard" — accepted, slot
+            // order IS the identity.
+            bool       eligible[32] = {};
+            ModelClass cls[32]      = {};
+            bool       is_open[32]  = {};   // chests only: lid state
+            int16_t    ex[32], ey[32];
+            wchar_t    labels[32][24] = {};
             for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
                 if (m == pmid)
                     continue;
@@ -2787,86 +2908,68 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     Log::Write(dbg);
                 }
 
+                if (have_lbl) {
+                    // One classifier decides class AND spoken base name
+                    // (v2.18.2 — see ClassifyModelLabel for the catalog
+                    // evidence). The friendly name replaces the label so
+                    // the ordinal pass yields "Chest 2", "Materia 3".
+                    const wchar_t* friendly = nullptr;
+                    cls[m] = ClassifyModelLabel(lbl, &friendly);
+                    wcsncpy_s(labels[m], friendly ? friendly : lbl.c_str(),
+                              _TRUNCATE);
+                    if (cls[m] == MC_CHEST) {
+                        // Chest lid state (v2.18.1, tightened v2.18.2):
+                        // opened = lid animation held AT its final frame —
+                        // lastFrame != 0 AND currentFrame == lastFrame<<4
+                        // (the subframe scale both confirmed states showed:
+                        // 0x1D0 == 0x1D << 4 after settle AND after field
+                        // re-entry; see ff7_addresses.h state matrix). The
+                        // extra currentFrame term keeps a non-lid animation
+                        // that RETURNS to rest (deny rattle, cutscene pose)
+                        // from reading as opened; the residual risk flips
+                        // to a missed "opened" — the safer direction, a
+                        // wasted walk instead of skipped treasure.
+                        const int16_t last_frame =
+                            *reinterpret_cast<const int16_t*>(
+                                me + FF7Addr::FIELD_EVENT_LAST_FRAME);
+                        const int16_t cur_frame =
+                            *reinterpret_cast<const int16_t*>(
+                                me + FF7Addr::FIELD_EVENT_CURRENT_FRAME);
+                        is_open[m] = last_frame != 0 &&
+                            cur_frame == static_cast<int16_t>(last_frame << 4);
+                    }
+                }
+
                 if (tri < 0)
                     continue;   // off the walkmesh = not a reachable target
 
                 eligible[m] = true;
                 ex[m] = static_cast<int16_t>(mx);
                 ey[m] = static_cast<int16_t>(my);
-                if (have_lbl) {
-                    wcsncpy_s(labels[m], lbl.c_str(), _TRUNCATE);
-                    is_save[m] = (lbl.find(L"save") != std::wstring::npos);
-
-                    // Item/chest classification (v2.18) — grounded in the
-                    // COMPLETE game dataset, not a guess: the offline
-                    // catalog of all 720 fields' model labels
-                    // (ff7_flevel_models_catalog.py, 2026-07-14) shows the
-                    // devs prefixed every interactable prop "fieldbg" and
-                    // named the item props consistently: "trb *" =
-                    // treasure boxes (wood/mety/glow/metb/trbox k),
-                    // "mtra*" = materia orbs (incl. hmtra/kuromtra),
-                    // "potion *" = pickup bottles (color variants — the
-                    // BOTTLE is the visual; the script decides the actual
-                    // item, so they speak as generic "Item"), "sparkle" =
-                    // sparkle pickups, "key"/"coralkey" = key items. No
-                    // other label in the game contains these substrings,
-                    // so fieldbg+substring is exact, not heuristic. The
-                    // friendly name REPLACES the label so the existing
-                    // duplicate-ordinal pass yields "Chest 2", "Materia 3".
-                    if (lbl.find(L"fieldbg") != std::wstring::npos) {
-                        const wchar_t* friendly = nullptr;
-                        if (lbl.find(L"trb") != std::wstring::npos)
-                            friendly = L"Chest";
-                        else if (lbl.find(L"mtra") != std::wstring::npos)
-                            friendly = L"Materia";
-                        else if (lbl.find(L"potion")  != std::wstring::npos ||
-                                 lbl.find(L"sparkle") != std::wstring::npos)
-                            friendly = L"Item";
-                        else if (lbl.find(L"key") != std::wstring::npos)
-                            friendly = L"Key";
-                        if (friendly) {
-                            is_item[m] = true;
-                            wcsncpy_s(labels[m], friendly, _TRUNCATE);
-                            // Chest lid state (v2.18.1): lastFrame != 0
-                            // means the lid animation was played-and-held
-                            // (or re-posed by the field init script for a
-                            // chest looted in an earlier session) — see
-                            // ff7_addresses.h for the full state matrix.
-                            if (wcscmp(friendly, L"Chest") == 0) {
-                                const int16_t last_frame =
-                                    *reinterpret_cast<const int16_t*>(
-                                        me + FF7Addr::FIELD_EVENT_LAST_FRAME);
-                                is_open[m] = (last_frame != 0);
-                            }
-                        }
-                    }
-                }
             }
 
             // Pass 2: duplicate-label counts (so "shinra guard" ×3 becomes
             // "shinra guard", "shinra guard 2", "shinra guard 3").
-            // Pass 3: emit destinations in slot order per category rules.
+            // Counted over ALL labeled models, eligible or not (v2.18.2)
+            // — despawned pickups keep reserving their ordinal so
+            // survivors are never renamed.
+            // Pass 3: emit destinations in slot order. The category
+            // filter is ONE comparison against the class→category map —
+            // mutual exclusion is structural, not hand-maintained
+            // (v2.18.2; the old sv/it boolean chain was the review's
+            // drift-risk finding).
             for (uint16_t m = 0; m < 32; ++m) {
                 if (!eligible[m])
                     continue;
-                // Each model belongs to exactly ONE of Save points /
-                // Items / People (plus All) — a save icon is never a
-                // person, a chest is never a person.
-                const bool sv = is_save[m];
-                const bool it = is_item[m] && !sv;
-                if (sv  && !(category == CAT_ALL || category == CAT_SAVE))
-                    continue;
-                if (it  && !(category == CAT_ALL || category == CAT_ITEMS))
-                    continue;
-                if (!sv && !it &&
-                    !(category == CAT_ALL || category == CAT_PEOPLE))
+                if (category != CAT_ALL &&
+                    category != CategoryForModelClass(cls[m]))
                     continue;
 
                 // Ordinal among same-label models before this slot.
                 int ordinal = 1, total = 0;
                 if (labels[m][0]) {
                     for (uint16_t k = 0; k < 32; ++k) {
-                        if (!eligible[k] || !labels[k][0])
+                        if (!labels[k][0])
                             continue;
                         if (wcscmp(labels[k], labels[m]) == 0) {
                             ++total;
@@ -2876,8 +2979,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 }
 
                 NavDest& d = dests[n_dests++];
-                const wchar_t* base =
-                    sv ? L"Save point" : (labels[m][0] ? labels[m] : nullptr);
+                const wchar_t* base = labels[m][0] ? labels[m] : nullptr;
                 if (base && total > 1)
                     _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
                                  L"%ls %d", base, ordinal);
@@ -2913,35 +3015,100 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         if (category == CAT_ALL || category == CAT_TRIGGERS) {
             const uint16_t n_lines = *reinterpret_cast<const volatile uint16_t*>(
                 FF7Addr::FIELD_LINE_COUNT);
+
+            // Entity-name table resolved and span-validated ONCE per
+            // build, not per line (v2.18.2 — review efficiency finding).
+            const uint8_t* ent_table = nullptr;
+            uint8_t        ent_count = 0;
+            const bool have_names =
+                FieldEntityNameTable(&ent_table, &ent_count);
+
+            // Gather first, then emit: names must all be known before
+            // duplicate ordinals can be computed (v2.18.2 — the review
+            // confirmed two same-named lines used to speak identically,
+            // which J/L cycling cannot disambiguate by ear).
+            struct TrigLine {
+                int16_t x1, y1, x2, y2;
+                uint8_t line_idx;
+                wchar_t name[16];   // entity dev name; empty = fallback
+            } tl[FF7Addr::FLINE_MAX];
+            int n_tl = 0;
+
             for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
                 const uint8_t* le = reinterpret_cast<const uint8_t*>(
                     FF7Addr::FIELD_LINE_ARRAY + i * FF7Addr::FLINE_STRIDE);
                 if (le[FF7Addr::FLINE_OFF_ENABLED] == 0)
                     continue;
                 const int16_t* v = reinterpret_cast<const int16_t*>(le);
+                const uint8_t ent = le[FF7Addr::FLINE_OFF_ENTITY];
 
-                NavDest& d = dests[n_dests++];
-                std::wstring ename;
-                if (FieldEntityName(le[FF7Addr::FLINE_OFF_ENTITY], ename))
-                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                                 L"%ls", ename.c_str());
-                else
-                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                                 L"Trigger %u", i + 1u);
+                TrigLine& t = tl[n_tl++];
                 // x1,y1,z1,x2,y2,z2 — Z ignored like exits (2D walking).
-                d.line_x1 = v[0]; d.line_y1 = v[1];
-                d.line_x2 = v[3]; d.line_y2 = v[4];
-                d.model_slot = -1;
+                t.x1 = v[0]; t.y1 = v[1];
+                t.x2 = v[3]; t.y2 = v[4];
+                t.line_idx = static_cast<uint8_t>(i);
+                t.name[0] = L'\0';
+
+                // Name only when the engine's own entity→line-slot map
+                // agrees this slot belongs to that entity (the LINE
+                // handler writes both together). During a field
+                // transition the line array can briefly hold the OLD
+                // field's entries while the script pointer already serves
+                // the NEW field's names — the review's cross-field
+                // mismatch finding; a stale entry then speaks a
+                // plausible-but-wrong name. On mismatch the line stays
+                // LISTED (stale geometry for one keypress is the accepted
+                // v2.17 tradeoff) but falls back to "Trigger N" instead
+                // of an actively wrong name. Also covers an entity that
+                // declared LINE twice: the map tracks only its newest
+                // slot, so the older one numbers instead.
+                const uint8_t mapped_slot =
+                    *reinterpret_cast<const volatile uint8_t*>(
+                        FF7Addr::FIELD_ENTITY_LINE_SLOT + ent);
+                std::wstring ename;
+                if (have_names && mapped_slot == i &&
+                    EntityNameFromTable(ent_table, ent_count, ent, ename))
+                    wcsncpy_s(t.name, ename.c_str(), _TRUNCATE);
 
                 if (Config::Get().debug_log) {
                     char dbg[160];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] NAV line %u ent=%u '%ls' "
+                        "[FF7Access] NAV line %u ent=%u map=%u '%ls' "
                         "(%d,%d,%d)-(%d,%d,%d)",
-                        i, le[FF7Addr::FLINE_OFF_ENTITY], d.name,
+                        i, ent, mapped_slot, t.name,
                         v[0], v[1], v[2], v[3], v[4], v[5]);
                     Log::Write(dbg);
                 }
+            }
+
+            for (int a = 0; a < n_tl; ++a) {
+                // Ordinal among same-named triggers, same scheme as
+                // people/items ("ev1", "ev1 2"). "Trigger N" fallbacks
+                // are already unique by line number.
+                int ordinal = 1, total = 0;
+                if (tl[a].name[0]) {
+                    for (int k = 0; k < n_tl; ++k) {
+                        if (tl[k].name[0] &&
+                            wcscmp(tl[k].name, tl[a].name) == 0) {
+                            ++total;
+                            if (k < a) ++ordinal;
+                        }
+                    }
+                }
+
+                NavDest& d = dests[n_dests++];
+                if (tl[a].name[0] && total > 1)
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls %d", tl[a].name, ordinal);
+                else if (tl[a].name[0])
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls", tl[a].name);
+                else
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"Trigger %u", tl[a].line_idx + 1u);
+                d.line_x1 = tl[a].x1; d.line_y1 = tl[a].y1;
+                d.line_x2 = tl[a].x2; d.line_y2 = tl[a].y2;
+                d.model_slot = -1;
             }
         }
 

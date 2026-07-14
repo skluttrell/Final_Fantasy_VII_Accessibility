@@ -36,6 +36,16 @@ def _tee(s):
     _log_file.write(s)
     _log_file.flush()
 sys.stdout.write = _tee
+# Always restore stdout and close the log, whatever the exit path (rule:
+# feedback_investigation_scripts.md; atexit runs on exceptions and Ctrl+C).
+import atexit
+def _restore_stdout():
+    sys.stdout.write = _orig_write
+    try:
+        _log_file.close()
+    except Exception:
+        pass
+atexit.register(_restore_stdout)
 print(f"Output saving to: {_log_path}\n")
 
 try:
@@ -88,9 +98,12 @@ EVENT_STRIDE         = 0x88
 FIELD_ANIM_DATA_PTR  = 0xCFF738
 ANIM_STRIDE          = 0x190
 
-# Known values from the watch run (u16 reads except kawai u8):
+# Closed-state reference from the watch run (u16 reads except kawai u8).
+# The OPEN reference is captured LIVE from the chest each run (the `before`
+# snapshot) — a hardcoded open dict was removed 2026-07-14 (code review):
+# it was dead code the verdict never read, and metal-chest-specific values
+# would mislead anyone testing the wood/glow variants.
 CLOSED = dict(apply_kawai=1, anim_id=None, currentFrame=0x0000, lastFrame=0x0000, kawai=0x0D)
-OPEN   = dict(apply_kawai=2, anim_id=None, currentFrame=0x01D0, lastFrame=0x001D, kawai=0xFF)
 
 def model_labels():
     buf = r_u32(FIELD_FILE_BUFFER)
