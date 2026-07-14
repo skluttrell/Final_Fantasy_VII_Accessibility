@@ -2756,6 +2756,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             bool     eligible[32] = {};
             bool     is_save[32]  = {};
             bool     is_item[32]  = {};
+            bool     is_open[32]  = {};   // chests only: lid state
             int16_t  ex[32], ey[32];
             wchar_t  labels[32][24] = {};
             for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
@@ -2826,6 +2827,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         if (friendly) {
                             is_item[m] = true;
                             wcsncpy_s(labels[m], friendly, _TRUNCATE);
+                            // Chest lid state (v2.18.1): lastFrame != 0
+                            // means the lid animation was played-and-held
+                            // (or re-posed by the field init script for a
+                            // chest looted in an earlier session) — see
+                            // ff7_addresses.h for the full state matrix.
+                            if (wcscmp(friendly, L"Chest") == 0) {
+                                const int16_t last_frame =
+                                    *reinterpret_cast<const int16_t*>(
+                                        me + FF7Addr::FIELD_EVENT_LAST_FRAME);
+                                is_open[m] = (last_frame != 0);
+                            }
                         }
                     }
                 }
@@ -2875,6 +2887,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 else
                     _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
                                  L"Person %u", m + 1u);
+                // Lid state is a SUFFIX after the ordinal, never part of
+                // the label: ordinals group on the bare "Chest" label, so
+                // "Chest 2" keeps its number when "Chest 1" gets opened
+                // (identity-stability rule, same as exits/people).
+                if (is_open[m])
+                    wcsncat_s(d.name, _countof(d.name), L", opened",
+                              _TRUNCATE);
                 d.line_x1 = d.line_x2 = ex[m];
                 d.line_y1 = d.line_y2 = ey[m];
                 d.model_slot = m;

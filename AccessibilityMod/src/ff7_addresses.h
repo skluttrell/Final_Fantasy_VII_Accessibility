@@ -1140,6 +1140,34 @@ constexpr uint32_t FLINE_OFF_ENTITY       = 0x0D;        // u8
 constexpr uint32_t FSCRIPT_NENTITIES_OFF  = 2;           // u8 in section-0 header
 constexpr uint32_t FSCRIPT_ENTITY_NAMES_OFF = 0x20;      // char[8] per entity
 
+// ---------------------------------------------------------------------------
+// Chest open/closed state (v2.18.1) — field_event_data animation fields.
+//
+// FFNx ff7.h names the fields (movement_speed +0x76 anchors the offsets):
+//   +0x64 s8  animation_id, +0x66 s16 animation_speed,
+//   +0x68 s16 currentFrame, +0x6A s16 lastFrame
+//
+// A treasure chest "opens" by playing its single lid animation to the
+// final frame and HOLDING it: lastFrame goes 0 -> 29 (and currentFrame
+// 0 -> 29<<4 = 0x1D0). LIVE-CONFIRMED 2026-07-14 on nmkin_1's metal chest
+// ("fieldbg trb mety", model slot 8) across the full state matrix
+// (ff7_chest_state_watch.py + ff7_chest_reentry_check.py):
+//   closed:          currentFrame=0,    lastFrame=0
+//   just opened:     currentFrame ramps, lastFrame=0x1D
+//   after leave+return SAME session: currentFrame=0x1D0, lastFrame=0x1D
+//     -> the field init script RE-POSES looted chests open from the
+//        savemap event flags, so lastFrame != 0 also detects chests
+//        opened in earlier sessions. THE SIGNAL: lastFrame != 0 = opened.
+// The glow-effect bytes (apply_kawai +0x00, anim kawai_opcode +0x21) are
+// NOT usable: they read differently in all three states (1/0x0D closed,
+// 2/0xFF just-opened, 0/0x00 after reload).
+// ⚠ Confirmed on the METAL chest variant; wood/glow variants share the
+// same script mechanism and are expected identical — first play-test on
+// another variant confirms (TODO.txt).
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t FIELD_EVENT_LAST_FRAME = 0x6A;  // s16 in field_event_data
+
 // World map MESSAGE handler. The world map module does NOT use the same
 // opcode table as field maps; its message rendering is called via different
 // code paths. We patch those call sites to intercept world map dialog.

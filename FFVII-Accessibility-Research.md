@@ -188,7 +188,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
 | *(control_direction semantics)* | — | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180, a PURE ROTATION — left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124→174.4°; Up motion 5.6°, Down −174.4°. First guess world − control was 180° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
-| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x5D u8 entity_id, +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15, 2026-07-13) |
+| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1) |
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
@@ -820,10 +820,42 @@ Save points / Items / People.
 **State tracking**: collected FLOOR pickups (potion/materia/sparkle/key)
 despawn — the existing off-mesh filter (triangle_id < 0) drops them from
 the list automatically, so "still listed" = "still collectible", exact
-parity with what a sighted player sees. CHESTS stay on the walkmesh with
-an open lid; detecting open vs closed needs a live look at the chest
-model's animation-state bytes and is deferred until the player reaches
-one (plan in TODO.txt).
+parity with what a sighted player sees. Chest lid state: v2.18.1 below.
+
+### v2.18.1 (2026-07-14): "Chest, opened" — lid state live-derived
+
+Same-day follow-up at the player's first chest (nmkin_1, "fieldbg trb
+mety", model slot 8). `ff7_chest_state_watch.py` diffed the chest's FULL
+field_event_data (0x88B) + field_animation_data (0x190B, ptr 0xCFF738 —
+address doubly confirmed: FFNx ff7.h comment AND our own LADER-handler
+disasm reads it with the same 0x190 stride) across the open event,
+against a stand-still baseline that auto-excludes churning bytes.
+
+The open left 4 persistent changes; FFNx's struct names decode them: the
+chest "opens" by playing its single lid animation to the end and HOLDING
+(currentFrame 0→0x1D0, lastFrame 0→0x1D = frame 29) while the glow
+effect flips off (apply_kawai 1→2, anim kawai_opcode 0x0D→0xFF).
+
+`ff7_chest_reentry_check.py` then established the state matrix. FIRST
+RUN WAS INVALID — the game had been restarted in between (pid changed)
+and the "open" reference actually read closed; the guard added after
+that lesson (refuse to proceed until the open values are observed in the
+CURRENT session) made the second run clean:
+
+| | apply_kawai | currentFrame | lastFrame | kawai_opcode |
+|---|---|---|---|---|
+| closed | 1 | 0 | 0 | 0x0D |
+| just opened | 2 | ramps→0x1D0 | 0x1D | 0xFF |
+| leave+return (same session) | 0 | 0x1D0 | 0x1D | 0 |
+
+**THE SIGNAL: lastFrame (+0x6A) != 0 = opened** — the field init script
+re-poses looted chests open from savemap flags, so it also catches
+chests opened in previous sessions. The glow bytes read differently in
+all three states — never use them. The mod appends ", opened" AFTER the
+ordinal ("Chest 2, opened") so chest numbering stays stable when a chest
+opens (identity-stability rule). ⚠ Confirmed on the metal variant;
+wood/glow variants share the script mechanism, expected identical
+(TODO.txt watch item).
 
 ---
 

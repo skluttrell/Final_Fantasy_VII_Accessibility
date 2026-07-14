@@ -220,25 +220,20 @@ in-game). Residuals:
     list with frequencies to build it from; no play collection needed.
   - The old character_id (+0x6C) route stays DISPROVED — never name from it.
 
-[NAV] Items category (v2.18): chest open/closed state — LIVE INVESTIGATION
+[NAV] Items category: chest open/closed — RESOLVED v2.18.1 (2026-07-14)
 ---------------------------------------------------------------------------
-Floor pickups (potion/materia/sparkle/key) despawn when collected and drop
-out of the list via the off-mesh filter — no work needed. CHESTS stay on
-the walkmesh with an open lid; "Chest" should ideally announce "opened" or
-be filterable. Plan when the player reaches the first chest (catalog says
-chests appear in delmin12, elmtow, gidun_2, mds7_w2, kuro_*, jail2...;
-earliest on the story path is likely the Sector 7 area / Shinra HQ):
-  1. Write ff7_chest_state_watch.py: identify the chest's model slot (label
-     match), then dump its full field_event_data entry (0x88 bytes) + the
-     field_animation_data entry each second while the player opens it.
-     The lid state should show as a persistent byte change (likely the
-     current-animation id — chest scripts flip idle animation via DFANM).
-  2. Confirm the byte holds the OPEN value on field re-entry (scripts
-     restore chest state from savemap event flags at field load).
-  3. Announce "Chest, opened" / skip-opened-chests config, whichever the
-     player prefers.
-Note: "fieldbg taru" (barrels, chrin_2) excluded from Items — no evidence
-they give items; revisit if play shows otherwise.
+Floor pickups despawn when collected (off-mesh filter drops them). Chests:
+"Chest, opened" suffix from field_event_data lastFrame (+0x6A) != 0 —
+live-derived at the nmkin_1 metal chest, survives field re-entry (init
+script re-poses looted chests open). Full state matrix in research §8
+v2.18.1. Residual watch items:
+  - Confirmed on the METAL variant only; wood ("trb wood") and glow
+    ("trb glow") variants expected identical — verify from normal play
+    when one is encountered (wrong announce = report immediately).
+  - "fieldbg taru" (barrels, chrin_2) excluded from Items — no evidence
+    they give items; revisit if play shows otherwise.
+  - Optional: config key to HIDE opened chests instead of suffixing,
+    if the player prefers, once they've lived with the announce.
 
 [NAV] Triggers category (v2.17) residuals
 -------------------------------------------
