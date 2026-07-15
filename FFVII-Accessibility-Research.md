@@ -193,6 +193,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
+| `SAVEMAP_CHAR_RECORDS` | `0xDBFD8C` | First of 9 savemap character records (Cloud), stride 0x84; **FF7-encoded live name (renames included) at +0x10, 12 bytes, 0xFF-terminated**. Derived, not scanned (v2.19): 7thHeaven equipment blocks at savemap+0x70 start with the weapon byte = record offset 0x1C → records at +0x54; 9·0x84 ends exactly at the party IDs below — two anchors agree |
+| `SAVEMAP_PARTY_IDS` | `0xDC0230` | u8[3] — character IDs of party slots 0-2 (0xFF = empty; 9=Young Cloud→record 6, 10=Sephiroth→record 7 during the Kalm flashback). **Self-verifying at runtime**: slot 0's byte must equal PARTY_LEADER (0xDC09E5) or PartySlotLabel falls back to positional "ally N" (v2.19) |
 | *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
 
 ---
@@ -913,6 +915,45 @@ set of verified cleanup items — all fixed:
    technique ranking updated (offline data catalog + opcode-handler
    disasm entered at ranks 2–3).
 
+### v2.19 (2026-07-15): Real party names everywhere — "ally 2" retired
+
+Play-test report (reactor run): Barret was announced as "ally 2" in every
+battle. Root cause: only party slot 0 had a name source (PARTY_LEADER →
+hardcoded defaults); slots 1-2 were positional.
+
+**Address derivation, no scan needed** (both anchors already in §1b of
+ff7_addresses.h from the 7thHeaven.var work): the equipment blocks start at
+savemap+0x70 with the weapon byte first, and the community savemap struct
+puts weapon at record offset 0x1C → records start at savemap+0x54, stride
+0x84. Nine records end at exactly savemap+0x4F8 — precisely where the same
+community layout puts the three party-member ID bytes. Two independent
+anchors agreeing pins SAVEMAP_CHAR_RECORDS (0xDBFD8C) and
+SAVEMAP_PARTY_IDS (0xDC0230) without a live scan.
+
+**Runtime self-verification instead of a Frida session**: party slot 0 IS
+the leader by definition, so PartySlotLabel() only trusts the derived
+array while u8[SAVEMAP_PARTY_IDS] == u8[PARTY_LEADER] (0xDC09E5, live-
+proven since v2.7). On mismatch every caller falls back to the old
+positional labels — a wrong name can never be spoken by a wrong layout.
+
+Changes:
+1. **SavemapCharName(id)** (proxy.cpp): decodes the 12-byte FF7-encoded
+   name from the character's savemap record — the LIVE name, so player
+   renames carry through. Flashback aliases mapped (9=Young Cloud → Cait
+   Sith's record, 10=Sephiroth → Vincent's record, community-documented).
+2. **PartySlotLabel(slot)** shared by BattleActionThread (actor labels)
+   and BattleMenuThread (target labels): savemap name → default English
+   name (blank savemap, i.e. no save loaded) → "ally N" (guard failed /
+   empty slot / unknown ID).
+3. **Dialog tokens speak live names too**: FF7Text gained a NameProvider
+   callback (registered in InitThread) so speaker prefixes ("Barret:"),
+   the mid-string 0xEA Cloud token, and 0xF1/0xF2 (Vincent/Cid) all read
+   the savemap — closing the old "v2: read from savemap" TODO in
+   ff7_text.cpp. Decoder stays memory-agnostic; defaults remain the
+   fallback while no provider is set or the record is blank.
+4. Three duplicate hardcoded name tables collapsed into one
+   (FF7Text::DefaultCharName).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -1365,6 +1406,10 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0xDBFD38` | savemap base | live game state, persisted on save |
+| `0xDBFD8C–0xDC022F` | SAVEMAP_CHAR_RECORDS | 9 character records × 0x84 (savemap+0x54..+0x4F7); live name at record+0x10, equipment at +0x1C (= the 7thHeaven "+0x70 blocks") (v2.19) |
+| `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
+| `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var) |
+| `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |
 | `0xDC0E10–0xDC0E24` | CONFIG_* value bytes | **these sit INSIDE the savemap range** — FF7 persists config in the save header region, which is why the sliders live here and not with the menu cursors |
 
 ### Menu module block: 0xDC0FA0 – 0xDC38F0

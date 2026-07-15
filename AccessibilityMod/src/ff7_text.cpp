@@ -10,7 +10,8 @@ namespace FF7Text {
 
 // Default English character names, indexed as [byte - 0xEA].
 // Token 0xEA=Cloud, 0xEB=Barret, ..., 0xF2=Cid.
-// v2: read actual names from the savemap at runtime (player can rename characters).
+// Used only when no name provider is registered or it has no live name yet
+// (e.g. title screen before any save is loaded) — see char_name() below.
 static const wchar_t* const kCharNames[] = {
     L"Cloud",      // 0xEA
     L"Barret",     // 0xEB
@@ -23,6 +24,37 @@ static const wchar_t* const kCharNames[] = {
     L"Cid",        // 0xF2
 };
 static constexpr int kCharNameCount = sizeof(kCharNames) / sizeof(kCharNames[0]);
+
+// Live-name provider registered by proxy.cpp at init (v2.19). Kept as a
+// plain function pointer (no std::function) so registration is atomic on
+// x86 and needs no synchronization with the decode paths that read it.
+static NameProviderFn g_name_provider = nullptr;
+
+void SetNameProvider(NameProviderFn fn)
+{
+    g_name_provider = fn;
+}
+
+const wchar_t* DefaultCharName(int char_id)
+{
+    return (char_id >= 0 && char_id < kCharNameCount) ? kCharNames[char_id]
+                                                      : nullptr;
+}
+
+// Resolve a character-name token index (0=Cloud .. 8=Cid) to the name the
+// GAME would render right now: the live savemap name when the provider has
+// one (players can rename every character on the naming screen), else the
+// default English name. Empty string only for out-of-range indices.
+static std::wstring char_name(int idx)
+{
+    if (g_name_provider) {
+        std::wstring live;
+        if (g_name_provider(idx, live))
+            return live;
+    }
+    const wchar_t* def = DefaultCharName(idx);
+    return def ? std::wstring(def) : std::wstring();
+}
 
 // Tokens 0xEB-0xF0 have two uses depending on position:
 //   - At string index 0: speaker indicator (handled in the at_start block below)
@@ -148,9 +180,9 @@ std::wstring Decode(const char* encoded_text)
         // Bytes 0xEA-0xF2 at the very first position of a dialog string mark the
         // speaking character. They appear as a single byte with no data bytes.
         if (at_start && byte >= 0xEA && byte <= 0xF2) {
-            const int name_idx = byte - 0xEA;
-            if (name_idx < kCharNameCount) {
-                result += kCharNames[name_idx];
+            const std::wstring name = char_name(byte - 0xEA);
+            if (!name.empty()) {
+                result += name;
                 result += L": ";
             }
             ++p;
@@ -168,18 +200,17 @@ std::wstring Decode(const char* encoded_text)
             p += 4;
             at_start = false;
         }
-        // ── Inline party leader / character name reference (mid-string) ────────
+        // ── Inline Cloud name reference (mid-string) ──────────────────────────
         else if (byte == 0xEA) {
-            // 0xEA mid-string = current party leader name. Hardcoded as Cloud
-            // for v1; v2 will read the actual name from the savemap.
-            result += kCharNames[0];
+            // 0xEA mid-string = Cloud's name (character record 0) — the live
+            // savemap name via char_name(), so renames are respected (v2.19).
+            result += char_name(0);
             ++p;
             at_start = false;
         }
         // ── Mid-string Vincent / Cid reference ────────────────────────────────
         else if (byte == 0xF1 || byte == 0xF2) {
-            const int name_idx = byte - 0xEA;
-            if (name_idx < kCharNameCount) result += kCharNames[name_idx];
+            result += char_name(byte - 0xEA);
             ++p;
             at_start = false;
         }

@@ -492,6 +492,42 @@ constexpr uint32_t PARTY_LEADER = 0xDC09E5;
 constexpr uint32_t STORY_PROGRESS = 0xDC08DC;
 
 // ---------------------------------------------------------------------------
+// Savemap character records and party roster (v2.19).
+//
+// DERIVATION (no scan needed — pinned by two independent layout anchors):
+//   1. The 7thHeaven-confirmed equipment blocks above start at
+//      SAVEMAP_BASE + 0x70 with the WEAPON byte first. In the community-
+//      documented savemap character struct (qhimm wiki "Save Map"), the
+//      weapon byte sits at record offset 0x1C — so the records themselves
+//      begin at 0x70 - 0x1C = savemap + 0x54.
+//   2. Nine records of 0x84 bytes end at 0x54 + 9*0x84 = 0x4F8, which is
+//      EXACTLY where the same community layout places the three party-
+//      member ID bytes. Both anchors agree, so the record base, stride,
+//      and the party array location all lock together.
+//
+// RUNTIME CROSS-CHECK (used by proxy.cpp PartySlotLabel): the byte at
+// SAVEMAP_PARTY_IDS (party slot 0's character ID) must equal PARTY_LEADER
+// (0xDC09E5, 7thHeaven-confirmed, live-proven by the v2.7+ battle labels).
+// Party slot 0 IS the leader by definition, so any mismatch means the
+// derivation doesn't hold in this build — the mod then falls back to the
+// old positional "ally N" labels instead of speaking a wrong name.
+// ---------------------------------------------------------------------------
+
+// First of 9 character records (Cloud), stride 0x84. Name field: FF7-encoded,
+// 0xFF-terminated, at +0x10 (12 bytes) — this is the LIVE name, so player
+// renames from the naming screen are reflected automatically.
+constexpr uint32_t SAVEMAP_CHAR_RECORDS  = SAVEMAP_BASE + 0x54;   // 0xDBFD8C
+constexpr uint32_t SAVEMAP_CHAR_REC_SIZE = 0x84;
+constexpr uint32_t SAVEMAP_CHAR_NAME_OFF = 0x10;
+constexpr uint32_t SAVEMAP_CHAR_NAME_LEN = 12;
+
+// Three party-member character IDs, one per battle/menu party slot 0-2.
+// 0xFF = empty slot. IDs 0-8 = the nine playable characters; the Kalm
+// flashback uses 9 (Young Cloud, data stored in Cait Sith's record) and
+// 10 (Sephiroth, data stored in Vincent's record).
+constexpr uint32_t SAVEMAP_PARTY_IDS = SAVEMAP_BASE + 0x4F8;      // 0xDC0230
+
+// ---------------------------------------------------------------------------
 // Named anchor functions whose absolute addresses are known from FFNx's
 // naming convention. These are the starting points for dynamic discovery.
 // ---------------------------------------------------------------------------

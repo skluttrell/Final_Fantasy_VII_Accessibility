@@ -79,4 +79,30 @@ std::wstring Decode(const char* encoded_text);
  */
 wchar_t DecodeChar(unsigned char byte);
 
+/*
+ * Live character-name provider (v2.19).
+ *
+ * Dialog strings reference party characters by token (0xEA=Cloud .. 0xF2=Cid),
+ * and the player can RENAME every one of them on the naming screen — so the
+ * hardcoded default names are wrong the moment a player renames anyone.
+ * The decoder itself must stay free of game-memory knowledge (it is a pure
+ * byte-stream transform, unit-testable in isolation), so the savemap reader
+ * lives in proxy.cpp and is injected here as a callback at init time.
+ *
+ * fn(char_id, out): char_id 0-8 (token byte - 0xEA); returns true and fills
+ * `out` with a non-empty current name, or false to use the default English
+ * name. The provider must be safe to call from any thread at any time
+ * (proxy.cpp's reads static savemap memory, which always exists).
+ */
+typedef bool (*NameProviderFn)(int char_id, std::wstring& out);
+void SetNameProvider(NameProviderFn fn);
+
+/*
+ * DefaultCharName: the default English name for character ID 0-8 (Cloud..Cid),
+ * or nullptr if out of range. Exposed so proxy.cpp's battle labels can share
+ * the ONE defaults table instead of keeping private copies (pre-v2.19 there
+ * were three identical tables across two files).
+ */
+const wchar_t* DefaultCharName(int char_id);
+
 } // namespace FF7Text

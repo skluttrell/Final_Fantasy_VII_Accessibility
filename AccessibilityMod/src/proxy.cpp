@@ -1252,17 +1252,106 @@ static bool TargetHPText(uint8_t slot, std::wstring& out)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Party character names from the savemap (v2.19).
+//
+// Pre-v2.19 the battle threads could only name party slot 0 (PARTY_LEADER →
+// hardcoded default names); slots 1-2 were positional "ally 2"/"ally 3" —
+// the user's play test heard Barret announced as "ally 2" all through the
+// reactor. The savemap has had everything needed all along (TODO.txt's
+// party-KO entry predicted this): the three party-member character IDs at
+// SAVEMAP_PARTY_IDS, and each character's LIVE name (renames included) in
+// their character record. See ff7_addresses.h SECTION 1b for the layout
+// derivation and the cross-check that guards it.
+// ---------------------------------------------------------------------------
+
+// Read character `char_id`'s current name from its savemap record.
+// Returns false when the name is empty/undecodable (zeroed savemap before
+// any save is loaded, or an ID with no record) — callers then fall back.
+static bool SavemapCharName(uint8_t char_id, std::wstring& out)
+{
+    // Flashback aliases: Young Cloud (9) and Sephiroth (10) have no records
+    // of their own — the game stores their data in Cait Sith's and Vincent's
+    // record slots for the duration (community-documented savemap behavior).
+    // Mapping them here means the Kalm flashback battles speak "Sephiroth"
+    // (the game writes his name into record 7) instead of "ally 2".
+    uint8_t rec = char_id;
+    if (char_id == 9)  rec = 6;
+    if (char_id == 10) rec = 7;
+    if (rec > 8)
+        return false;
+
+    const uint8_t* name = reinterpret_cast<const uint8_t*>(
+        FF7Addr::SAVEMAP_CHAR_RECORDS +
+        rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE +
+        FF7Addr::SAVEMAP_CHAR_NAME_OFF);
+
+    // Per-byte decode (FF7 encoding, 0xFF terminator, hard 12-byte cap) —
+    // same approach as the name-entry echo; Decode() is dialog-oriented
+    // (token expansion) and wrong for a fixed name field.
+    std::wstring decoded;
+    for (uint32_t i = 0; i < FF7Addr::SAVEMAP_CHAR_NAME_LEN && name[i] != 0xFF; ++i) {
+        const wchar_t ch = FF7Text::DecodeChar(name[i]);
+        if (ch != L'\0')
+            decoded += ch;
+    }
+
+    // A zeroed record decodes to all spaces (byte 0x00 = ' ') — trim, and
+    // treat an all-blank result as "no name" so defaults kick in.
+    const std::wstring::size_type first = decoded.find_first_not_of(L' ');
+    if (first == std::wstring::npos)
+        return false;
+    const std::wstring::size_type last = decoded.find_last_not_of(L' ');
+    out = decoded.substr(first, last - first + 1);
+    return true;
+}
+
+// FF7Text name provider (registered in InitThread): lets dialog speaker
+// tokens ("Barret:") and inline name tokens speak the live savemap names.
+static bool DialogNameProvider(int char_id, std::wstring& out)
+{
+    return char_id >= 0 && char_id <= 0xFF &&
+           SavemapCharName(static_cast<uint8_t>(char_id), out);
+}
+
+// Spoken label for battle party slot 0-2, shared by the action announcer and
+// the target announcer. Resolution order:
+//   1. savemap party-member ID -> that character's live savemap name;
+//   2. the default English name for the ID (savemap name blank — in practice
+//      only before a save is loaded);
+//   3. positional "ally N" (cross-check failed, empty slot, or unknown ID).
+// The cross-check (slot 0's party ID must equal the live-proven PARTY_LEADER
+// byte) validates the whole derived party array on every call: if the layout
+// derivation were ever wrong for a build, players hear the OLD positional
+// labels, never a wrong name. See ff7_addresses.h SECTION 1b.
+static void PartySlotLabel(uint8_t slot, wchar_t* buf, size_t buf_count)
+{
+    const uint8_t leader_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
+    const uint8_t slot0_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS);
+    const uint8_t char_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS + slot);
+
+    if (slot <= 2 && slot0_id == leader_id && char_id != 0xFF) {
+        std::wstring name;
+        if (SavemapCharName(char_id, name)) {
+            _snwprintf_s(buf, buf_count, _TRUNCATE, L"%ls", name.c_str());
+            return;
+        }
+        const wchar_t* def = FF7Text::DefaultCharName(char_id);
+        if (def) {
+            _snwprintf_s(buf, buf_count, _TRUNCATE, L"%ls", def);
+            return;
+        }
+    }
+
+    _snwprintf_s(buf, buf_count, _TRUNCATE, L"ally %u",
+                 static_cast<unsigned>(slot + 1u));
+}
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
-    // Default English party names indexed by character ID (0=Cloud … 8=Cid).
-    // Used to name party slot 0 (the current leader) in TTS output.
-    static const wchar_t* const kCharNames[] = {
-        L"Cloud", L"Barret", L"Tifa", L"Aerith", L"Red XIII",
-        L"Yuffie", L"Cait Sith", L"Vincent", L"Cid"
-    };
-    static const uint32_t kCharNameCount =
-        static_cast<uint32_t>(sizeof(kCharNames) / sizeof(kCharNames[0]));
-
     uint8_t last_actor_id = 0xFF;   // 0xFF = sentinel; announce on next valid actor change
 
     // v2.12: per-enemy-slot liveness tracking for defeat announcements.
@@ -1523,21 +1612,13 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             pending = false;
         }
 
-        // Build the actor label.  Slot 0 = party leader (name from savemap);
-        // slots 1–2 = "ally N"; slots 4–9 = the real scene.bin enemy name
-        // with duplicate-letter suffix (v2.10), or "enemy" if unresolvable.
+        // Build the actor label.  Slots 0-2 = the party member's real savemap
+        // name (v2.19 — renames respected, "ally N" only as fallback);
+        // slots 4–9 = the real scene.bin enemy name with duplicate-letter
+        // suffix (v2.10), or "enemy" if unresolvable.
         wchar_t actor_label[64] = {};
         if (is_party) {
-            if (actor_id == 0) {
-                const uint8_t leader_id =
-                    *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
-                const wchar_t* cname =
-                    (leader_id < kCharNameCount) ? kCharNames[leader_id] : L"ally";
-                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE, L"%ls", cname);
-            } else {
-                _snwprintf_s(actor_label, _countof(actor_label), _TRUNCATE,
-                             L"ally %u", static_cast<unsigned>(actor_id + 1u));
-            }
+            PartySlotLabel(actor_id, actor_label, _countof(actor_label));
         } else {
             std::wstring ename;
             if (EnemySlotName(actor_id, ename))
@@ -1627,13 +1708,12 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // poll as the state transition).
 //
 // Target labels: party slots 0-2, enemy slots 4-9 (same actor-slot space
-// BattleActionThread uses). Slot 0 = the party leader's real name from
-// the savemap; slots 4-9 = the real scene.bin enemy name with duplicate-
-// letter suffix (v2.10, EnemySlotName above), falling back to "enemy N";
-// party slots 1-2 keep positional labels ("ally 2") — naming party members
-// 2/3 is still a follow-up (their names come from the menu module, not
-// get_kernel_text section 7). v2.11 appends "HP <cur> of <max>" to the
-// label whenever the sighted target window would show HP (TargetHPText
+// BattleActionThread uses). Party slots 0-2 = the member's real savemap
+// name via PartySlotLabel (v2.19 — pre-v2.19 only slot 0 was named and
+// slots 1-2 were positional "ally 2"/"ally 3"); slots 4-9 = the real
+// scene.bin enemy name with duplicate-letter suffix (v2.10, EnemySlotName
+// above), falling back to "enemy N". v2.11 appends "HP <cur> of <max>" to
+// the label whenever the sighted target window would show HP (TargetHPText
 // above: party always, enemies once Sensed).
 //
 // Gated by Config::Get().speak_battle_menu (separate from speak_battle so
@@ -1663,14 +1743,6 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
 
 static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
 {
-    // Same default English names as BattleActionThread (slot 0 = leader).
-    static const wchar_t* const kCharNames[] = {
-        L"Cloud", L"Barret", L"Tifa", L"Aerith", L"Red XIII",
-        L"Yuffie", L"Cait Sith", L"Vincent", L"Cid"
-    };
-    static const uint32_t kCharNameCount =
-        static_cast<uint32_t>(sizeof(kCharNames) / sizeof(kCharNames[0]));
-
     uint16_t  last_state    = FF7Addr::BMENU_STATE_CLOSED;
     uint32_t  last_cmd_key  = 0xFFFFFFFF;  // slot<<16 | col<<8 | row
     uint32_t  last_list_key = 0xFFFFFFFF;  // state<<16 | index
@@ -1687,16 +1759,10 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
     };
 
     // Label an actor slot for target announcements (see header comment).
+    // Party slots 0-2: real savemap names via PartySlotLabel (v2.19).
     const auto target_label = [&](uint8_t slot, wchar_t* buf, size_t buf_count) {
-        if (slot == 0) {
-            const uint8_t leader_id =
-                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
-            const wchar_t* cname =
-                (leader_id < kCharNameCount) ? kCharNames[leader_id] : L"ally 1";
-            _snwprintf_s(buf, buf_count, _TRUNCATE, L"%ls", cname);
-        } else if (slot <= 2) {
-            _snwprintf_s(buf, buf_count, _TRUNCATE, L"ally %u",
-                         static_cast<unsigned>(slot + 1u));
+        if (slot <= 2) {
+            PartySlotLabel(slot, buf, buf_count);
         } else if (slot >= 4 && slot <= 9) {
             std::wstring ename;
             if (EnemySlotName(slot, ename))
@@ -3657,6 +3723,14 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     // Initialize the Tolk screen reader library. Calls LoadLibrary("Tolk.dll").
     // Safe here because 200ms have passed and the loader lock is long released.
     TTS::Init();
+
+    // Let the text decoder speak LIVE character names (v2.19): dialog speaker
+    // tokens ("Barret:") and inline name tokens now read the savemap records,
+    // so player renames carry through everywhere. Registered before any hook
+    // installs (below) so no decode can race the registration. Safe this
+    // early: the provider reads only static .data addresses that exist from
+    // process start, and falls back to defaults while the savemap is zeroed.
+    FF7Text::SetNameProvider(&DialogNameProvider);
 
     // Patch FF7's IAT to intercept dotemuRegSetValueExA calls from AF3DN.P.
     // Must run after TTS::Init() (the hook calls TTS::Speak and Log::Write)

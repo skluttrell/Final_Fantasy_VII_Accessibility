@@ -156,12 +156,10 @@ Implementation notes (everything needed is already in place):
     only when BOTH it is >=600ms old AND TTS::LastSpeakTick() is >=600ms
     ago) — KOs land in the same tick as action announcements, exactly like
     enemy defeats did.
-  - Naming: slot 0 = leader name via PARTY_LEADER + kCharNames (existing
-    pattern). Slots 1-2 currently have no name source ("ally N") — the
-    savemap stores the 3 current party member CHARACTER IDs (community-
-    documented savemap layout; needs the exact offset verified once) which
-    would name all three via kCharNames, and would also upgrade the
-    "ally 2/3" labels in targeting for free.
+  - Naming: DONE in v2.19 — PartySlotLabel(slot) (proxy.cpp) speaks the
+    real savemap name for all three party slots (SAVEMAP_PARTY_IDS +
+    SAVEMAP_CHAR_RECORDS, self-guarded against layout drift by the
+    PARTY_LEADER cross-check). The KO announcer just calls it.
   - Also consider announcing revival ("Cloud is back up") on dead->alive,
     same watcher, trivial addition.
   - Phrasing: "<name> is down" (distinct from enemies' "defeated").
