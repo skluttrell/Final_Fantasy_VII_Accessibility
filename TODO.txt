@@ -211,11 +211,16 @@ in-game). Residuals:
   - ~~Save-point detection is a HEURISTIC~~ CONFIRMED game-wide 2026-07-14
     by the flevel catalog: "fieldbg saveicn" is the only "save" label in
     all 720 fields.
-  - Labels are developer romaji ("ballet" = Barret, "hei" = soldier). A
-    small translation table for the most common role words could polish
-    them later ("shinra hei" -> "Shinra soldier") — the v2.18 catalog log
-    (investigate/flevel_models_catalog_*.log) now has the COMPLETE label
-    list with frequencies to build it from; no play collection needed.
+  - ~~Labels are developer romaji~~ RESOLVED v2.20 (2026-07-15):
+    TranslateDevLabel (proxy.cpp) translates word-by-word from a table
+    built on the complete v2.18 model catalog; character words resolve to
+    live savemap names via the v2.19 machinery. Unknown words pass
+    through unchanged BY DESIGN (wrong > terse); extend the table from
+    play reports / the catalog logs. WATCH: the AVALANCHE trio mapping
+    (avaman/avawoman/avafat -> Biggs/Jessie/Wedge) is correct on the
+    bombing-mission fields (entity 'av j/b/w' evidence) but those .char
+    models also appear on cargoin/blackbg1 — if play there speaks a
+    wrong trio name, demote the three entries to "man"/"woman"/"big man".
   - The old character_id (+0x6C) route stays DISPROVED — never name from it.
 
 [NAV] Items category: chest open/closed — RESOLVED v2.18.1 (2026-07-14)
@@ -240,9 +245,15 @@ owning entity dev name ('evb', 'drE'). Possible refinements from play:
   - The +0x0E state latch may mean "player currently inside the zone" —
     if confirmed by observation it could announce "you are on the
     trigger" instead of a distance.
-  - Entity dev names are terse; if common ones recur ("dr"=door,
-    "ev"=elevator, "kaidan"=stairs), fold them into the same romaji
-    translation table planned for People labels.
+  - ~~Entity dev names are terse~~ RESOLVED v2.20 (2026-07-15): entity
+    names now run through the same translation table
+    (TranslateEntityName), grounded in the new game-wide entity-name
+    catalog (investigate/ff7_flevel_entity_names_catalog.py — 2412
+    distinct names; "dr" IS door, but ladders are "lad/ladd/ladu", not
+    "hasigo"; "kaidan" does not occur). WATCH: "ladd"/"ladu" are spoken
+    as "ladder down"/"ladder up" (both ends of a ladder observed on
+    bonevil/nmkin_2) — if play shows the suffix means something else,
+    fold both to plain "ladder".
   - Trigger lines whose script does nothing until a story flag are still
     listed while enabled — same accepted limitation as story-locked
     exits.

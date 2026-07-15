@@ -954,6 +954,43 @@ Changes:
 4. Three duplicate hardcoded name tables collapsed into one
    (FF7Text::DefaultCharName).
 
+### v2.20 (2026-07-15): Dev-label translation — People and Triggers speak English
+
+User request: field People/Trigger names were developer shorthand ("main
+ballet", "shinra hei", "ladd0"). Both TODO.txt residuals had planned a
+translation table built "from the complete label list"; this ships it.
+
+**New evidence artifact**: investigate/ff7_flevel_entity_names_catalog.py —
+offline game-wide catalog of SCRIPT ENTITY dev names (section 0 header
+walk over all 720 fields in flevel.lgp; companion to the v2.18 model
+catalog). 2412 distinct names / 1582 digit-stripped stems
+(flevel_entity_names_20260715_122652.log). Validation: nmkin_2 (the
+reactor ladder field the player is on this week) parsed to
+['dir','time','timeo','cl','av j','ladu0','ladd0','slp0'] — the ladder
+lines themselves, plus Jessie as 'av j' (which also anchored
+'ava*' = AVALANCHE, naming the station trio models Biggs/Jessie/Wedge).
+
+**TranslateDevLabel / TranslateEntityName** (proxy.cpp): labels split on
+spaces; tokens stripped of leading/trailing digits; single-char stems
+dropped; character stems ("ballet", "cait", "ycl", "fearith") resolve
+through the v2.19 live savemap names (renames carry through); a ~150-stem
+word table translates romaji/shorthand ("hei"→soldier, "narazu"→thug,
+"ladd"→ladder down, "ladu"→ladder up, "slp"→slide, "takara"→treasure,
+"esca"→escalator, "av j"→Jessie); category/location prefixes
+(main/std/midgal/…) drop; UNKNOWN words speak their stem unchanged —
+a wrong translation is worse than a terse one (v2.18.2 principle).
+Applied to People labels (before the ordinal pass, so duplicates group on
+the SPOKEN name: "man", "man 2") and Trigger entity names. Items/Save
+friendly names and classification are untouched (raw-label substrings).
+
+**Verified by full-catalog dry run** (scratchpad replica of the C++ over
+all 557 model labels + all 2412 entity names) before shipping; the dry
+run caught the draft appending raw tokens instead of stems ("man6") and
+supplied a second batch of stems (zax/mizu/mihari/shain/baba/turara/…).
+
+Watch items in TODO.txt: Biggs/Jessie/Wedge model reuse on later fields
+(cargoin), and the ladu/ladd = up/down reading.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

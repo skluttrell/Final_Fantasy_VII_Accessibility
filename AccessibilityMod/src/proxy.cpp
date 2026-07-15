@@ -78,6 +78,7 @@
 #include <string>
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
 #include <cmath>     // atan2f/sqrtf/fmodf in the field pathfinder (v2.14)
+#include <cwctype>   // iswdigit in the dev-label translator (v2.20)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -2435,6 +2436,251 @@ static int CategoryForModelClass(ModelClass c)
 }
 
 // ---------------------------------------------------------------------------
+// Dev-label translation: romaji/shorthand -> speakable English (v2.20).
+//
+// The v2.16 People names and v2.17 Trigger names are the developers' own
+// dev names — terse romaji ("hei" = soldier, "ballet" = Barret, "ladd0" =
+// a ladder line) that a blind player would have to memorize. This block
+// translates them, word by word, into plain English, and resolves party-
+// character words to the character's LIVE savemap name (v2.19 machinery,
+// so player renames carry through to the field browser too).
+//
+// EVIDENCE (both TODO.txt residuals planned this table "from the complete
+// label list, no play collection needed"):
+//   - models:   investigate/flevel_models_catalog_20260714_130007.log —
+//     all 557 distinct model labels in the game's 720 fields.
+//   - entities: investigate/flevel_entity_names_20260715_122652.log —
+//     all 2412 distinct script entity names (new game-wide catalog,
+//     2026-07-15; nmkin_2 validation showed the reactor ladder lines
+//     themselves: 'ladu0'/'ladd0'/'slp0', with Jessie as 'av j').
+// Every entry below appears in those catalogs; words NOT in the tables
+// are spoken unchanged (parity: better to hear the dev word than nothing,
+// and a wrong translation is worse than a terse one — same principle as
+// the v2.18.2 stale-name guard).
+//
+// MECHANICS: a label is split on spaces; each token is stripped of
+// leading/trailing digits ("man401" -> "man", "22main" -> "main"), then
+// looked up. Single-character stems are dropped (the "n" in "main n
+// cloud", stray "l"/"r" side markers). Digit suffixes are deliberately
+// discarded — the browser's own duplicate ordinals ("man 2") number
+// things in stable slot order, which digits in dev names do not.
+// Identity stability holds: translation is a pure function of the label,
+// so a model/line keeps its spoken name while the player moves.
+// ---------------------------------------------------------------------------
+
+// Current display name for a character id: live savemap name (renames
+// respected), else the default English name, else empty.
+static std::wstring CharDisplayName(uint8_t char_id)
+{
+    std::wstring n;
+    if (SavemapCharName(char_id, n))
+        return n;
+    const wchar_t* def = FF7Text::DefaultCharName(char_id);
+    return def ? std::wstring(def) : std::wstring();
+}
+
+// Party-character word stems -> character id (spoken via CharDisplayName).
+// Sources: model catalog ("main ballet", "midgal ptifa", "nible cloud8",
+// "market cloudw"...) + entity catalog ("cait" x40, "vince", "fearith",
+// "ycl" = young Cloud on the Mt. Nibel flashback fields).
+struct DevCharWord { const wchar_t* stem; uint8_t char_id; };
+static const DevCharWord kDevCharWords[] = {
+    { L"cloud", 0 }, { L"cloudup", 0 }, { L"cloudw", 0 }, { L"pcloud", 0 },
+    { L"ycl", 0 },
+    { L"ballet", 1 }, { L"yballet", 1 }, { L"pballet", 1 },
+    { L"tifa", 2 }, { L"tifas", 2 }, { L"ptifa", 2 },
+    { L"earith", 3 }, { L"earithf", 3 }, { L"fearith", 3 },
+    { L"red", 4 }, { L"pred", 4 },
+    { L"yufi", 5 }, { L"pyufi", 5 },
+    { L"ketcy", 6 }, { L"cait", 6 },
+    { L"vincent", 7 }, { L"vince", 7 }, { L"vinsen", 7 }, { L"yvin", 7 },
+    { L"cid", 8 }, { L"pcid", 8 },
+};
+
+// Word stems -> English. out == L"" means DROP the word (category prefixes
+// like "main"/"std"/"midgal" carry no information a blind player needs —
+// the browser's category already says "person"). Named NPCs are romaji or
+// misspellings of their localized names (lude=Rude, hyde=Heidegger,
+// esto=Ester, siera=Shera, irena=Elena, tuon=Tseng, korneo=Don Corneo...).
+// avaman/avawoman/avafat = Biggs/Jessie/Wedge: the entity catalog shows
+// 'av j/av b/av w' (AVALANCHE Jessie/Biggs/Wedge) on the exact bombing-
+// mission fields where those three models stand (md1stin/md1_1/nmkin/
+// elevtr1) — watch item in TODO.txt for the cargo-ship model reuse.
+struct DevWord { const wchar_t* stem; const wchar_t* out; };
+static const DevWord kDevWords[] = {
+    // -- dropped category/location prefixes --
+    { L"main", L"" }, { L"sub", L"" }, { L"std", L"" }, { L"another", L"" },
+    { L"weapon", L"" }, { L"modify", L"" }, { L"animal", L"" },
+    { L"midgal", L"" }, { L"korel", L"" }, { L"nible", L"" },
+    { L"utai", L"" }, { L"kosta", L"" }, { L"cosmo", L"" }, { L"gold", L"" },
+    { L"market", L"" }, { L"snow", L"" }, { L"farm", L"" }, { L"bone", L"" },
+    { L"cf", L"" }, { L"island", L"" }, { L"gon", L"" }, { L"rocket", L"" },
+    { L"junon", L"" }, { L"towerutai", L"" }, { L"sbwy", L"" },
+    { L"min", L"" }, { L"md", L"" },
+    // -- named NPCs (romaji / dev spellings of localized names) --
+    { L"sefiro", L"Sephiroth" }, { L"cefiro", L"Sephiroth" },
+    { L"cefiros", L"Sephiroth" }, { L"cefi", L"Sephiroth" },
+    { L"cef", L"Sephiroth" },
+    { L"avaman", L"Biggs" }, { L"avawoman", L"Jessie" },
+    { L"avafat", L"Wedge" },
+    { L"boo", L"Bugenhagen" }, { L"bugen", L"Bugenhagen" },
+    { L"godoh", L"Godo" }, { L"korneo", L"Don Corneo" },
+    { L"lude", L"Rude" }, { L"lufas", L"Rufus" }, { L"lufus", L"Rufus" },
+    { L"hyde", L"Heidegger" },
+    { L"hojyo", L"Hojo" }, { L"yhojo", L"Hojo" }, { L"hojo", L"Hojo" },
+    { L"esto", L"Ester" }, { L"dio", L"Dio" },
+    { L"pricilla", L"Priscilla" }, { L"prisl", L"Priscilla" },
+    { L"ifarna", L"Ifalna" }, { L"siera", L"Shera" },
+    { L"irena", L"Elena" }, { L"tuon", L"Tseng" },
+    { L"zangan", L"Zangan" }, { L"emother", L"Elmyra" },
+    { L"cmother", L"Cloud's mother" }, { L"tfather", L"Tifa's father" },
+    { L"zacks", L"Zack" }, { L"lzacks", L"Zack" }, { L"szacks", L"Zack" },
+    { L"zax", L"Zack" },
+    // -- creatures --
+    { L"choko", L"chocobo" },
+    { L"mogrif", L"moogle" }, { L"mogrim", L"moogle" },
+    { L"mogrip", L"moogle" }, { L"mogriw", L"moogle" },
+    { L"mogriy", L"moogle" },
+    { L"iruka", L"dolphin" }, { L"ultima", L"Ultimate Weapon" },
+    { L"robo", L"robot" },
+    // -- role words (romaji -> English) --
+    { L"hei", L"soldier" }, { L"reifuku", L"executive" },
+    { L"ippan", L"employee" }, { L"onna", L"woman" },
+    { L"obasan", L"woman" }, { L"oyaji", L"old man" },
+    { L"oldm", L"old man" }, { L"oldman", L"old man" },
+    { L"oldw", L"old woman" },
+    { L"narazu", L"thug" }, { L"nara", L"thug" },
+    { L"bou", L"boy" }, { L"gaki", L"kid" },
+    { L"kaku", L"customer" }, { L"kakul", L"customer" },
+    { L"kyaku", L"customer" }, { L"hito", L"person" },
+    { L"panpi", L"civilian" }, { L"taityo", L"captain" },
+    { L"noppo", L"tall man" }, { L"semusi", L"hunched man" },
+    { L"muki", L"muscle man" }, { L"buka", L"henchman" },
+    { L"youjin", L"bodyguard" }, { L"usan", L"shady man" },
+    { L"guid", L"guide" }, { L"heli", L"helicopter" },
+    { L"shinra", L"Shinra" }, { L"old", L"elder" },
+    { L"fatman", L"big man" }, { L"nman", L"man" },
+    { L"mech", L"mechanic" }, { L"meca", L"mechanic" },
+    { L"fstaff", L"attendant" }, { L"mstaff", L"attendant" },
+    { L"cgirl", L"chocobo girl" },
+    { L"dirver", L"driver" },
+    { L"rgirl", L"girl" }, { L"sboy", L"boy" }, { L"sgirl", L"girl" },
+    { L"sman", L"man" }, { L"swoman", L"woman" },
+    { L"report", L"reporter" }, { L"shinobi", L"ninja" },
+    { L"cloak", L"cloaked man" }, { L"mant", L"cloaked man" },
+    { L"sitai", L"body" },
+    { L"shain", L"employee" }, { L"baba", L"old woman" },
+    { L"oldwm", L"old woman" }, { L"mihari", L"lookout" },
+    { L"innman", L"innkeeper" }, { L"peo", L"person" },
+    { L"sinrah", L"Shinra" }, { L"niku", L"meat" },
+    // -- trigger/object words (mostly seen as entity names on lines) --
+    { L"ladd", L"ladder down" }, { L"ladu", L"ladder up" },
+    { L"lad", L"ladder" },
+    { L"slip", L"slide" }, { L"slp", L"slide" },
+    { L"tobira", L"door" },
+    { L"esca", L"escalator" }, { L"ele", L"elevator" },
+    { L"elinel", L"elevator" }, { L"eliner", L"elevator" },
+    { L"save", L"save point" }, { L"savel", L"save point" },
+    { L"takara", L"treasure" }, { L"takaraa", L"treasure" },
+    { L"tre", L"treasure" }, { L"tbox", L"treasure" },
+    { L"hako", L"box" },
+    { L"mtr", L"materia" }, { L"po", L"potion" },
+    { L"kiken", L"danger" }, { L"bunki", L"junction" },
+    { L"time", L"timer" }, { L"timeo", L"timer" },
+    { L"hata", L"flag" }, { L"utubo", L"pitcher plant" },
+    { L"mizu", L"water" }, { L"turara", L"icicle" },
+    { L"moni", L"monitor" },
+    { L"evjump", L"jump" }, { L"evjp", L"jump" }, { L"evline", L"line" },
+};
+
+// Entity FULL-NAME table, checked before the word pass (names whose words
+// are too short/ambiguous to translate in isolation). Matched against the
+// whole entity name after trailing digits/spaces are stripped.
+static const DevWord kDevEntityNames[] = {
+    { L"av j", L"Jessie" }, { L"av b", L"Biggs" }, { L"av w", L"Wedge" },
+    { L"av m", L"AVALANCHE member" }, { L"av l", L"AVALANCHE member" },
+    { L"av s", L"AVALANCHE member" }, { L"av c", L"AVALANCHE member" },
+    { L"mk save", L"save point" }, { L"save l", L"save point" },
+    { L"dr", L"door" },
+};
+
+// Translate one dev label ("shinra hei 2" style, space-separated) into its
+// speakable form. Unknown words pass through; if everything drops, the raw
+// label is returned so a destination can never become nameless.
+static std::wstring TranslateDevLabel(const std::wstring& raw)
+{
+    std::wstring out;
+    size_t pos = 0;
+    while (pos <= raw.size()) {
+        const size_t sp = raw.find(L' ', pos);
+        const size_t end = (sp == std::wstring::npos) ? raw.size() : sp;
+        std::wstring tok = raw.substr(pos, end - pos);
+        pos = end + 1;
+        if (tok.empty())
+            continue;
+
+        // Stem = token minus leading/trailing digits ("22main"/"man401").
+        size_t b = 0, e = tok.size();
+        while (b < e && iswdigit(tok[b])) ++b;
+        while (e > b && iswdigit(tok[e - 1])) --e;
+        const std::wstring stem = tok.substr(b, e - b);
+
+        // Single-character stems are connective noise ("n", side markers).
+        if (stem.size() <= 1)
+            continue;
+
+        const wchar_t* repl = nullptr;
+        std::wstring char_name;
+        for (const DevCharWord& cw : kDevCharWords) {
+            if (stem == cw.stem) {
+                char_name = CharDisplayName(cw.char_id);
+                break;
+            }
+        }
+        if (char_name.empty()) {
+            for (const DevWord& w : kDevWords) {
+                if (stem == w.stem) {
+                    repl = w.out;
+                    break;
+                }
+            }
+        }
+        if (repl && repl[0] == L'\0')
+            continue;                        // explicit drop word
+
+        if (!out.empty())
+            out += L' ';
+        if (!char_name.empty())
+            out += char_name;
+        else
+            // Unknown words speak their STEM, not the raw token: dev digit
+            // suffixes are arbitrary ("man6"/"man401" are just distinct
+            // .char files) — the browser's slot-order ordinals are the
+            // numbering a listener can actually use ("man", "man 2").
+            // (Caught by the catalog dry run: the first draft appended the
+            // raw token, so "std man6" spoke as "man6".)
+            out += repl ? repl : stem.c_str();
+    }
+    return out.empty() ? raw : out;
+}
+
+// Translate a script entity name (trigger lines): whole-name table first
+// (multi-word/ambiguous names like "av j" or bare "dr3"), then the shared
+// word pass.
+static std::wstring TranslateEntityName(const std::wstring& raw)
+{
+    std::wstring stem = raw;
+    while (!stem.empty() &&
+           (iswdigit(stem.back()) || stem.back() == L' '))
+        stem.pop_back();
+    for (const DevWord& n : kDevEntityNames) {
+        if (stem == n.stem)
+            return n.out;
+    }
+    return TranslateDevLabel(raw);
+}
+
+// ---------------------------------------------------------------------------
 // Field model label from the raw MODEL LOADER section (v2.16).
 //
 // Walks section 2 of the field file buffer (format decoded live 2026-07-13,
@@ -2979,9 +3225,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     // (v2.18.2 — see ClassifyModelLabel for the catalog
                     // evidence). The friendly name replaces the label so
                     // the ordinal pass yields "Chest 2", "Materia 3".
+                    // People (no friendly name) get the v2.20 dev-label
+                    // translation instead: romaji -> English, character
+                    // words -> live savemap names. Translation runs BEFORE
+                    // the ordinal pass, so duplicates group on the SPOKEN
+                    // name ("man", "man 2" — even when the dev names
+                    // differed only by their meaningless digit suffixes).
                     const wchar_t* friendly = nullptr;
                     cls[m] = ClassifyModelLabel(lbl, &friendly);
-                    wcsncpy_s(labels[m], friendly ? friendly : lbl.c_str(),
+                    wcsncpy_s(labels[m],
+                              friendly ? friendly
+                                       : TranslateDevLabel(lbl).c_str(),
                               _TRUNCATE);
                     if (cls[m] == MC_CHEST) {
                         // Chest lid state (v2.18.1, tightened v2.18.2):
@@ -3096,7 +3350,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             struct TrigLine {
                 int16_t x1, y1, x2, y2;
                 uint8_t line_idx;
-                wchar_t name[16];   // entity dev name; empty = fallback
+                wchar_t name[24];   // translated entity name (v2.20 —
+                                    // widened from 16 for "AVALANCHE
+                                    // member"); empty = fallback
             } tl[FF7Addr::FLINE_MAX];
             int n_tl = 0;
 
@@ -3134,7 +3390,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 std::wstring ename;
                 if (have_names && mapped_slot == i &&
                     EntityNameFromTable(ent_table, ent_count, ent, ename))
-                    wcsncpy_s(t.name, ename.c_str(), _TRUNCATE);
+                    // v2.20: translate the dev name ("ladd0" -> "ladder
+                    // down", "av j" -> "Jessie") before it becomes the
+                    // spoken identity; unknown names pass through.
+                    wcsncpy_s(t.name, TranslateEntityName(ename).c_str(),
+                              _TRUNCATE);
 
                 if (Config::Get().debug_log) {
                     char dbg[160];
