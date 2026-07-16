@@ -68,6 +68,35 @@ struct Settings {
     // Default: true.
     bool pathfinder_keys = true;
 
+    // turn_by_turn: Direction style for the pathfinder's directions key
+    // (\ or P, or R3 on the controller). Set from the config file's
+    // direction_style key — "turns" (true) or "line" (false):
+    //
+    //   turns — v2.22 turn-by-turn route over the field's walkmesh:
+    //           "Exit 2: up 4 seconds, then right 2 seconds". Computed by
+    //           pathfinding the walkable triangle graph, so it routes
+    //           around walls and pits instead of pointing through them.
+    //           When no walkable route exists (or the walkmesh cannot be
+    //           read), it automatically falls back to the straight-line
+    //           announcement — same graceful degradation the FF4
+    //           screen-reader mod documents for out-of-range targets.
+    //   line  — the original as-the-crow-flies announcement: one bearing
+    //           and the straight-line walking time ("Exit 2: up-left,
+    //           3 seconds"). Some players prefer the shorter message and
+    //           re-querying while walking.
+    //
+    // Default: true (turns).
+    bool turn_by_turn = true;
+
+    // announce_map_change: If true, the mod announces "Screen: <name>"
+    // whenever the player crosses to a new field screen (v2.23). Each FF7
+    // screen has its own fixed camera, so crossing an exit REBASES what
+    // "up" means — a sighted player sees the camera cut; this announcement
+    // is the audio equivalent, cueing that all directions just changed
+    // their meaning. Names are the internal map names (same as the M key).
+    // Default: true.
+    bool announce_map_change = true;
+
     // gamepad_nav: If true, the RIGHT ANALOG STICK of an XInput controller
     // drives the pathfinder alongside the keyboard (v2.21): flick up/down to
     // change category, left/right to cycle destinations, click the stick in

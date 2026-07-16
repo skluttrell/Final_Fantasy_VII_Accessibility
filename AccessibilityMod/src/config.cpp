@@ -107,7 +107,23 @@ void Load()
         // (v2.14, same-day rename) — accepted as an alias so no config breaks.
         else if (key == "pathfinder_keys" || key == "field_exit_scan")
             g_settings.pathfinder_keys = parse_bool(value);
+        // direction_style takes a WORD, not a boolean: "turns" (default,
+        // v2.22 walkmesh turn-by-turn) or "line" (as-the-crow-flies).
+        // Unrecognized words keep the default rather than silently picking
+        // a style the user did not ask for — same forward-compatibility
+        // stance as unknown keys.
+        else if (key == "direction_style") {
+            std::string v = value;
+            std::transform(v.begin(), v.end(), v.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (v == "line" || v == "straight" || v == "crow")
+                g_settings.turn_by_turn = false;
+            else if (v == "turns" || v == "turn_by_turn" || v == "path")
+                g_settings.turn_by_turn = true;
+        }
         else if (key == "gamepad_nav")   g_settings.gamepad_nav    = parse_bool(value);
+        else if (key == "announce_map_change")
+            g_settings.announce_map_change = parse_bool(value);
         else if (key == "interrupt")     g_settings.interrupt      = parse_bool(value);
         else if (key == "debug_log")     g_settings.debug_log      = parse_bool(value);
         // Unknown keys are silently ignored for forward compatibility.

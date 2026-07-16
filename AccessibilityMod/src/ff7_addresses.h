@@ -1185,6 +1185,59 @@ constexpr uint32_t FSCRIPT_NENTITIES_OFF  = 2;           // u8 in section-0 head
 constexpr uint32_t FSCRIPT_ENTITY_NAMES_OFF = 0x20;      // char[8] per entity
 
 // ---------------------------------------------------------------------------
+// SECTION 1h: WALKMESH — field-file section 5 (v2.22 turn-by-turn directions)
+//
+// The raw field file behind FIELD_FILE_BUFFER carries the walkmesh as
+// section index 4 (0-based) of the nine-entry offset table at buf+6 — the
+// same table the v2.16 model-loader reader has used in production since
+// then. Section layout (offsets from the section start):
+//
+//   +0x00 u32 section_size                 (every section's 4-byte prefix)
+//   +0x04 u32 nTriangles
+//   +0x08 triangle pool: nTriangles × 24 bytes
+//           3 vertices × { s16 x, s16 y, s16 z, s16 res }
+//           — same coordinate space as model_pos>>12 / gateway vertices
+//   +0x08 + 24×n: ACCESS pool: nTriangles × 3 × u16
+//           access[t][e] = triangle adjacent to t across edge e
+//           (0xFFFF = no neighbor: that edge is a wall)
+//
+// SOURCES AND CONFIDENCE:
+//   - Count/triangle-pool offsets are PRODUCTION-CONFIRMED by FFNx, which
+//     renders the walkmesh from these exact reads (lighting.cpp
+//     ff7_create_walkmesh: offset table entry at level_data+0x16 == buf+6+
+//     4×4, count at +4, triangles at +8 stride 24; field.cpp reads triangle
+//     centroids the same way).
+//   - The ACCESS pool (location, 3×u16 stride, 0xFFFF sentinel) is from the
+//     community field-file spec (Qhimm wiki) and is NOT read by FFNx — but
+//     it was CONFIRMED GAME-WIDE OFFLINE 2026-07-16
+//     (investigate/ff7_walkmesh_route_dryrun.py): all 720 fields in
+//     flevel.lgp parsed, 184,358 directed links, 100% of ids in range,
+//     100% geometrically adjacent (each named neighbor shares ≥2 vertex
+//     coordinates), 100.00% reciprocal (2 one-way links total). Since
+//     FIELD_FILE_BUFFER holds the raw decompressed file, the on-disk bytes
+//     ARE the in-memory bytes. The mod still SELF-GUARDS at runtime (every
+//     entry 0xFFFF or < nTriangles, ≥90% of links reciprocal, else
+//     straight-line fallback) as cheap corruption/mid-transition armor.
+//     Which VERTEX PAIR edge e connects is deliberately NOT assumed:
+//     portals between path triangles are recovered geometrically
+//     (shared-vertex match), so an edge-order convention error cannot
+//     corrupt directions.
+//
+// The player's current triangle is FIELD_EVENT_TRIANGLE_ID (+0x78, long
+// confirmed); NPC/item targets carry theirs in the same field.
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t FIELD_WALKMESH_SECTION_INDEX = 4;  // 5th offset at buf+6
+constexpr uint32_t FWMESH_OFF_NTRIS   = 4;    // u32, after the size prefix
+constexpr uint32_t FWMESH_OFF_TRIS    = 8;    // triangle pool start
+constexpr uint32_t FWMESH_TRI_SIZE    = 24;   // 3 × (s16 x,y,z,res)
+constexpr uint32_t FWMESH_ACCESS_SIZE = 6;    // 3 × u16 per triangle
+constexpr uint16_t FWMESH_NO_NEIGHBOR = 0xFFFF;
+// Largest observed field is a few hundred triangles; 4096 is a generous
+// corruption guard, not a real limit.
+constexpr uint32_t FWMESH_MAX_TRIS    = 4096;
+
+// ---------------------------------------------------------------------------
 // Chest open/closed state (v2.18.1) — field_event_data animation fields.
 //
 // FFNx ff7.h names the fields (movement_speed +0x76 anchors the offsets):

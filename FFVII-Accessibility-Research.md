@@ -210,9 +210,9 @@ FF7 field files have 9 sections (indices 0–8). For the bombers_start field (co
 | 0 | 0x2A | **Script** — entity bytecodes + dialog text strings at the end |
 | 1 | 0x17EA | Camera placement data |
 | 2 | 0x183A | **MODEL LOADER** — ⚠ the original "(empty/padding)" label was WRONG (corrected 2026-07-13 via the md1stin live dump, where section 2 held all 10 model entries and the walk matched FIELD_N_MODELS exactly). Format: u16 blank / u16 nModels / u16 scale header, then per model: u16-len-prefixed descriptive .char name ("md1stinshinra_hei.char"), u16 unknown, char[8] HRC, char[4] ASCII scale, u16 nAnims, 30-byte light block, nAnims × (u16 len + name + u16). **Entry order = model load order = field_event_data array order** — entry i names model i (v2.16) |
-| 3 | 0x1844 | Walkmesh / collision data *(June content guess — unverified)* |
-| 4 | 0x2054 | Tile map *(June content guess — unverified)* |
-| 5 | 0x22B4 | Encounter table *(June content guess — unverified)* |
+| 3 | 0x1844 | Palette *(the June "walkmesh here" guess was WRONG — corrected 2026-07-16; per the community spec this slot is the palette)* |
+| 4 | 0x2054 | **WALKMESH** — ⚠ June guessed "tile map"; corrected 2026-07-16: FFNx's own renderer reads the walkmesh from THIS slot (`lighting.cpp ff7_create_walkmesh`: offset at `level_data+0x16` = buf+6+4×4, i.e. section index 4), which is production confirmation. Format: u32 size prefix, u32 nTriangles, then nTriangles × 24-byte triangles (3 vertices × s16 x,y,z,res — same coord space as model_pos>>12), then the ACCESS pool: nTriangles × 3 × u16 = neighbor triangle across each edge, 0xFFFF = wall. Access pool **CONFIRMED GAME-WIDE OFFLINE 2026-07-16** (ff7_walkmesh_route_dryrun.py: 720/720 fields, 184,358 links, 100% id-valid, 100% geometrically adjacent, 100.00% reciprocal — and the buffer holds the raw decompressed file, so disk bytes = memory bytes); v2.22's loader still self-guards at runtime as corruption armor. Used by v2.22 turn-by-turn directions; constants at ff7_addresses.h SECTION 1h |
+| 5 | 0x22B4 | Tile map *(June guessed "encounter table"; community spec says tile map — unverified)* |
 | 6 | 0x43B0 | (empty) |
 | 7 | 0x43E4 | Triggers *(md1stin dump: raw section 7 begins with the field name, exactly like the parsed trigger header — the June "Background" label belonged here)* |
 | 8 | 0x46CC | Background *(md1stin dump: section 8 = 385KB starting "PALETTE...BACK")* |
@@ -990,6 +990,174 @@ supplied a second batch of stems (zax/mizu/mihari/shain/baba/turara/…).
 
 Watch items in TODO.txt: Biggs/Jessie/Wedge model reuse on later fields
 (cargoin), and the ladu/ladd = up/down reading.
+
+### v2.21 (2026-07-15): Right-analog-stick pathfinder input
+
+Documented in gamepad.h (full native-function evidence trail) rather than
+here: the right stick + R3 drive the same destination browser as the
+keyboard keys. User play-test confirmed same day.
+
+### v2.22 (2026-07-16): TURN-BY-TURN directions over the walkmesh
+
+User direction: "get turn-by-turn directions into the navigation system;
+keep as-the-crow-flies and let the user choose." The FF4 screen-reader mod
+(accessiblity_keys.txt, the binding parity source) already treats `\`/P as
+a *validated step-by-step path* when in range with straight-line as the
+out-of-range fallback — so turn-by-turn on the SAME key with a config
+style switch is parity-correct, no new bindings.
+
+**Data source** (§5 table, section index 4): the raw field file's walkmesh
+— triangle pool + ACCESS (adjacency) pool. Count/triangle layout is
+production-confirmed by FFNx's renderer; the access pool was **confirmed
+game-wide offline the same day** (see the dry run below). `LoadWalkmesh`
+still self-guards it (every neighbor id in range, ≥90% of directed links
+reciprocal) and any failure falls back to straight-line — fail-closed,
+never a confidently wrong route.
+
+**Pipeline** (proxy.cpp, all per-keypress, nothing cached): snapshot mesh →
+start = player's live triangle (`+0x78`), goal = target model's triangle
+(exact even on stacked layers) or 2D point-location for exits/LINE zones →
+A* over the adjacency graph (centroid costs, linear-scan open set — fields
+are a few hundred triangles) → portals between path triangles recovered by
+GEOMETRIC shared-vertex match (deliberately not by the access pool's
+edge-order convention, the one fact runtime can't verify) → funnel
+algorithm (string pulling) so corners exist only where the route bends →
+legs quantized to the 8 d-pad sectors via the play-test-confirmed
+`world + control_direction − 180` rotation, same-sector legs merged,
+sub-step jogs folded into their predecessor (first move never folded —
+it's the move the player makes now), max 5 moves spoken:
+"Exit 2: up 4 seconds, then right 2 seconds."
+
+**Style choice**: `direction_style = turns` (default) `| line` in the cfg.
+`line` is exactly the pre-v2.22 announcement. In turns mode, a healthy
+mesh with NO route (story-locked area, other layer group) speaks
+"No walkable path found." + the straight line — information parity with
+the FF4 mod's out-of-range message; an unreadable mesh falls back
+silently.
+
+**Offline dry run** (investigate/ff7_walkmesh_route_dryrun.py, 2026-07-16
+— the v2.18-catalog/v2.20-dry-run method): parsed all 720 fields'
+walkmeshes from flevel.lgp (same bytes FIELD_FILE_BUFFER holds) and
+**CONFIRMED the access pool game-wide**: 184,358 directed links, 100% of
+ids in range, 100% geometrically adjacent (every named neighbor shares an
+edge), 100.00% reciprocal (2 one-way links in the whole game). The run
+also replicated the exact C++ route pipeline and **caught a real bug
+before it ever reached the game**: `Tri2` is cross(ab,ac) = the NEGATIVE
+of Recast's `triArea2D`, so the funnel comparisons needed their signs
+flipped — unfixed, 9 of 11 demo routes zigzagged with corners at nearly
+every portal ("left 1 second, then right 2 seconds, then left…") and
+taut > midpoint lengths. After the flip: 0 problems, every taut path ≤
+midpoints, md1stin's 30-triangle crossing speaks as "up 12 seconds, then
+up-left 1 second", and nmkin_2's ladder-separated levels correctly
+report NO PATH between layers (the ladder is a Triggers destination —
+exactly the announcement a blind player needs).
+
+**Status**: builds clean (/WX); dry-run-verified; PENDING PLAY-TEST for
+route QUALITY only (do spoken turns land where walls are — data
+correctness is settled). debug_log writes a `NAV route` line
+(tris/start/goal/path/corners + spoken text) per request.
+LIVE PARTIAL CONFIRMATION 2026-07-16 (first session log): on nmkin_2 the
+loader parsed `tris=175` — exactly the dry run's triangle count — and a
+same-triangle route spoke "very close"; guards passed. A multi-turn route
+has not been exercised in-game yet.
+
+### v2.22.1 (2026-07-16): battle-menu garbage fix — kernel2 sections revalidated per use
+
+User bug report, same session that live-ran v2.22: after "Grunt B
+defeated", TTS spoke binary garbage ("-Û+! ' $ …" — bytes 0x01-0x18
+decoded through the FF7 table). The debug log identified it in one line:
+`BMENU cmd slot=0 col=0 row=0 id=0x01 => <garbage>` — the battle menu's
+COMMAND-name announce (`CommandMenuName(0x01)`), on every menu open in the
+affected battles.
+
+**Root cause** (log forensics): the 12:16 kernel2 scan found
+magic/item/weapon (stable at 0x232Bxxxx all session) but
+`command=00000000` (not decompressed yet — menus spoke "Attack" via the
+generic fallback, correct). The 12:20 rescan cached `command=0x0BD39985`.
+That allocation is TRANSIENT: it held the real command-name table in some
+battles ("Attack" spoke correctly at 12:20 and 12:31) and freed-and-reused
+binary in others (garbage at 12:27, 12:28, 12:46 — three DIFFERENT
+garbage strings, proving live-changing memory). v2.9's "kernel2 stays
+resident, one scan is permanent" assumption is true for the main kernel2
+block but FALSE for the command section, which the battle menu module
+evidently rebuilds per battle. `SectionEntryText`'s structural checks
+(table size, offset range, non-blank) cannot reject reused binary.
+
+**Fix**: `ValidatedSection()` (proxy.cpp) — before EVERY lookup, re-verify
+the section's head signature: u16[base] must point at the exact encoded
+first strings the scanner matched ("Attack|Magic|" etc.), the same
+self-validating rule FindSectionBase used at discovery, now applied at
+read time (readability-probed with IsReadableSpan first). On mismatch the
+cached pointer is NULLED (logged: "kernel2 section STALE"), the
+rate-limited rescan re-finds the live copy, and the caller speaks its
+generic label — degraded, never garbage. Applied to ALL FOUR sections
+(command via CommandMenuName; magic/item/weapon via ResolveActionName),
+since the same reuse class could bite any of them. Cost: one ~13-byte
+encode+memcmp per menu/action event.
+
+Deployed to the 2026 install 2026-07-16 13:03. Expected observable
+behavior in affected battles: command menu says "Attack"/"Magic"/… from
+the fallback table instead of garbage, and the log shows the STALE line
+followed by a successful rescan when the section is live again.
+
+### v2.23 (2026-07-16): journey planning ("which ladder first?"), screen-change cue, "up and left"
+
+User play-test feedback on v2.22 (turn-by-turn CONFIRMED WORKING in-game:
+"turns do seem to land at the walls" — the session log shows multi-turn
+routes all through the reactor). Three items:
+
+**1. Diagonals spoken "up and left"** (was "up-left"): the hyphenated
+forms were confusing; "and" states directly that the move is both arrows
+held together. One string-table change (kDpadSectors), applies to both
+direction styles.
+
+**2. Screen-change announcement** ("Screen: nmkin 2", new cfg key
+announce_map_change, default true): the user experienced directions
+"shifting as if the perspective changed" — which is exactly what happens:
+each field has its own fixed camera and its own control_direction, so
+crossing an exit rebases what "up" means. Sighted players get the camera
+cut as their cue; this is the audio equivalent, spoken (interrupt=false,
+queues politely) the first poll after field control returns on a new
+field id. Also fires for the first field after launch — an orientation
+freebie. Underscores speak as spaces.
+
+**3. Cross-layer JOURNEY planning** (the user's request: "where I need to
+traverse ladders, indicate which one is first, second, etc."): when a
+direct route fails because the target is on another walkmesh COMPONENT
+(levels are disconnected by design; the join is a scripted LINE trigger
+that MOVES the player), the mod now BFS-es a component graph whose edges
+are CONNECTOR pairs: two enabled LINE triggers on different components
+whose XY midpoints are within 300 units — the ladder bottom/top zone
+pattern, measured on the user's own nmkin_2 session log ('ladder up'
+bottom line to 'ladder down' top line: 134 XY units, 217 height units).
+Lines whose own endpoints span components count too. The announcement
+walks the player to the FIRST connector with a normal turn-by-turn route
+and names the rest in order: "Exit 1: on another level. First take
+ladder up, up and right 3 seconds. Then slide. Then ask again." No
+connector chain → the old "No walkable path found." + straight line
+(correct for regions entered only from another screen, e.g. nmkin_2's
+slide platform). PREREQUISITE PLUMBING: the walkmesh snapshot now keeps
+centroid HEIGHT, WalkmeshLocate takes a z and scores xy² + dz² (stacked
+layers resolve to the layer the point is on — also upgrades exit/trigger
+goal location generally), and NavDest carries line endpoint heights.
+
+**Offline validation** (journey sim appended to
+ff7_walkmesh_route_dryrun.py, using the REAL nmkin_2 trigger lines from
+the live log, since LINE triggers are runtime script state): nmkin_2 =
+3 components; z-aware location puts ladder-up on comp 0 / ladder-down on
+comp 1 / slide on comp 2; the pair rule finds exactly the ladder
+connector (134 < 300); a lower→upper journey speaks the full message;
+lower→slide-platform correctly reports no chain. Run clean, journey sim
+OK, all v2.22 invariants still green.
+
+Deployed to the 2026 install 2026-07-16 13:27 (installed cfg updated with
+the two new keys). PENDING PLAY-TEST: journey phrasing usefulness in the
+reactor, screen-change announcement timing/added chatter, "up and left"
+comprehension.
+
+Side effect: walkmesh pathfinding now exists, which unblocks the deferred
+FF4 keys Shift+\ (valid-path-only filter — A* reachability is a byproduct)
+and Ctrl+\ (layer filter — triangle awareness exists). See TODO.txt.
 
 ---
 

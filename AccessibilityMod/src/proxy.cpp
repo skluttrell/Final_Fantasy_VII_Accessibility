@@ -80,6 +80,8 @@
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
 #include <cmath>     // atan2f/sqrtf/fmodf in the field pathfinder (v2.14)
 #include <cwctype>   // iswdigit in the dev-label translator (v2.20)
+#include <vector>    // walkmesh snapshot + A* state (v2.22 turn-by-turn)
+#include <cfloat>    // FLT_MAX as the A* "unvisited" cost (v2.22)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -904,6 +906,17 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
 // each section is a u16 entry-offset table followed by 0xFF-terminated
 // FF7-encoded strings (entry N at base + u16[base + N*2]; u16[base] equals
 // the offset of entry 0, i.e. the table's own byte size).
+//
+// ⚠ LIFETIME (v2.22.1, from the 2026-07-16 play-session log): "scan once,
+// cache forever" is TRUE for magic/item/weapon (one resident block, stable
+// all session) but FALSE for the COMMAND section — it lives in a TRANSIENT
+// battle allocation that is freed and reused between battles. The cached
+// pointer then decodes reused binary as a "name" that passes every
+// structural check in SectionEntryText, and the battle menu spoke garbage
+// ("-Û+! ' $...") on menu open in the affected battles. Every pointer is
+// therefore RE-VALIDATED on each use via ValidatedSection() below; a stale
+// pointer is dropped (rate-limited rescan re-finds the live one) and the
+// caller falls back to its generic label — degraded, never garbage.
 struct Kernel2Sections {
     const uint8_t* magic;    // entries: 0-55 spells, 56-71 summons,
                              //          72-95 enemy skills, 128+ limit breaks
@@ -934,6 +947,57 @@ static size_t EncodeSignature(const char* ascii, uint8_t* out, size_t cap)
     for (; *ascii && n < cap; ++ascii)
         out[n++] = (*ascii == '|') ? 0xFF : static_cast<uint8_t>(*ascii - 0x20);
     return n;
+}
+
+// Defined later in this file (v2.18.2); the kernel2 validator needs it here.
+static bool IsReadableSpan(const void* p, size_t len);
+
+// Re-verify a cached kernel2 section pointer before EVERY use (v2.22.1).
+//
+// WHY: the command-name section is a transient battle allocation (see the
+// Kernel2Sections lifetime note) — after the game frees and reuses it, the
+// cached pointer still "looks like" a section to SectionEntryText's
+// structural checks and decodes reused binary as a speakable name. The one
+// check garbage cannot pass is the section's own HEAD SIGNATURE: u16[base]
+// is the offset of entry 0, and entry 0 must still begin with the exact
+// encoded strings FindSectionBase matched ("Attack|Magic|" etc.) — the
+// identical self-validating rule that located the section in the first
+// place, now applied at read time.
+//
+// On mismatch the slot is NULLED so the callers' rate-limited rescan can
+// re-find the live copy; this call returns nullptr and the caller uses its
+// generic fallback label. Cost: one ~13-byte encode+memcmp per menu/action
+// event — noise. Cross-thread: two battle threads may race on *slot; both
+// only ever write nullptr here, and aligned pointer stores are atomic on
+// x86 (same argument as the scan guard above).
+static const uint8_t* ValidatedSection(const uint8_t** slot,
+                                       const char* ascii_sig)
+{
+    const uint8_t* base = *slot;
+    if (!base)
+        return nullptr;
+
+    uint8_t sig[24];
+    const size_t sig_len = EncodeSignature(ascii_sig, sig, sizeof(sig));
+
+    bool ok = false;
+    if (IsReadableSpan(base, 2)) {
+        uint16_t first_off;
+        memcpy(&first_off, base, sizeof(first_off));
+        ok = first_off >= 2 && first_off <= 0x800 &&  // FindSectionBase range
+             IsReadableSpan(base + first_off, sig_len) &&
+             memcmp(base + first_off, sig, sig_len) == 0;
+    }
+    if (!ok) {
+        char dbg[128];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] kernel2 section STALE ('%s' head gone at %p) — "
+            "dropped for rescan", ascii_sig, base);
+        Log::Write(dbg);
+        *slot = nullptr;
+        return nullptr;
+    }
+    return base;
 }
 
 // Find a section base inside one memory region: locate the signature (the
@@ -1062,12 +1126,20 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
 {
     if (cmd > FF7Addr::BATTLE_DISPATCH_MAX_CMD)
         return false;
+
+    // v2.22.1: revalidate the cached section pointers at USE time — a
+    // freed-and-reused section must fall back to generic labels, never
+    // decode reused memory (see ValidatedSection / the lifetime note).
+    const uint8_t* const k2_magic  = ValidatedSection(&g_k2.magic,  "Cure|Cure2|");
+    const uint8_t* const k2_item   = ValidatedSection(&g_k2.item,   "Potion|Hi-Potion|");
+    const uint8_t* const k2_weapon = ValidatedSection(&g_k2.weapon, "Buster Sword|");
+
     const uint8_t branch = *reinterpret_cast<const uint8_t*>(
         FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + cmd);
     switch (branch) {
     case 0:   // section 0 (unused cmd 0x00)
     case 1:   // cmd 0x02 Magic: spell names are magic entries 0-55
-        return SectionEntryText(g_k2.magic, idx, out);
+        return SectionEntryText(k2_magic, idx, out);
     case 2:   // cmd 0x03 Summon.  The game uses the separate summon-attack-
               // name file for idx<16, but its heap copy has no locatable
               // signature; magic entries 56-71 hold the identical summon
@@ -1075,14 +1147,14 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
               // use those.  idx>=16 falls through to the magic file as the
               // game itself does.
         if (idx < 16)
-            return SectionEntryText(g_k2.magic, idx + 56, out);
-        return SectionEntryText(g_k2.magic, idx, out);
+            return SectionEntryText(k2_magic, idx + 56, out);
+        return SectionEntryText(k2_magic, idx, out);
     case 3:   // cmd 0x04 Item
     case 5:   // cmd 0x08 (item variant)
         if (idx < 128)
-            return SectionEntryText(g_k2.item, idx, out);
+            return SectionEntryText(k2_item, idx, out);
         if (idx < 256)   // thrown weapons share the item id space at 128+
-            return SectionEntryText(g_k2.weapon, idx - 128, out);
+            return SectionEntryText(k2_weapon, idx - 128, out);
         return false;    // armor/accessory ids never flash in battle
     case 4: { // cmd 0x07: the game composes this name into a fixed buffer
         const char* buf = reinterpret_cast<const char*>(0x00DC3640);
@@ -1092,11 +1164,11 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
         return !out.empty();
     }
     case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'…)
-        return SectionEntryText(g_k2.magic, idx + 72, out);
+        return SectionEntryText(k2_magic, idx + 72, out);
     case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'…)
         if (idx == 0x7F)   // the game's '????' sentinel for unnamed limits
             return false;
-        return SectionEntryText(g_k2.magic, idx + 128, out);
+        return SectionEntryText(k2_magic, idx + 128, out);
     case 8: { // cmd 0x20 enemy attack: per-formation table from scene.bin
         if (idx >= 64)     // formation attack slots are small indices (0-31)
             return false;
@@ -1737,7 +1809,12 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
     default:
         break;
     }
-    if (id != 0 && SectionEntryText(g_k2.command, static_cast<uint32_t>(id) - 1, out))
+    // v2.22.1: the command section is a TRANSIENT battle allocation (the
+    // 2026-07-16 session log caught a reused copy speaking binary garbage
+    // on menu open) — revalidate its head signature before every lookup.
+    if (id != 0 &&
+        SectionEntryText(ValidatedSection(&g_k2.command, "Attack|Magic|"),
+                         static_cast<uint32_t>(id) - 1, out))
         return;
     wchar_t generic_buf[32];
     out = GenericActionLabel(id, generic_buf, _countof(generic_buf));
@@ -2303,6 +2380,13 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // follow-up play test confirmed left/right land correctly too — the
 // mapping is a pure rotation, no mirror.
 //
+// DIRECTION STYLES (v2.22): the above single-bearing announcement is now
+// the "line" style (direction_style=line, and the automatic fallback).
+// The default "turns" style routes over the field's WALKMESH instead —
+// A* + funnel over the triangle graph, spoken as d-pad moves: "Exit 2:
+// up 4 seconds, then right 2 seconds" — see the WALKMESH pathfinding
+// block above for the full pipeline and its fail-closed guards.
+//
 // HOTKEYS use GetAsyncKeyState edges, gated on the game window being
 // focused (GetForegroundWindow's process == ours) so typing in another app
 // can't trigger them, and on normal field control (GAME_MODE==0,
@@ -2317,14 +2401,20 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // trail in gamepad.h.
 // ---------------------------------------------------------------------------
 
-// Map an input-relative angle (degrees, 0 = the Up d-pad, clockwise) to a
-// spoken 8-way d-pad direction.
-static const wchar_t* DpadSectorName(float deg)
+// Map an input-relative angle (degrees, 0 = the Up d-pad, clockwise) to an
+// 8-way d-pad sector. Split into index + name (v2.22) because the
+// turn-by-turn route builder merges consecutive same-SECTOR legs — it
+// compares indices, not strings.
+// Diagonals are spoken "up and left", not "up-left" (v2.23): the user
+// found the hyphenated forms confusing; "and" says directly that the move
+// is BOTH arrows held together.
+static const wchar_t* const kDpadSectors[8] = {
+    L"up", L"up and right", L"right", L"down and right",
+    L"down", L"down and left", L"left", L"up and left",
+};
+
+static int DpadSectorIndex(float deg)
 {
-    static const wchar_t* const kSectors[8] = {
-        L"up", L"up-right", L"right", L"down-right",
-        L"down", L"down-left", L"left", L"up-left",
-    };
     // Normalize to [0, 360), offset by half a sector so each name is
     // centered on its axis (up = [-22.5, +22.5)).
     float norm = fmodf(deg + 22.5f, 360.0f);
@@ -2332,7 +2422,12 @@ static const wchar_t* DpadSectorName(float deg)
     int sector = static_cast<int>(norm / 45.0f);
     if (sector < 0)  sector = 0;
     if (sector > 7)  sector = 7;
-    return kSectors[sector];
+    return sector;
+}
+
+static const wchar_t* DpadSectorName(float deg)
+{
+    return kDpadSectors[DpadSectorIndex(deg)];
 }
 
 // One browsable destination: a gateway/exit (line), a person/save point
@@ -2342,7 +2437,15 @@ static const wchar_t* DpadSectorName(float deg)
 struct NavDest {
     wchar_t name[32];      // spoken name, e.g. "Exit 2" / "shinra guard 3"
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
+    int16_t line_z1, line_z2;   // line endpoint HEIGHTS (v2.23) — lets the
+                                // route builder locate the target on the
+                                // correct STACKED layer when no triangle
+                                // hint exists (exits/triggers on walkways)
     int     model_slot;    // field model index for people; -1 for exits
+    int16_t target_tri;    // walkmesh triangle the target stands on (models:
+                           // their live +0x78 id — exact even on stacked
+                           // layers); -1 = unknown, turn-by-turn locates the
+                           // target point geometrically instead (v2.22)
 };
 
 // ---------------------------------------------------------------------------
@@ -2368,6 +2471,509 @@ static bool IsReadableSpan(const void* p, size_t len)
         cur = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// WALKMESH pathfinding — turn-by-turn directions (v2.22).
+//
+// WHY: the v2.14 directions are one straight-line bearing, which happily
+// points through walls and pits. Turn-by-turn plans a real route over the
+// field's WALKMESH — the triangle mesh the engine itself moves characters
+// on — and speaks it as a sequence of d-pad moves with walking times:
+// "Exit 2: up 4 seconds, then right 2 seconds." The straight-line style
+// remains available (direction_style=line) and is the automatic fallback
+// whenever a route cannot be computed.
+//
+// DATA: field-file section 5 behind FIELD_FILE_BUFFER — layout, sources,
+// and the access-pool confidence caveat are documented at ff7_addresses.h
+// SECTION 1h. Everything runs on the directions keypress, nothing is
+// cached: a field mesh is at most a few hundred triangles, and per-press
+// rebuilding is the same simplicity/freshness tradeoff the destination
+// list itself makes.
+//
+// PIPELINE:
+//   1. LoadWalkmesh    — snapshot triangles + adjacency, SELF-GUARDED
+//                        (id-range + reciprocity checks) because the
+//                        access pool is the one layout fact FFNx's code
+//                        does not confirm — a wrong guess must fail the
+//                        parse, never route the player into a wall
+//   2. locate ends     — player: live triangle id (+0x78); target: its
+//                        model's triangle id, else point-location
+//   3. WalkmeshAStar   — A* over the adjacency graph, centroid costs
+//   4. BuildPortals    — the crossed edges, endpoints recovered by
+//                        GEOMETRIC shared-vertex match (never by the
+//                        access pool's edge-order convention, which is
+//                        not runtime-verifiable)
+//   5. FunnelPath      — string-pulling: the taut path through the
+//                        corridor, so corners exist only where the route
+//                        actually bends around geometry
+//   6. RouteToSpeech   — legs quantized to the 8 d-pad sectors,
+//                        same-direction legs merged, sub-step jogs folded
+//                        into their predecessor
+// ---------------------------------------------------------------------------
+
+// One walkmesh triangle, snapshot form. Routing is 2D (the same
+// convention as exits/distance since v2.14) — adjacency routes stacked
+// layers correctly because two overlapping walkways are far apart in the
+// GRAPH even when they overlap in XY. The centroid HEIGHT is kept
+// (v2.23) so point-location can resolve WHICH stacked layer a target
+// with a known Z is on (ladder endpoints, exits on walkways).
+struct WalkTri {
+    float    vx[3], vy[3];  // vertex XY, walkmesh units
+    uint16_t nbr[3];        // triangle across edge slot e; 0xFFFF = wall
+    float    cx, cy;        // centroid — the triangle's A* node position
+    float    cz;            // centroid height — layer disambiguation only
+};
+
+// A 2D point on the route (funnel corners, portal midpoints).
+struct NavPt { float x, y; };
+
+// Snapshot and validate the current field's walkmesh. False = caller must
+// fall back to straight-line directions (buffer mid-transition, count
+// implausible, or the access pool failed its self-guard).
+static bool LoadWalkmesh(std::vector<WalkTri>& out)
+{
+    const uint32_t buf = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_FILE_BUFFER);
+    if (buf < 0x401000)
+        return false;
+    if (!IsReadableSpan(reinterpret_cast<const void*>(buf),
+                        FF7Addr::FIELD_SECTION_TABLE_OFF + 9 * 4))
+        return false;
+    const uint32_t sec_off = *reinterpret_cast<const uint32_t*>(
+        buf + FF7Addr::FIELD_SECTION_TABLE_OFF +
+        4 * FF7Addr::FIELD_WALKMESH_SECTION_INDEX);
+    if (sec_off == 0)
+        return false;
+    const uint8_t* sec = reinterpret_cast<const uint8_t*>(buf) + sec_off;
+    if (!IsReadableSpan(sec, FF7Addr::FWMESH_OFF_TRIS))
+        return false;
+    const uint32_t ntris = *reinterpret_cast<const uint32_t*>(
+        sec + FF7Addr::FWMESH_OFF_NTRIS);
+    if (ntris == 0 || ntris > FF7Addr::FWMESH_MAX_TRIS)
+        return false;
+    const uint8_t* tris = sec + FF7Addr::FWMESH_OFF_TRIS;
+    if (!IsReadableSpan(tris, ntris * (FF7Addr::FWMESH_TRI_SIZE +
+                                       FF7Addr::FWMESH_ACCESS_SIZE)))
+        return false;
+    const uint8_t* access = tris + ntris * FF7Addr::FWMESH_TRI_SIZE;
+
+    out.resize(ntris);
+    for (uint32_t t = 0; t < ntris; ++t) {
+        const int16_t* v = reinterpret_cast<const int16_t*>(
+            tris + t * FF7Addr::FWMESH_TRI_SIZE);
+        const uint16_t* a = reinterpret_cast<const uint16_t*>(
+            access + t * FF7Addr::FWMESH_ACCESS_SIZE);
+        WalkTri& w = out[t];
+        float zsum = 0.0f;
+        for (int i = 0; i < 3; ++i) {
+            w.vx[i]  = static_cast<float>(v[i * 4 + 0]);  // s16 x,y,z,res
+            w.vy[i]  = static_cast<float>(v[i * 4 + 1]);
+            zsum    += static_cast<float>(v[i * 4 + 2]);
+            w.nbr[i] = a[i];
+        }
+        w.cx = (w.vx[0] + w.vx[1] + w.vx[2]) / 3.0f;
+        w.cy = (w.vy[0] + w.vy[1] + w.vy[2]) / 3.0f;
+        w.cz = zsum / 3.0f;
+    }
+
+    // SELF-GUARD for the access pool (see SECTION 1h): if its documented
+    // location were wrong, these bytes would be triangle coordinates or
+    // padding — out-of-range ids and broken reciprocity — not a mostly
+    // mutual graph. Requiring every id in range AND >= 90% of directed
+    // links reciprocal makes "wrong layout" fail closed into the
+    // straight-line fallback. (Not 100%: tolerate a few genuinely odd
+    // one-way links in hand-built meshes without giving up the feature.)
+    uint32_t links = 0, mutual = 0;
+    for (uint32_t t = 0; t < ntris; ++t) {
+        for (int e = 0; e < 3; ++e) {
+            const uint16_t nb = out[t].nbr[e];
+            if (nb == FF7Addr::FWMESH_NO_NEIGHBOR)
+                continue;
+            if (nb >= ntris)
+                return false;
+            ++links;
+            for (int k = 0; k < 3; ++k) {
+                if (out[nb].nbr[k] == t) { ++mutual; break; }
+            }
+        }
+    }
+    if (ntris > 1 && (links == 0 || mutual * 10 < links * 9))
+        return false;
+    return true;
+}
+
+// Squared distance from point (px,py) to segment (x1,y1)-(x2,y2) — the
+// nearest-point projection the directions math has used since v2.14.
+static float PointSegDist2(float px, float py,
+                           float x1, float y1, float x2, float y2)
+{
+    const float ex = x2 - x1, ey = y2 - y1;
+    const float len2 = ex * ex + ey * ey;
+    float t = (len2 > 0.0f) ? ((px - x1) * ex + (py - y1) * ey) / len2 : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    const float dx = (x1 + t * ex) - px;
+    const float dy = (y1 + t * ey) - py;
+    return dx * dx + dy * dy;
+}
+
+// Twice the signed area of triangle (a,b,c) — the funnel algorithm's
+// orientation primitive. Sign says which side of a->b the point c is on:
+// POSITIVE = the side BuildPortals labels "left". ⚠ This is cross(ab,ac),
+// the NEGATIVE of Recast's triArea2D (cross(ac,ab)) — every comparison in
+// FunnelPath is therefore sign-FLIPPED relative to the classic listing.
+// The 2026-07-16 offline dry run (ff7_walkmesh_route_dryrun.py) caught
+// exactly this: the unflipped signs emitted a corner at nearly every
+// portal (zigzag routes longer than the midpoint path).
+static float Tri2(float ax, float ay, float bx, float by, float cx, float cy)
+{
+    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+// Triangle for point (x,y,z): the one whose XY projection contains the
+// point (or whose boundary is nearest — target points sit exactly ON
+// portal edges; point targets can be a hair off-mesh), with the HEIGHT
+// difference to the triangle's centroid as a tie-breaker term so a field
+// with STACKED walkways resolves to the layer the point is actually on
+// (v2.23 — ladder endpoints made this matter; before that the 2D pick
+// was an accepted limitation). The score sums XY boundary distance² and
+// height difference²: zero for "inside, same height", and a triangle
+// directly underfoot always beats the same spot on another layer.
+static int WalkmeshLocate(const std::vector<WalkTri>& m,
+                          float x, float y, float z)
+{
+    int   best = -1;
+    float best_score = FLT_MAX;
+    for (size_t t = 0; t < m.size(); ++t) {
+        const WalkTri& w = m[t];
+        const float s0 = Tri2(w.vx[0], w.vy[0], w.vx[1], w.vy[1], x, y);
+        const float s1 = Tri2(w.vx[1], w.vy[1], w.vx[2], w.vy[2], x, y);
+        const float s2 = Tri2(w.vx[2], w.vy[2], w.vx[0], w.vy[0], x, y);
+        // Inside = same side of all three edges. Field meshes are not
+        // consistently wound, so accept either orientation; the epsilon
+        // admits points sitting exactly on an edge.
+        constexpr float eps = 0.01f;
+        float xy2 = 0.0f;
+        if (!((s0 >= -eps && s1 >= -eps && s2 >= -eps) ||
+              (s0 <= eps && s1 <= eps && s2 <= eps))) {
+            xy2 = FLT_MAX;
+            for (int e = 0; e < 3; ++e) {
+                const int f = (e + 1) % 3;
+                const float d2 = PointSegDist2(x, y, w.vx[e], w.vy[e],
+                                               w.vx[f], w.vy[f]);
+                if (d2 < xy2) xy2 = d2;
+            }
+        }
+        const float dz = z - w.cz;
+        const float score = xy2 + dz * dz;
+        if (score < best_score) { best_score = score; best = static_cast<int>(t); }
+    }
+    return best;
+}
+
+// A* over the triangle adjacency graph, centroid-to-centroid costs and a
+// straight-line heuristic (admissible: no shortcut is shorter than the
+// crow's flight). Linear-scan open "list" — n is a few hundred, and this
+// runs once per keypress; a heap would be pure ceremony. Returns the
+// triangle sequence start..goal, or false when the goal is in a region
+// the graph cannot reach (locked-off area, different layer group).
+static bool WalkmeshAStar(const std::vector<WalkTri>& m, int start, int goal,
+                          std::vector<uint16_t>& out_path)
+{
+    const size_t n = m.size();
+    std::vector<float>   g(n, FLT_MAX);      // best known cost from start
+    std::vector<float>   f(n, FLT_MAX);      // g + heuristic
+    std::vector<int32_t> parent(n, -1);
+    std::vector<uint8_t> st(n, 0);           // 0 new, 1 open, 2 closed
+    const auto heur = [&](int t) {
+        const float dx = m[goal].cx - m[t].cx;
+        const float dy = m[goal].cy - m[t].cy;
+        return sqrtf(dx * dx + dy * dy);
+    };
+    g[start] = 0.0f;
+    f[start] = heur(start);
+    st[start] = 1;
+    for (;;) {
+        int   cur = -1;
+        float fbest = FLT_MAX;
+        for (size_t i = 0; i < n; ++i)
+            if (st[i] == 1 && f[i] < fbest) { fbest = f[i]; cur = static_cast<int>(i); }
+        if (cur < 0)
+            return false;                    // open set empty: unreachable
+        if (cur == goal)
+            break;
+        st[cur] = 2;
+        for (int e = 0; e < 3; ++e) {
+            const uint16_t nb = m[cur].nbr[e];
+            if (nb == FF7Addr::FWMESH_NO_NEIGHBOR || st[nb] == 2)
+                continue;
+            const float dx = m[nb].cx - m[cur].cx;
+            const float dy = m[nb].cy - m[cur].cy;
+            const float ng = g[cur] + sqrtf(dx * dx + dy * dy);
+            if (ng < g[nb]) {
+                g[nb] = ng;
+                f[nb] = ng + heur(nb);
+                parent[nb] = cur;
+                st[nb] = 1;
+            }
+        }
+    }
+    out_path.clear();
+    for (int t = goal; t != -1; t = parent[t])
+        out_path.push_back(static_cast<uint16_t>(t));
+    for (size_t i = 0, j = out_path.size() - 1; i < j; ++i, --j) {
+        const uint16_t tmp = out_path[i];
+        out_path[i] = out_path[j];
+        out_path[j] = tmp;
+    }
+    return true;
+}
+
+// The doorway between two consecutive path triangles: the shared edge,
+// endpoints ordered left/right of the direction of travel.
+struct PathPortal { float lx, ly, rx, ry; };
+
+// Portals for a triangle path. The shared edge is recovered by EXACT
+// vertex-coordinate match between the two triangles (s16 grid, so shared
+// vertices compare equal) — deliberately NOT via the access pool's
+// edge-order convention, the one layout fact nothing at runtime can
+// verify; geometry is self-evident. Left/right orientation comes from the
+// centroid-to-centroid crossing direction, which by construction passes
+// through the shared edge, so the assignment is stable regardless of how
+// the route approached.
+static void BuildPortals(const std::vector<WalkTri>& m,
+                         const std::vector<uint16_t>& path,
+                         std::vector<PathPortal>& out)
+{
+    out.clear();
+    for (size_t i = 0; i + 1 < path.size(); ++i) {
+        const WalkTri& A = m[path[i]];
+        const WalkTri& B = m[path[i + 1]];
+        float sx[2] = {}, sy[2] = {};
+        int   found = 0;
+        for (int a = 0; a < 3 && found < 2; ++a) {
+            for (int b = 0; b < 3 && found < 2; ++b) {
+                if (A.vx[a] == B.vx[b] && A.vy[a] == B.vy[b]) {
+                    // A degenerate triangle can repeat a coordinate;
+                    // don't record the same point as both endpoints.
+                    if (found == 1 && sx[0] == A.vx[a] && sy[0] == A.vy[a])
+                        continue;
+                    sx[found] = A.vx[a];
+                    sy[found] = A.vy[a];
+                    ++found;
+                    break;
+                }
+            }
+        }
+        PathPortal p;
+        if (found == 2) {
+            const float side = Tri2(A.cx, A.cy, B.cx, B.cy, sx[0], sy[0]);
+            if (side >= 0.0f) { p.lx = sx[0]; p.ly = sy[0]; p.rx = sx[1]; p.ry = sy[1]; }
+            else              { p.lx = sx[1]; p.ly = sy[1]; p.rx = sx[0]; p.ry = sy[0]; }
+        } else {
+            // No 2-vertex match (T-junction or exotic geometry): collapse
+            // the portal to B's centroid. The funnel then treats it as a
+            // must-pass point — the route stays walkable, just less taut.
+            p.lx = p.rx = B.cx;
+            p.ly = p.ry = B.cy;
+        }
+        out.push_back(p);
+    }
+}
+
+// String-pulling (the "simple stupid funnel" algorithm): tighten the
+// route through the portal corridor so corners appear only where it
+// actually wraps around geometry. Emits the corner points (start
+// excluded, end included). On the internal-guard bailout corners comes
+// back EMPTY and the caller degrades to portal midpoints — a valid,
+// just less taut, route.
+static void FunnelPath(float sx, float sy, float endx, float endy,
+                       const std::vector<PathPortal>& portals,
+                       std::vector<NavPt>& corners)
+{
+    corners.clear();
+    std::vector<PathPortal> p = portals;
+    p.push_back({ endx, endy, endx, endy });  // end = a zero-width portal
+
+    float ax = sx, ay = sy;                   // funnel apex
+    float lx = p[0].lx, ly = p[0].ly;         // current left boundary
+    float rx = p[0].rx, ry = p[0].ry;         // current right boundary
+    size_t li = 0, ri = 0;                    // portals those came from
+
+    // The classic algorithm rescans from the apex portal after emitting a
+    // corner, making it O(n^2) worst case — fine at field sizes, but a
+    // subtle orientation bug could in principle cycle, so a hard guard
+    // converts "cannot happen" into "falls back audibly correct".
+    int guard = static_cast<int>(p.size()) * 16 + 64;
+
+    for (size_t i = 1; i < p.size(); ++i) {
+        if (--guard < 0) { corners.clear(); return; }
+
+        // Tighten the RIGHT side: the new right endpoint narrows the
+        // funnel if it lies left of (or on) the current right boundary.
+        // (Signs flipped vs. the classic Recast listing — see Tri2.)
+        if (Tri2(ax, ay, rx, ry, p[i].rx, p[i].ry) >= 0.0f) {
+            if ((ax == rx && ay == ry) ||
+                Tri2(ax, ay, lx, ly, p[i].rx, p[i].ry) < 0.0f) {
+                rx = p[i].rx; ry = p[i].ry; ri = i;
+            } else {
+                // New right crossed the LEFT boundary: the left point is
+                // a real corner. Emit it, restart the funnel there.
+                corners.push_back({ lx, ly });
+                ax = lx; ay = ly;
+                lx = rx = ax; ly = ry = ay;
+                ri = li;
+                i = li;                       // loop ++ resumes at li+1
+                continue;
+            }
+        }
+        // Tighten the LEFT side (mirror image).
+        if (Tri2(ax, ay, lx, ly, p[i].lx, p[i].ly) <= 0.0f) {
+            if ((ax == lx && ay == ly) ||
+                Tri2(ax, ay, rx, ry, p[i].lx, p[i].ly) > 0.0f) {
+                lx = p[i].lx; ly = p[i].ly; li = i;
+            } else {
+                corners.push_back({ rx, ry });
+                ax = rx; ay = ry;
+                lx = rx = ax; ly = ry = ay;
+                li = ri;
+                i = ri;
+                continue;
+            }
+        }
+    }
+    corners.push_back({ endx, endy });
+}
+
+// Corners -> speech: "up 4 seconds, then right 2 seconds". Legs are
+// quantized to the 8 d-pad sectors through the SAME world->input rotation
+// the straight-line style uses (world + control_direction - 180, the
+// fully play-test-confirmed v2.14 mapping); consecutive same-sector legs
+// merge; a sub-step jog (under ~0.75 s of walking) folds into its
+// predecessor rather than being spoken — "then left 1 second" for a
+// two-tile kink is noise, and the player re-queries en route anyway. The
+// FIRST leg is never folded away: it is the move the player makes right
+// now. At most five moves are spoken (routes rarely need more than
+// three); a longer tail is summarized so the message stays holdable.
+static std::wstring RouteToSpeech(float sx, float sy,
+                                  const std::vector<NavPt>& corners,
+                                  float control_deg)
+{
+    struct Seg { int sector; float len; };
+    std::vector<Seg> segs;
+    float cx = sx, cy = sy;
+    for (const NavPt& c : corners) {
+        const float dx = c.x - cx, dy = c.y - cy;
+        const float len = sqrtf(dx * dx + dy * dy);
+        cx = c.x; cy = c.y;
+        if (len < 1.0f)
+            continue;                        // duplicate/joint point
+        const float world_deg = atan2f(dx, dy) * (180.0f / 3.14159265f);
+        const int sector = DpadSectorIndex(world_deg + control_deg - 180.0f);
+        if (!segs.empty() && segs.back().sector == sector)
+            segs.back().len += len;
+        else
+            segs.push_back({ sector, len });
+    }
+
+    // Fold sub-step legs into their predecessor, re-merging neighbors the
+    // fold makes adjacent. (Folding into the PREDECESSOR keeps the first
+    // spoken move truthful; the jogged distance still counts.)
+    constexpr float kMinSegLen = 120.0f;     // 0.75 s x 160 units/s
+    std::vector<Seg> folded;
+    for (const Seg& s : segs) {
+        if (!folded.empty() &&
+            (s.len < kMinSegLen || folded.back().sector == s.sector))
+            folded.back().len += s.len;
+        else
+            folded.push_back(s);
+    }
+
+    float total = 0.0f;
+    for (const Seg& s : folded)
+        total += s.len;
+    if (total < FF7Addr::WALKMESH_UNITS_PER_SEC * 0.5f)
+        return L"very close";
+
+    std::wstring out;
+    constexpr size_t kMaxSpoken = 5;
+    for (size_t i = 0; i < folded.size() && i < kMaxSpoken; ++i) {
+        int secs = static_cast<int>(
+            folded[i].len / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
+        if (secs < 1) secs = 1;
+        if (i > 0)
+            out += L", then ";
+        out += kDpadSectors[folded[i].sector];
+        out += L' ';
+        out += std::to_wstring(secs);
+        out += (secs == 1) ? L" second" : L" seconds";
+    }
+    if (folded.size() > kMaxSpoken)
+        out += L", and more after that";
+    return out;
+}
+
+// Outcome of a turn-by-turn attempt — the caller's fallback decision.
+enum class RouteOutcome {
+    SPOKEN_ROUTE,   // out_route holds the spoken route body
+    NO_PATH,        // mesh fine, target genuinely unreachable: say so
+    UNAVAILABLE,    // mesh unreadable/failed guards: silent fallback
+};
+
+// Full pipeline for one directions request. (px,py,pz) player, (tx,ty,tz)
+// the target point (nearest point of the destination's line — the same
+// point the straight-line style aims at; z interpolated along the line),
+// *_hint = live triangle ids when known (heights only matter when a hint
+// is missing and the field has stacked layers).
+static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
+                                         int start_hint,
+                                         float tx, float ty, float tz,
+                                         int goal_hint,
+                                         float control_deg,
+                                         std::wstring& out_route)
+{
+    std::vector<WalkTri> mesh;
+    if (!LoadWalkmesh(mesh)) {
+        Log::Write("[FF7Access] NAV route: walkmesh unavailable, "
+                   "falling back to straight-line");
+        return RouteOutcome::UNAVAILABLE;
+    }
+    const int n = static_cast<int>(mesh.size());
+    const int start = (start_hint >= 0 && start_hint < n)
+                          ? start_hint : WalkmeshLocate(mesh, px, py, pz);
+    const int goal  = (goal_hint >= 0 && goal_hint < n)
+                          ? goal_hint : WalkmeshLocate(mesh, tx, ty, tz);
+    if (start < 0 || goal < 0)
+        return RouteOutcome::UNAVAILABLE;
+
+    std::vector<uint16_t> path;
+    if (!WalkmeshAStar(mesh, start, goal, path))
+        return RouteOutcome::NO_PATH;
+
+    std::vector<PathPortal> portals;
+    BuildPortals(mesh, path, portals);
+    std::vector<NavPt> corners;
+    FunnelPath(px, py, tx, ty, portals, corners);
+    if (corners.empty()) {
+        // Funnel guard tripped — degrade to portal midpoints: every
+        // doorway on the route in order, so still a walkable description.
+        for (const PathPortal& p : portals)
+            corners.push_back({ (p.lx + p.rx) * 0.5f, (p.ly + p.ry) * 0.5f });
+        corners.push_back({ tx, ty });
+    }
+    out_route = RouteToSpeech(px, py, corners, control_deg);
+
+    if (Config::Get().debug_log) {
+        char dbg[224];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] NAV route tris=%d start=%d goal=%d path=%u "
+            "corners=%u '%ls'",
+            n, start, goal, static_cast<unsigned>(path.size()),
+            static_cast<unsigned>(corners.size()), out_route.c_str());
+        Log::Write(dbg);
+    }
+    return RouteOutcome::SPOKEN_ROUTE;
 }
 
 // ---------------------------------------------------------------------------
@@ -2865,6 +3471,262 @@ static bool EntityNameFromTable(const uint8_t* table, uint8_t n_entities,
     return !out.empty();
 }
 
+// ---------------------------------------------------------------------------
+// Cross-layer JOURNEY planning (v2.23) — "which ladder first?"
+//
+// User request 2026-07-16: when a destination sits on another walkmesh
+// LEVEL, "No walkable path found" says WHAT but not HOW — the player wants
+// the connector sequence: which ladder/slide to take FIRST, then next, in
+// order.
+//
+// The walkmesh alone cannot answer: levels are DISCONNECTED graph
+// components by design, and the join is a scripted LINE trigger (ladder,
+// slide, elevator) that MOVES the player. The script's destination is not
+// readable statically — but the geometry is: a ladder's bottom zone and
+// top zone are XY-PROXIMATE lines on different components. Live nmkin_2
+// data (2026-07-16 session log): 'ladder up' bottom line midpoint sits
+// 134 XY units from 'ladder down' top line midpoint, 217 units apart in
+// height. Hence:
+//
+//   connector = a PAIR of enabled LINE triggers on different components
+//   whose XY midpoints are within JOURNEY_PAIR_DIST (300 = the measured
+//   134 with slack), plus any single line whose own endpoints span two
+//   components (a line drawn up a wall).
+//
+// BFS over components along connectors yields the trigger SEQUENCE; the
+// spoken result is a walking route to the FIRST connector plus the
+// ordered names of the rest: "Exit 1: on another level. First take
+// ladder up, up 3 seconds. Then slide. Then ask again." Re-querying after
+// each connector recomputes from the new level — the same re-query flow
+// the pathfinder already teaches.
+//
+// A false pairing (two unrelated triggers stacked in XY) would give a
+// wrong-but-harmless hint: the journey only runs AFTER a direct route
+// failed, every hop is spoken BY NAME so the player can judge it, and the
+// fallback ("No walkable path found" + straight line) still exists when
+// no connector chain is found.
+// ---------------------------------------------------------------------------
+
+// Connected components of the walkmesh adjacency graph — each component is
+// one "level"/region reachable by plain walking. Iterative flood fill.
+static int WalkmeshComponents(const std::vector<WalkTri>& m,
+                              std::vector<int>& comp)
+{
+    comp.assign(m.size(), -1);
+    std::vector<uint16_t> stack;
+    int n_comps = 0;
+    for (size_t seed = 0; seed < m.size(); ++seed) {
+        if (comp[seed] != -1)
+            continue;
+        comp[seed] = n_comps;
+        stack.push_back(static_cast<uint16_t>(seed));
+        while (!stack.empty()) {
+            const uint16_t t = stack.back();
+            stack.pop_back();
+            for (int e = 0; e < 3; ++e) {
+                const uint16_t nb = m[t].nbr[e];
+                if (nb != FF7Addr::FWMESH_NO_NEIGHBOR && comp[nb] == -1) {
+                    comp[nb] = n_comps;
+                    stack.push_back(nb);
+                }
+            }
+        }
+        ++n_comps;
+    }
+    return n_comps;
+}
+
+// Spoken name for a LINE trigger — the same naming rules as the Triggers
+// category (owning entity's dev name, translated; stale-guarded by the
+// entity→slot map; "Trigger N" fallback).
+static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
+                                  std::wstring& out)
+{
+    const uint8_t mapped = *reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::FIELD_ENTITY_LINE_SLOT + ent);
+    const uint8_t* tbl = nullptr;
+    uint8_t n = 0;
+    std::wstring ename;
+    if (FieldEntityNameTable(&tbl, &n) && mapped == line_idx &&
+        EntityNameFromTable(tbl, n, ent, ename)) {
+        out = TranslateEntityName(ename);
+        return;
+    }
+    wchar_t buf[24];
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"Trigger %u", line_idx + 1u);
+    out = buf;
+}
+
+// Journey plan for a target on another component. True = `out` holds the
+// full spoken message (destination name included); false = no connector
+// chain found (caller speaks the no-path fallback).
+static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
+                               float tx, float ty, float tz, int goal_hint,
+                               float control_deg, const wchar_t* dest_name,
+                               std::wstring& out)
+{
+    std::vector<WalkTri> mesh;
+    if (!LoadWalkmesh(mesh))
+        return false;
+    const int n = static_cast<int>(mesh.size());
+    const int start = (start_hint >= 0 && start_hint < n)
+                          ? start_hint : WalkmeshLocate(mesh, px, py, pz);
+    const int goal  = (goal_hint >= 0 && goal_hint < n)
+                          ? goal_hint : WalkmeshLocate(mesh, tx, ty, tz);
+    if (start < 0 || goal < 0)
+        return false;
+
+    std::vector<int> comp;
+    const int n_comps = WalkmeshComponents(mesh, comp);
+    if (n_comps < 2 || comp[start] == comp[goal])
+        return false;   // same level — not a journey problem
+
+    // Snapshot enabled LINE triggers: standing point (line midpoint, with
+    // height), its component, and identity. Same array and enabled-guard
+    // as the Triggers category.
+    struct JLine {
+        float   mx, my, mz;
+        int     tri, comp;
+        int     comp2;      // component of the SECOND endpoint (a line
+                            // drawn up a wall spans levels by itself)
+        uint8_t idx, ent;
+    };
+    JLine jl[FF7Addr::FLINE_MAX];
+    int n_jl = 0;
+    const uint16_t n_lines = *reinterpret_cast<const volatile uint16_t*>(
+        FF7Addr::FIELD_LINE_COUNT);
+    for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
+        const uint8_t* le = reinterpret_cast<const uint8_t*>(
+            FF7Addr::FIELD_LINE_ARRAY + i * FF7Addr::FLINE_STRIDE);
+        if (le[FF7Addr::FLINE_OFF_ENABLED] == 0)
+            continue;
+        const int16_t* v = reinterpret_cast<const int16_t*>(le);
+        JLine& j = jl[n_jl];
+        j.mx = (v[0] + v[3]) * 0.5f;
+        j.my = (v[1] + v[4]) * 0.5f;
+        j.mz = (v[2] + v[5]) * 0.5f;
+        j.tri = WalkmeshLocate(mesh, j.mx, j.my, j.mz);
+        if (j.tri < 0)
+            continue;
+        j.comp  = comp[j.tri];
+        const int t2 = WalkmeshLocate(mesh,
+                                      static_cast<float>(v[3]),
+                                      static_cast<float>(v[4]),
+                                      static_cast<float>(v[5]));
+        j.comp2 = (t2 >= 0) ? comp[t2] : j.comp;
+        j.idx = static_cast<uint8_t>(i);
+        j.ent = le[FF7Addr::FLINE_OFF_ENTITY];
+        ++n_jl;
+    }
+
+    // Connector edges between components (see header comment):
+    //   pair rule — two triggers on different components, XY-close;
+    //   span rule — one trigger whose own endpoints are on two components.
+    constexpr float JOURNEY_PAIR_DIST = 300.0f;
+    struct JEdge { int ca, cb; int via; };   // stand on jl[via] (in ca)
+    std::vector<JEdge> edges;
+    for (int a = 0; a < n_jl; ++a) {
+        if (jl[a].comp2 != jl[a].comp) {
+            edges.push_back({ jl[a].comp,  jl[a].comp2, a });
+            edges.push_back({ jl[a].comp2, jl[a].comp,  a });
+        }
+        for (int b = a + 1; b < n_jl; ++b) {
+            if (jl[a].comp == jl[b].comp)
+                continue;
+            const float dx = jl[a].mx - jl[b].mx;
+            const float dy = jl[a].my - jl[b].my;
+            if (dx * dx + dy * dy >
+                JOURNEY_PAIR_DIST * JOURNEY_PAIR_DIST)
+                continue;
+            edges.push_back({ jl[a].comp, jl[b].comp, a });
+            edges.push_back({ jl[b].comp, jl[a].comp, b });
+        }
+    }
+    if (edges.empty())
+        return false;
+
+    // BFS over components: fewest connectors from the player's level to
+    // the target's. prev_edge reconstructs the trigger sequence.
+    std::vector<int>     prev_edge(n_comps, -1);
+    std::vector<uint8_t> seen(n_comps, 0);
+    std::vector<int>     queue;
+    seen[comp[start]] = 1;
+    queue.push_back(comp[start]);
+    for (size_t qi = 0; qi < queue.size() && !seen[comp[goal]]; ++qi) {
+        const int c = queue[qi];
+        for (size_t e = 0; e < edges.size(); ++e) {
+            if (edges[e].ca != c || seen[edges[e].cb])
+                continue;
+            seen[edges[e].cb] = 1;
+            prev_edge[edges[e].cb] = static_cast<int>(e);
+            queue.push_back(edges[e].cb);
+        }
+    }
+    if (!seen[comp[goal]])
+        return false;   // levels exist but nothing connects them
+
+    // Trigger sequence, player's level first.
+    std::vector<int> hops;   // jl indices to take, in order
+    for (int c = comp[goal]; c != comp[start]; ) {
+        const JEdge& e = edges[prev_edge[c]];
+        hops.push_back(e.via);
+        c = e.ca;
+    }
+    for (size_t i = 0, j = hops.size() - 1; i < j; ++i, --j) {
+        const int t = hops[i]; hops[i] = hops[j]; hops[j] = t;
+    }
+
+    // Walking route to the FIRST connector (same pipeline as a direct
+    // route; the connector is in the player's own component by
+    // construction, so A* cannot fail — guarded anyway).
+    std::wstring route;
+    {
+        const JLine& first = jl[hops[0]];
+        std::vector<uint16_t> path;
+        if (WalkmeshAStar(mesh, start, first.tri, path)) {
+            std::vector<PathPortal> portals;
+            BuildPortals(mesh, path, portals);
+            std::vector<NavPt> corners;
+            FunnelPath(px, py, first.mx, first.my, portals, corners);
+            if (corners.empty()) {
+                for (const PathPortal& p : portals)
+                    corners.push_back({ (p.lx + p.rx) * 0.5f,
+                                        (p.ly + p.ry) * 0.5f });
+                corners.push_back({ first.mx, first.my });
+            }
+            route = RouteToSpeech(px, py, corners, control_deg);
+        }
+    }
+
+    // "Exit 1: on another level. First take ladder up, up 3 seconds.
+    //  Then slide. Then ask again."
+    out = dest_name;
+    out += L": on another level. First take ";
+    std::wstring nm;
+    TriggerLineSpokenName(jl[hops[0]].idx, jl[hops[0]].ent, nm);
+    out += nm;
+    if (!route.empty()) {
+        out += L", ";
+        out += route;
+    }
+    for (size_t h = 1; h < hops.size(); ++h) {
+        TriggerLineSpokenName(jl[hops[h]].idx, jl[hops[h]].ent, nm);
+        out += L". Then ";
+        out += nm;
+    }
+    out += L". Then ask again.";
+
+    if (Config::Get().debug_log) {
+        char dbg[224];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] NAV journey comps=%d hops=%u first_line=%u '%ls'",
+            n_comps, static_cast<unsigned>(hops.size()),
+            static_cast<unsigned>(jl[hops[0]].idx), out.c_str());
+        Log::Write(dbg);
+    }
+    return true;
+}
+
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
     // The FF4-scheme hotkeys we poll, with per-key previous-state for edge
@@ -2891,6 +3753,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
+
+    // Screen-change announcement tracker (v2.23) — separate from
+    // nav_field_id, which only updates on the KEYPRESS path; this one runs
+    // every poll so the announcement fires the moment control returns on
+    // the new screen. 0 = nothing announced yet this session.
+    int16_t announced_field_id = 0;
 
     // Once-per-second rate limiter for the direction-calibration debug line.
     ULONGLONG next_calib_tick = 0;
@@ -2954,6 +3822,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             elem + FF7Addr::FIELD_EVENT_MODEL_POS);
         const int32_t px = pos[0] >> 12;   // walkmesh coords
         const int32_t py = pos[1] >> 12;
+        const int32_t pz = pos[2] >> 12;   // height (v2.23 layer locates)
+        // Player's live walkmesh triangle (v2.22): the turn-by-turn route's
+        // start node — exact even on stacked layers. <0 (briefly off-mesh,
+        // e.g. a scripted jump) makes the route builder point-locate instead.
+        const int16_t player_tri = *reinterpret_cast<const int16_t*>(
+            elem + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
 
         // Triggers header for this field. Span covers everything the
         // build reads: name, control_direction, and all 12 gateways.
@@ -2969,6 +3843,39 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const uint8_t control_dir = *reinterpret_cast<const uint8_t*>(
             hdr + FF7Addr::FTRIG_OFF_CONTROL_DIR);
         const float control_deg = control_dir * (360.0f / 256.0f);
+
+        // ---- screen-change announcement (v2.23) ---------------------------
+        // Fires the first poll after control returns on a NEW screen. Each
+        // screen has its own fixed camera, so an exit crossing REBASES what
+        // "up" means (control_direction changed) — the user experienced
+        // this as directions "shifting as if the perspective changed" and
+        // found it disorienting. Sighted players get the camera cut as
+        // their cue; this is the audio equivalent. interrupt=false: a
+        // transition often follows dialog or an announcement — queue behind
+        // it, never clobber. Also announces the first screen after launch/
+        // load (announced_field_id starts 0), which doubles as a "you're on
+        // the field now" orientation cue.
+        if (field_id != announced_field_id) {
+            announced_field_id = field_id;
+            if (Config::Get().announce_map_change) {
+                std::wstring msg = L"Screen: ";
+                bool have_name = false;
+                for (uint32_t i = 0; i < 9; ++i) {
+                    const char c = *reinterpret_cast<const char*>(
+                        hdr + FF7Addr::FTRIG_OFF_FIELD_NAME + i);
+                    if (c == '\0')
+                        break;
+                    if (c < 0x20 || c > 0x7E)
+                        break;      // non-ASCII = header mid-write; stop
+                    // Underscores speak as pauses/garbage on some
+                    // synthesizers — say them as spaces.
+                    msg += (c == '_') ? L' ' : static_cast<wchar_t>(c);
+                    have_name = have_name || c != '_';
+                }
+                if (have_name)
+                    TTS::Speak(msg, /*interrupt=*/false);
+            }
+        }
 
         // ---- per-model movement tracking (every poll) --------------------
         // Sample every model's position; stamp the tick when it changes.
@@ -3175,7 +4082,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                              L"Exit %d", ++exit_no);
                 d.line_x1 = v[0]; d.line_y1 = v[1];
                 d.line_x2 = v[3]; d.line_y2 = v[4];
+                d.line_z1 = v[2]; d.line_z2 = v[5];
                 d.model_slot = -1;
+                d.target_tri = -1;   // exits carry no triangle id — the
+                                     // route builder point-locates them
             }
         }
 
@@ -3222,6 +4132,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             ModelClass cls[32]      = {};
             bool       is_open[32]  = {};   // chests only: lid state
             int16_t    ex[32], ey[32];
+            int16_t    ez[32];              // height (v2.23, layer locates)
+            int16_t    etri[32];            // live triangle id (v2.22): the
+                                            // route's exact goal node
             wchar_t    labels[32][24] = {};
             for (uint16_t m = 0; span_ok && m < nmod && m < 32; ++m) {
                 if (m == pmid)
@@ -3297,6 +4210,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 eligible[m] = true;
                 ex[m] = static_cast<int16_t>(mx);
                 ey[m] = static_cast<int16_t>(my);
+                ez[m] = static_cast<int16_t>(mpos[2] >> 12);
+                etri[m] = tri;
             }
 
             // Pass 2: duplicate-label counts (so "shinra guard" ×3 becomes
@@ -3349,7 +4264,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                               _TRUNCATE);
                 d.line_x1 = d.line_x2 = ex[m];
                 d.line_y1 = d.line_y2 = ey[m];
+                d.line_z1 = d.line_z2 = ez[m];
                 d.model_slot = m;
+                d.target_tri = etri[m];
             }
         }
 
@@ -3380,6 +4297,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // which J/L cycling cannot disambiguate by ear).
             struct TrigLine {
                 int16_t x1, y1, x2, y2;
+                int16_t z1, z2;     // heights (v2.23, layer locates)
                 uint8_t line_idx;
                 wchar_t name[24];   // translated entity name (v2.20 —
                                     // widened from 16 for "AVALANCHE
@@ -3396,9 +4314,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const uint8_t ent = le[FF7Addr::FLINE_OFF_ENTITY];
 
                 TrigLine& t = tl[n_tl++];
-                // x1,y1,z1,x2,y2,z2 — Z ignored like exits (2D walking).
-                t.x1 = v[0]; t.y1 = v[1];
-                t.x2 = v[3]; t.y2 = v[4];
+                // x1,y1,z1,x2,y2,z2 — heights kept since v2.23 (layer
+                // location for turn-by-turn); routing itself stays 2D.
+                t.x1 = v[0]; t.y1 = v[1]; t.z1 = v[2];
+                t.x2 = v[3]; t.y2 = v[4]; t.z2 = v[5];
                 t.line_idx = static_cast<uint8_t>(i);
                 t.name[0] = L'\0';
 
@@ -3465,7 +4384,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                  L"Trigger %u", tl[a].line_idx + 1u);
                 d.line_x1 = tl[a].x1; d.line_y1 = tl[a].y1;
                 d.line_x2 = tl[a].x2; d.line_y2 = tl[a].y2;
+                d.line_z1 = tl[a].z1; d.line_z2 = tl[a].z2;
                 d.model_slot = -1;
+                d.target_tri = -1;   // LINE zones are point-located like exits
             }
         }
 
@@ -3566,19 +4487,68 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             Log::Write(dbg);
         }
 
-        wchar_t msg[96];
-        const int secs = static_cast<int>(
-            dist / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
-        if (secs < 1)
-            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                         L"%ls: %ls, very close.",
-                         d.name, DpadSectorName(input_deg));
-        else
-            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                         L"%ls: %ls, %d %ls.",
-                         d.name, DpadSectorName(input_deg),
-                         secs, secs == 1 ? L"second" : L"seconds");
-        TTS::Speak(msg, /*interrupt=*/true);
+        // ---- turn-by-turn route (v2.22, direction_style=turns) -----------
+        // Plans a real walkmesh route to the SAME target point the
+        // straight-line style aims at (nearest point of the line, computed
+        // above; height interpolated along the line the same way). Outcomes:
+        //   SPOKEN_ROUTE — the route is the announcement, done;
+        //   NO_PATH      — mesh healthy but the target is graph-unreachable:
+        //                  usually ANOTHER LEVEL — try the v2.23 journey
+        //                  planner ("first take ladder up..."); only when
+        //                  that also finds no connector chain, fall back to
+        //                  straight-line + an explicit "no walkable path"
+        //                  prefix (the FF4 mod's out-of-range behavior);
+        //   UNAVAILABLE  — mesh unreadable or failed its self-guards:
+        //                  silent straight-line fallback.
+        const wchar_t* fallback_prefix = L"";
+        bool spoke_route = false;
+        if (Config::Get().turn_by_turn) {
+            const float fpx = static_cast<float>(px);
+            const float fpy = static_cast<float>(py);
+            const float fpz = static_cast<float>(pz);
+            const float ftx = fpx + dx;
+            const float fty = fpy + dy;
+            const float ftz = d.line_z1 + t * (d.line_z2 - d.line_z1);
+            std::wstring route;
+            const RouteOutcome ro = BuildTurnByTurnRoute(
+                fpx, fpy, fpz, player_tri, ftx, fty, ftz,
+                d.target_tri, control_deg, route);
+            if (ro == RouteOutcome::SPOKEN_ROUTE) {
+                std::wstring rmsg(d.name);
+                rmsg += L": ";
+                rmsg += route;
+                rmsg += L'.';
+                TTS::Speak(rmsg, /*interrupt=*/true);
+                spoke_route = true;
+            } else if (ro == RouteOutcome::NO_PATH) {
+                std::wstring jmsg;
+                if (BuildJourneySpeech(fpx, fpy, fpz, player_tri,
+                                       ftx, fty, ftz, d.target_tri,
+                                       control_deg, d.name, jmsg)) {
+                    TTS::Speak(jmsg, /*interrupt=*/true);
+                    spoke_route = true;
+                } else {
+                    fallback_prefix = L"No walkable path found. ";
+                }
+            }
+        }
+
+        // ---- straight-line announcement (style "line", and the fallback) --
+        if (!spoke_route) {
+            wchar_t msg[128];
+            const int secs = static_cast<int>(
+                dist / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
+            if (secs < 1)
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                             L"%ls%ls: %ls, very close.",
+                             fallback_prefix, d.name, DpadSectorName(input_deg));
+            else
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                             L"%ls%ls: %ls, %d %ls.",
+                             fallback_prefix, d.name, DpadSectorName(input_deg),
+                             secs, secs == 1 ? L"second" : L"seconds");
+            TTS::Speak(msg, /*interrupt=*/true);
+        }
         // Wandering cue on the directions query too — a moving target's
         // direction is a snapshot, and the beep says exactly that.
         if (is_wandering(d.model_slot))

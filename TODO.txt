@@ -164,6 +164,24 @@ Implementation notes (everything needed is already in place):
     same watcher, trivial addition.
   - Phrasing: "<name> is down" (distinct from enemies' "defeated").
 
+[NAV] v2.22 turn-by-turn: CONFIRMED in play (2026-07-16); v2.23 additions pending
+----------------------------------------------------------------------------------
+v2.22 route quality PLAY-CONFIRMED: user reports multi-turn routes with
+"turns land at the walls" (session log full of clean multi-leg routes).
+v2.23 (same day, from the user's follow-up feedback) awaiting play test:
+  - Diagonals now "up and left" (was "up-left").
+  - "Screen: <name>" announcement on screen change (announce_map_change)
+    — the cue that directions rebased; watch for unwanted chatter during
+    scripted multi-screen sequences.
+  - JOURNEY planning: cross-level targets speak their ladder sequence
+    ("first take ladder up, ...; then ask again") — offline-simulated on
+    nmkin_2's real trigger lines (research doc §8 v2.23); needs an
+    in-game run up/down the reactor ladders. If a wrong connector is ever
+    named, the XY pair threshold (JOURNEY_PAIR_DIST=300, measured 134) or
+    a name-based filter (ladder/slide words only) are the knobs.
+If routes feel choppy (too many tiny "then" segments), tune kMinSegLen /
+kMaxSpoken in RouteToSpeech — the funnel itself is dry-run-verified.
+
 [NAV] FF4-scheme keys deferred until their prerequisites exist
 ----------------------------------------------------------------
 accessiblity_keys.txt (repo root) is the binding source of truth (parity
@@ -171,9 +189,12 @@ with the FF1-6 accessibility mods — see memory feedback_key_parity). The
 v2.14 pathfinder implements the core browser (J/L/[/], Shift+J/L/-/=, K,
 Shift+K, \, P, M). Still unmapped, waiting on features:
 
-  - Shift+\ / Shift+P: toggle "valid path only" filter — needs actual
-    walkmesh pathfinding (currently directions are straight-line).
-  - Ctrl+\: layer filter — needs walkmesh triangle/layer awareness.
+  - Shift+\ / Shift+P: toggle "valid path only" filter — UNBLOCKED by
+    v2.22 (walkmesh pathfinding exists; A* reachability per destination
+    is a cheap byproduct of the route code). Not yet wired to a key.
+  - Ctrl+\: layer filter — walkmesh triangle awareness now exists
+    (v2.22); still needs a notion of "layer" (connected component of the
+    triangle graph is probably the right definition). Not yet wired.
   - Ctrl+Arrows: teleport one tile — needs a safe position-write method
     (writing model_pos highres coords + walkmesh triangle id).
   - Shift+M: map exit filter toggle.
