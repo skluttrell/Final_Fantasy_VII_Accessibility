@@ -196,6 +196,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | `SAVEMAP_CHAR_RECORDS` | `0xDBFD8C` | First of 9 savemap character records (Cloud), stride 0x84; **FF7-encoded live name (renames included) at +0x10, 12 bytes, 0xFF-terminated**. Derived, not scanned (v2.19): 7thHeaven equipment blocks at savemap+0x70 start with the weapon byte = record offset 0x1C → records at +0x54; 9·0x84 ends exactly at the party IDs below — two anchors agree |
 | `SAVEMAP_PARTY_IDS` | `0xDC0230` | u8[3] — character IDs of party slots 0-2 (0xFF = empty; 9=Young Cloud→record 6, 10=Sephiroth→record 7 during the Kalm flashback). **Self-verifying at runtime**: slot 0's byte must equal PARTY_LEADER (0xDC09E5) or PartySlotLabel falls back to positional "ally N" (v2.19) |
 | *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
+| *(walkmesh section)* | — | Raw field file (behind FIELD_FILE_BUFFER 0xCFF594) **section index 4** (offset table entry buf+6+4×4 = the `level_data+0x16` FFNx's renderer reads): u32 size prefix, u32 nTriangles, triangle pool (24B each: 3 × s16 x,y,z,res — same coord space as model_pos>>12), then ACCESS pool (3 × u16 per triangle = neighbor across each edge, 0xFFFF = wall). Triangle layout FFNx-production-confirmed; access pool **CONFIRMED GAME-WIDE OFFLINE 2026-07-16** (ff7_walkmesh_route_dryrun.py: 720/720 fields, 184,358 links, 100% id-valid + geometrically adjacent, 100.00% reciprocal) **and LIVE 2026-07-16** (nmkin_2 parsed in-game with the exact dry-run triangle count, turn-by-turn routes play-confirmed). Source of v2.22 turn-by-turn + v2.23 journeys; constants at ff7_addresses.h SECTION 1h; format detail §5 |
+| *(player/model walkmesh triangle)* | — | field_event_data **+0x78 s16 field_triangle_id** (see offsets row above): the model's live walkmesh triangle — v2.22 uses it as the exact A*/journey endpoint (player and model targets), immune to stacked-layer ambiguity; <0 = off-mesh (the v2.15 People filter) |
 
 ---
 
@@ -1524,7 +1526,7 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13). Region 0x9AAD70–0x9AB070 (0x300 bytes) is cleared as one block by the battle-init memset |
 | `0x9AB0A0` | battle_ai_context (FFNx battle_context) | = u32 operand at 0x41CCB2+0x5F (FFNx's own chain; sub_41CCB2 = battle-init memset, clears 0x253 dwords from here). Header 0x3C bytes (10 flag bytes + 23 u16 masks + u32 partyGil), then **actor_vars[10] at 0x9AB0DC = BATTLE_ACTOR_VARS**, stride 0x68: +0x04 stateFlags (the 0x9AB0E0 read from the v2.10 disasm), +0x24 formationID, +0x28/+0x2A cur/max MP u16, +0x2C/+0x30 cur/max HP i32 (+0x30 low word = the 0x9AB10C read). Array ends 0x9AB4EC (v2.11, 2026-07-13) |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
-| *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon/etc. name sections resident for process lifetime; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists — the only exe-static pointers into the block are font tables (0xCFF3F8 cluster) |
+| *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon name sections observed stable for a whole session; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword', 'Attack\|Magic') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists — the only exe-static pointers into the block are font tables (0xCFF3F8 cluster). ⚠ **"resident for process lifetime" was DISPROVED for the COMMAND-name section 2026-07-16** (v2.22.1): it lives in a TRANSIENT battle allocation, freed/reused between battles — a cached pointer decoded reused binary as speech. ALL section pointers are now head-signature revalidated on every use (ValidatedSection, proxy.cpp); treat any kernel2 pointer as potentially stale |
 
 ### Battle module block: 0xBE1170 – 0xBFxxxx
 
@@ -1602,7 +1604,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xCFF3D8` | field_camera_rotation_matrix | FFNx name embeds the address; used as a chain cross-check in v2.14. The rotation matrix itself is NOT yet used by the mod (control_direction supersedes it for input-relative directions) |
 | `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
 | `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | → field_trigger_header (field name, control_direction, gateways[12]) — the v2.14 pathfinder source; see §4. control_direction = world bearing of screen-DOWN (live-calibrated 2026-07-13); screen angle = world + ctrl − 180 |
-| `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file |
+| `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file — dialog text (§5), model labels (v2.16), and since v2.22 the WALKMESH (section index 4: triangles + adjacency, the turn-by-turn/journey data source; §4 *(walkmesh section)* row) |
 | `0xCFF738` | FIELD_ANIM_DATA_PTR | → field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
 
@@ -1651,7 +1653,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDD46FC` | NAME_ENTRY_ACTIVE | 1 while naming screen open (v2.8 gate, with GAME_MODE==6) |
 | `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
 
-### Discovery techniques ranked by success rate (as of 2026-07-14)
+### Discovery techniques ranked by success rate (as of 2026-07-16)
 
 1. **Static chain resolution against the exe on disk** (v2.6; battle menu
    cursor 2026-07-12): replicate FFNx `ff7_data.h` chains on the file image;
@@ -1672,6 +1674,16 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
    question is "what does the game's DATA say" rather than "where does the
    ENGINE keep it"; validate the parser against one live-dumped reference
    field (md1stin) before trusting it.
+   **2a. Offline ALGORITHM replica over the cataloged data** (NEW
+   2026-07-16, v2.22/v2.23): before shipping geometry/graph code, replicate
+   the exact C++ pipeline in the catalog script and run it against the real
+   game data (all 720 walkmeshes; the reactor's real trigger lines lifted
+   from the live debug log). One run confirmed the community-spec access
+   pool game-wide AND caught an inverted-sign funnel bug that produced
+   plausible-sounding zigzag garbage — a class of bug play-testing burns
+   whole sessions on (a blind tester cannot see that a route is non-taut,
+   only that it feels wrong). Any pure function of game data can be
+   verified this way before it ever speaks.
 3. **Opcode-handler disassembly via the opcode table** (NEW 2026-07-14,
    v2.17): the mod's own Resolve() chain locates execute_opcode_table on
    disk; table[opcode] + capstone gives the handler for ANY field script

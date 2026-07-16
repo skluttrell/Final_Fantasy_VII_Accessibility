@@ -168,17 +168,15 @@ Implementation notes (everything needed is already in place):
 ----------------------------------------------------------------------------------
 v2.22 route quality PLAY-CONFIRMED: user reports multi-turn routes with
 "turns land at the walls" (session log full of clean multi-leg routes).
-v2.23 (same day, from the user's follow-up feedback) awaiting play test:
-  - Diagonals now "up and left" (was "up-left").
-  - "Screen: <name>" announcement on screen change (announce_map_change)
-    — the cue that directions rebased; watch for unwanted chatter during
-    scripted multi-screen sequences.
-  - JOURNEY planning: cross-level targets speak their ladder sequence
-    ("first take ladder up, ...; then ask again") — offline-simulated on
-    nmkin_2's real trigger lines (research doc §8 v2.23); needs an
-    in-game run up/down the reactor ladders. If a wrong connector is ever
-    named, the XY pair threshold (JOURNEY_PAIR_DIST=300, measured 134) or
-    a name-based filter (ladder/slide words only) are the knobs.
+v2.23 play-test status (user report 2026-07-16):
+  - "Screen: <name>" announcements CONFIRMED ("screen changes work good");
+    user now wants friendly names — see the raised-priority item below.
+  - Turn-by-turn incl. "up and left" diagonals: CONFIRMED fine.
+  - v2.22.1 battle-text fix: no garbage seen since — holding.
+  - JOURNEY planning (ladder sequences): still awaiting a cross-level
+    directions request in play. If a wrong connector is ever named, the
+    XY pair threshold (JOURNEY_PAIR_DIST=300, measured 134) or a
+    name-based filter (ladder/slide words only) are the knobs.
 If routes feel choppy (too many tiny "then" segments), tune kMinSegLen /
 kMaxSpoken in RouteToSpeech — the funnel itself is dry-run-verified.
 
@@ -279,17 +277,23 @@ owning entity dev name ('evb', 'drE'). Possible refinements from play:
     listed while enabled — same accepted limitation as story-locked
     exits.
 
-[NAV] Friendly map names for the M announce
---------------------------------------------
-M currently speaks the field's INTERNAL name ("md1stin") from the triggers
-header — authentic and unique, but cryptic. The game has a friendly
-location string ("Sector 1 Station") shown in the save/PHS menu; it lives
-in the savemap (base 0xDBFD38) but the exact live offset needs verifying
-before use (the qhimm savemap doc's location-name entry is part of the
-save-preview block, which may only be written AT save time — check whether
-a live copy exists elsewhere, e.g. where the save menu reads it from).
-Fallback design: speak the friendly name when available, internal name
-otherwise.
+[NAV] Friendly map names for the M announce AND the v2.23 screen announce
+---------------------------------------------------------------------------
+PRIORITY RAISED 2026-07-16: the user confirmed the v2.23 "Screen: <name>"
+announcements work and is expecting friendlier names — the internal names
+("md1stin", "nmkin 2") are now spoken on every screen change, so the
+payoff doubled. The game has a friendly location string ("Sector 1
+Station") shown in the main/save/PHS menus; it lives in the savemap (base
+0xDBFD38) but the exact live offset needs verifying before use (the qhimm
+savemap doc's location-name entry is part of the save-preview block,
+which may only be written AT save time — check whether a live copy exists
+elsewhere, e.g. where the menu reads it from). VERIFICATION PLAN: no save
+point needed — the location string is displayed at the bottom of the MAIN
+menu, so it must be live in memory during normal play; a delta scan
+across one screen change (or a targeted read of savemap+0x88..0xBC, the
+doc's preview-block location-name range) settles it whenever the user has
+a few minutes. Fallback design: speak the friendly name when available,
+internal name otherwise.
 
 [CONFIG] Auto-create default config file if missing
 ----------------------------------------------------
