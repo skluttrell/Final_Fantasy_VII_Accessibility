@@ -68,6 +68,18 @@ struct Settings {
     // Default: true.
     bool pathfinder_keys = true;
 
+    // gamepad_nav: If true, the RIGHT ANALOG STICK of an XInput controller
+    // drives the pathfinder alongside the keyboard (v2.21): flick up/down to
+    // change category, left/right to cycle destinations, click the stick in
+    // (R3) for directions. Same gates as pathfinder_keys (game focused,
+    // normal field control), and pathfinder_keys=false disables this too —
+    // the stick is a second set of triggers for the same browser, not a
+    // separate feature. Safe by construction: FF7 itself never reads the
+    // right stick, and R3 is unbound in the game's joystick config (see
+    // gamepad.h for the full evidence trail).
+    // Default: true.
+    bool gamepad_nav = true;
+
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the
     // character is not moving). Vanilla FF7 has no footstep sounds, so without

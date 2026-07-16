@@ -107,6 +107,7 @@ void Load()
         // (v2.14, same-day rename) — accepted as an alias so no config breaks.
         else if (key == "pathfinder_keys" || key == "field_exit_scan")
             g_settings.pathfinder_keys = parse_bool(value);
+        else if (key == "gamepad_nav")   g_settings.gamepad_nav    = parse_bool(value);
         else if (key == "interrupt")     g_settings.interrupt      = parse_bool(value);
         else if (key == "debug_log")     g_settings.debug_log      = parse_bool(value);
         // Unknown keys are silently ignored for forward compatibility.

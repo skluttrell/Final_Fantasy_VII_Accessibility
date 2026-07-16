@@ -41,6 +41,10 @@ set(MOD_SOURCES
     src/config.cpp
     src/log.cpp             # debug logging: file output + OutputDebugStringA
     src/tts.cpp
+    src/gamepad.cpp         # right-analog-stick pathfinder input (v2.21).
+                            # XInput is loaded dynamically at runtime, so no
+                            # xinput import library is linked here — see the
+                            # header comment in gamepad.cpp for why.
     # Including version.def in the source list is the correct CMake idiom for MSVC:
     # CMake recognizes .def files and passes them to the linker as /DEF:version.def.
     # This is preferred over LINK_FLAGS because CMake handles path quoting and

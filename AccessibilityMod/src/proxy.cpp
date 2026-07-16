@@ -75,6 +75,7 @@
 #include "tts.h"
 #include "config.h"
 #include "log.h"
+#include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include <string>
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
 #include <cmath>     // atan2f/sqrtf/fmodf in the field pathfinder (v2.14)
@@ -2307,6 +2308,13 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // can't trigger them, and on normal field control (GAME_MODE==0,
 // FIELD_ID!=0, MENU_OPEN==0) so they can't talk over battles/menus.
 // Config::Get().pathfinder_keys turns the whole set off.
+//
+// GAMEPAD (v2.21): the RIGHT ANALOG STICK is a second trigger path for the
+// same browser — up/down = category, left/right = destination, R3 click =
+// directions. Identical gates (focus + field control + pathfinder_keys);
+// gamepad_nav=false switches just the stick off. The stick and R3 carry no
+// native game function, so nothing is stolen from gameplay — full evidence
+// trail in gamepad.h.
 // ---------------------------------------------------------------------------
 
 // Map an input-relative angle (degrees, 0 = the Up d-pad, clockwise) to a
@@ -2908,6 +2916,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
         if (!Config::Get().pathfinder_keys) {
             memset(was_down, 0, sizeof(was_down));
+            GamepadNav::Reset();
             continue;
         }
 
@@ -2923,6 +2932,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
             menu_open != 0) {
             memset(was_down, 0, sizeof(was_down));
+            GamepadNav::Reset();
             calib_have_last = false;
             continue;
         }
@@ -3040,28 +3050,49 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             was_down[k] = down;
             any_pressed = any_pressed || pressed[k];
         }
-        if (!any_pressed)
+
+        // Right-analog-stick input (v2.21): polled every tick like the keys
+        // so held-state tracking stays fresh, with edges suppressed while
+        // unfocused — the exact focus rule the keyboard uses. XInput is a
+        // read-only shared query, so the game (and FFNx) see the controller
+        // exactly as before; the stick and R3 carry no native function
+        // (verified — see gamepad.h). gamepad_nav=false skips even the poll.
+        GamepadNav::Actions pad = {};
+        if (Config::Get().gamepad_nav)
+            pad = GamepadNav::Poll(focused);
+
+        if (!any_pressed && !pad.Any())
             continue;
 
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         if (ctrl)
-            continue;   // Ctrl+\ (layer filter) etc. not applicable yet
+            memset(pressed, 0, sizeof(pressed));   // Ctrl+\ (layer filter)
+                // etc. not applicable yet — Ctrl suppresses only the KEYS;
+                // a simultaneous stick action is unrelated and proceeds.
 
-        // Decode key presses into browser actions (accessiblity_keys.txt):
-        //   J/[ prev dest, L/] next dest (unshifted)
-        //   Shift+J/- prev category, Shift+L/= next category
+        // Decode key presses into browser actions (accessiblity_keys.txt),
+        // then OR in the stick's alternate triggers (v2.21 — same actions,
+        // second input path):
+        //   J/[ prev dest, L/] next dest (unshifted)   | stick left/right
+        //   Shift+J/- prev category, Shift+L/= next    | stick up/down
         //   K announce selection, Shift+K reset category
-        //   \/P directions (unshifted; Shift+\ filter not applicable yet)
+        //   \/P directions (unshifted; Shift+\ filter  | R3 click
+        //       not applicable yet)
         //   M current map name
-        const bool act_prev_dest = (pressed[KJ] && !shift) || pressed[KLBRACKET];
-        const bool act_next_dest = (pressed[KL] && !shift) || pressed[KRBRACKET];
-        const bool act_prev_cat  = (pressed[KJ] && shift)  || pressed[KMINUS];
-        const bool act_next_cat  = (pressed[KL] && shift)  || pressed[KPLUS];
+        const bool act_prev_dest = (pressed[KJ] && !shift) ||
+                                   pressed[KLBRACKET] || pad.prev_dest;
+        const bool act_next_dest = (pressed[KL] && !shift) ||
+                                   pressed[KRBRACKET] || pad.next_dest;
+        const bool act_prev_cat  = (pressed[KJ] && shift)  ||
+                                   pressed[KMINUS] || pad.prev_cat;
+        const bool act_next_cat  = (pressed[KL] && shift)  ||
+                                   pressed[KPLUS] || pad.next_cat;
         const bool act_announce  = pressed[KK] && !shift;
         const bool act_reset_cat = pressed[KK] && shift;
         const bool act_directions =
-            ((pressed[KBACKSLASH] || pressed[KP]) && !shift);
+            ((pressed[KBACKSLASH] || pressed[KP]) && !shift) ||
+            pad.directions;
         const bool act_map_name  = pressed[KM] && !shift;
 
         if (!(act_prev_dest || act_next_dest || act_prev_cat || act_next_cat ||
