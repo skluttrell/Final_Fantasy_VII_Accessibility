@@ -93,7 +93,9 @@ struct Settings {
     // screen has its own fixed camera, so crossing an exit REBASES what
     // "up" means — a sighted player sees the camera cut; this announcement
     // is the audio equivalent, cueing that all directions just changed
-    // their meaning. Names are the internal map names (same as the M key).
+    // their meaning. Since v2.24 the name is the game's own friendly menu
+    // caption ("Sector 1 Station", the MPNAM buffer), falling back to the
+    // internal map name when no caption is set yet.
     // Default: true.
     bool announce_map_change = true;
 

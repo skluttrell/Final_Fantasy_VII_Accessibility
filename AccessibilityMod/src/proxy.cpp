@@ -76,7 +76,9 @@
 #include "config.h"
 #include "log.h"
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
+#include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
 #include <string>
+#include <fstream>   // visited-places cache file IO (v2.25)
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
 #include <cmath>     // atan2f/sqrtf/fmodf in the field pathfinder (v2.14)
 #include <cwctype>   // iswdigit in the dev-label translator (v2.20)
@@ -3727,6 +3729,164 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Friendly location name (v2.24): the game's own menu caption ("Sector 1
+// Station"), read from the MPNAM buffer — full derivation and the live
+// verification at ff7_addresses.h LOCATION_NAME_BUFFER. Returns false when
+// the buffer is empty/blank (before the first MPNAM of a new game) or
+// undecodable; callers fall back to the internal field name.
+// ---------------------------------------------------------------------------
+static bool FriendlyLocationName(std::wstring& out)
+{
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(
+        FF7Addr::LOCATION_NAME_BUFFER);
+    if (!IsReadableSpan(p, FF7Addr::LOCATION_NAME_MAX))
+        return false;
+    out.clear();
+    for (uint32_t i = 0; i < FF7Addr::LOCATION_NAME_MAX; ++i) {
+        const uint8_t b = p[i];
+        if (b == 0xFF)
+            break;   // ⚠ bytes past the terminator hold the PREVIOUS
+                     // name's tail (live-observed) — never read on
+        const wchar_t c = FF7Text::DecodeChar(b);
+        if (c != L'\0')
+            out += c;
+    }
+    const std::wstring::size_type first = out.find_first_not_of(L' ');
+    if (first == std::wstring::npos) {
+        out.clear();
+        return false;
+    }
+    const std::wstring::size_type last = out.find_last_not_of(L' ');
+    out = out.substr(first, last - first + 1);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Visited-places cache (v2.25) — friendly captions BY FIELD ID, learned
+// from the v2.24 MPNAM buffer as the player travels and persisted to
+// ffvii_accessibility_places.txt next to the DLL.
+//
+// WHY: gateways know their destination FIELD ID, and the maplist gives
+// every id an internal name ("nmkin_2") — but the FRIENDLY caption
+// ("No. 1 Reactor") for another field cannot be read at runtime (each
+// field's caption lives in its own script). It CAN be remembered: while
+// the player stands on field X, the mod sees both X and X's caption, so
+// exits to anywhere the player has ever been speak the friendly name.
+// New games start with what previous sessions learned — the file is the
+// player's own map knowledge, growing as they explore.
+//
+// INHERITANCE CAVEAT (documented, accepted): a field whose script sets no
+// MPNAM keeps the PREVIOUS field's caption, and the cache records that
+// inherited caption for it — which is exactly what the sighted menu
+// displays while standing there, so parity holds.
+//
+// THREADING: everything here runs on FieldNavThread only (load at thread
+// start, learn in its poll, lookups in its list build) — no locks needed.
+// ---------------------------------------------------------------------------
+static wchar_t g_places[FF7FieldNames::kCount][24];   // zeroed = unknown
+
+static void PlacesFilePath(char* buf, size_t cap)
+{
+    // Same own-module-directory pattern as Config::Load.
+    HMODULE hSelf = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&PlacesFilePath), &hSelf);
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(hSelf, path, MAX_PATH);
+    char* sep = strrchr(path, '\\');
+    if (sep) *(sep + 1) = '\0';
+    _snprintf_s(buf, cap, _TRUNCATE, "%sffvii_accessibility_places.txt", path);
+}
+
+static void PlacesLoad()
+{
+    char path[MAX_PATH];
+    PlacesFilePath(path, sizeof(path));
+    std::ifstream f(path);
+    if (!f.is_open())
+        return;                       // first run: nothing learned yet
+    std::string line;
+    while (std::getline(f, line)) {
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const int id = atoi(line.substr(0, eq).c_str());
+        if (id <= 0 || id >= FF7FieldNames::kCount)
+            continue;
+        const std::string val = line.substr(eq + 1);
+        wchar_t wide[24] = {};
+        MultiByteToWideChar(CP_UTF8, 0, val.c_str(), -1, wide, _countof(wide));
+        wide[_countof(wide) - 1] = L'\0';
+        wcscpy_s(g_places[id], wide);
+    }
+}
+
+static void PlacesSave()
+{
+    char path[MAX_PATH];
+    PlacesFilePath(path, sizeof(path));
+    std::ofstream f(path, std::ios::trunc);
+    if (!f.is_open())
+        return;                       // read-only install dir: cache stays
+                                      // session-only, no error surfaced
+    f << "# Learned field captions (id=name), written by the FF7 "
+         "accessibility mod.\n";
+    for (int id = 0; id < FF7FieldNames::kCount; ++id) {
+        if (!g_places[id][0])
+            continue;
+        char utf8[96] = {};
+        WideCharToMultiByte(CP_UTF8, 0, g_places[id], -1,
+                            utf8, sizeof(utf8), nullptr, nullptr);
+        f << id << '=' << utf8 << '\n';
+    }
+}
+
+// Record field_id -> caption; rewrites the cache file only when something
+// actually changed (a new place, or a caption correction).
+static void PlacesLearn(int field_id, const std::wstring& caption)
+{
+    if (field_id <= 0 || field_id >= FF7FieldNames::kCount || caption.empty())
+        return;
+    if (wcscmp(g_places[field_id], caption.c_str()) == 0)
+        return;
+    wcsncpy_s(g_places[field_id], caption.c_str(), _TRUNCATE);
+    PlacesSave();
+    if (Config::Get().debug_log) {
+        char dbg[128];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] NAV place learned %d = '%ls'",
+            field_id, g_places[field_id]);
+        Log::Write(dbg);
+    }
+}
+
+// Spoken destination name for a gateway's target field id (v2.25):
+//   1. the player's own learned caption ("No. 1 Reactor");
+//   2. the game's maplist internal name ("nmkin 2"; underscores spoken
+//      as spaces; wm* entries are the world map);
+//   3. false -> caller keeps the positional "Exit N" label.
+static bool DestinationName(int dest_id, std::wstring& out)
+{
+    if (dest_id > 0 && dest_id < FF7FieldNames::kCount &&
+        g_places[dest_id][0]) {
+        out = g_places[dest_id];
+        return true;
+    }
+    const char* nm = FF7FieldNames::Get(dest_id);
+    if (!nm)
+        return false;
+    if (nm[0] == 'w' && nm[1] == 'm') {
+        out = L"World map";
+        return true;
+    }
+    out.clear();
+    for (const char* p = nm; *p; ++p)
+        out += (*p == '_') ? L' ' : static_cast<wchar_t>(*p);
+    return !out.empty();
+}
+
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
     // The FF4-scheme hotkeys we poll, with per-key previous-state for edge
@@ -3759,6 +3919,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // every poll so the announcement fires the moment control returns on
     // the new screen. 0 = nothing announced yet this session.
     int16_t announced_field_id = 0;
+
+    // Visited-places cache (v2.25): previous sessions' learned captions.
+    // Loaded here because this thread is the cache's only reader/writer.
+    PlacesLoad();
 
     // Once-per-second rate limiter for the direction-calibration debug line.
     ULONGLONG next_calib_tick = 0;
@@ -3858,23 +4022,42 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         if (field_id != announced_field_id) {
             announced_field_id = field_id;
             if (Config::Get().announce_map_change) {
+                // v2.24: prefer the game's own menu caption ("Sector 1
+                // Station") from the MPNAM buffer — the friendly name a
+                // sighted player reads in the menu. Fall back to the
+                // internal header name when the buffer is still blank
+                // (before a new game's first MPNAM).
                 std::wstring msg = L"Screen: ";
-                bool have_name = false;
-                for (uint32_t i = 0; i < 9; ++i) {
-                    const char c = *reinterpret_cast<const char*>(
-                        hdr + FF7Addr::FTRIG_OFF_FIELD_NAME + i);
-                    if (c == '\0')
-                        break;
-                    if (c < 0x20 || c > 0x7E)
-                        break;      // non-ASCII = header mid-write; stop
-                    // Underscores speak as pauses/garbage on some
-                    // synthesizers — say them as spaces.
-                    msg += (c == '_') ? L' ' : static_cast<wchar_t>(c);
-                    have_name = have_name || c != '_';
+                std::wstring friendly;
+                bool have_name = FriendlyLocationName(friendly);
+                if (have_name) {
+                    msg += friendly;
+                } else {
+                    for (uint32_t i = 0; i < 9; ++i) {
+                        const char c = *reinterpret_cast<const char*>(
+                            hdr + FF7Addr::FTRIG_OFF_FIELD_NAME + i);
+                        if (c == '\0')
+                            break;
+                        if (c < 0x20 || c > 0x7E)
+                            break;  // non-ASCII = header mid-write; stop
+                        // Underscores speak as pauses/garbage on some
+                        // synthesizers — say them as spaces.
+                        msg += (c == '_') ? L' ' : static_cast<wchar_t>(c);
+                        have_name = have_name || c != '_';
+                    }
                 }
                 if (have_name)
                     TTS::Speak(msg, /*interrupt=*/false);
             }
+        }
+
+        // ---- visited-places learning (v2.25, every poll) ------------------
+        // Runs regardless of announce_map_change: learning is what names
+        // exit destinations, not an announcement feature.
+        {
+            std::wstring cap;
+            if (FriendlyLocationName(cap))
+                PlacesLearn(field_id, cap);
         }
 
         // ---- per-model movement tracking (every poll) --------------------
@@ -4013,13 +4196,23 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
 
         if (act_map_name) {
+            // v2.24: friendly menu caption first, then the internal name
+            // as the unique per-screen identifier ("Sector 1 Station,
+            // md1stin") — several screens share one caption, and M is the
+            // precision key, so it speaks both. Screen-change announces
+            // stay caption-only for brevity.
             std::wstring msg;
+            std::wstring friendly;
+            if (FriendlyLocationName(friendly))
+                msg = friendly;
             if (fname[0]) {
+                if (!msg.empty())
+                    msg += L", ";
                 for (int i = 0; i < 9 && fname[i]; ++i)
                     msg += static_cast<wchar_t>(fname[i]);
-            } else {
-                msg = L"Unknown map";
             }
+            if (msg.empty())
+                msg = L"Unknown map";
             Log::Write("[FF7Access] NAV map-name announce");
             TTS::Speak(msg, /*interrupt=*/true);
             continue;
@@ -4067,7 +4260,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         int n_dests = 0;
 
         if (category == CAT_ALL || category == CAT_EXITS) {
-            int exit_no = 0;
+            // v2.25: exits are named by DESTINATION — "To No. 1 Reactor"
+            // (visited-place caption), "To nmkin 2" (maplist internal
+            // name), "To World map" — with "Exit N" only when the id
+            // resolves to nothing (see DestinationName). Two passes so
+            // duplicate destinations get ordinals ("To Platform 2"), the
+            // same slot-order identity rule as every other category. A
+            // name can UPGRADE mid-session (internal -> caption once the
+            // place is visited) — slot order still never changes.
+            struct GwTmp {
+                const int16_t* v;
+                std::wstring   base;
+            } gws[FF7Addr::FTRIG_GATEWAY_COUNT];
+            int n_gws = 0;
+            int exit_no = 0;   // fallback numbering: eligible slot order,
+                               // matching the pre-v2.25 "Exit N" labels
             for (uint32_t g = 0; g < FF7Addr::FTRIG_GATEWAY_COUNT; ++g) {
                 const uint8_t* gw = reinterpret_cast<const uint8_t*>(
                     hdr + FF7Addr::FTRIG_OFF_GATEWAYS + g * FF7Addr::FTRIG_GATEWAY_SIZE);
@@ -4077,9 +4284,36 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     continue;
                 if (v[0] == 0 && v[1] == 0 && v[3] == 0 && v[4] == 0)
                     continue;   // degenerate line = empty slot
+                ++exit_no;
+                GwTmp& t = gws[n_gws++];
+                t.v = v;
+                std::wstring dn;
+                if (DestinationName(dest_id, dn)) {
+                    t.base = L"To ";
+                    t.base += dn;
+                } else {
+                    wchar_t buf[16];
+                    _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                                 L"Exit %d", exit_no);
+                    t.base = buf;
+                }
+            }
+            for (int a = 0; a < n_gws; ++a) {
+                int ordinal = 1, total = 0;
+                for (int k = 0; k < n_gws; ++k) {
+                    if (gws[k].base == gws[a].base) {
+                        ++total;
+                        if (k < a) ++ordinal;
+                    }
+                }
                 NavDest& d = dests[n_dests++];
-                _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                             L"Exit %d", ++exit_no);
+                if (total > 1)
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls %d", gws[a].base.c_str(), ordinal);
+                else
+                    _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                                 L"%ls", gws[a].base.c_str());
+                const int16_t* v = gws[a].v;
                 d.line_x1 = v[0]; d.line_y1 = v[1];
                 d.line_x2 = v[3]; d.line_y2 = v[4];
                 d.line_z1 = v[2]; d.line_z2 = v[5];

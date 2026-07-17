@@ -528,6 +528,32 @@ constexpr uint32_t SAVEMAP_CHAR_NAME_LEN = 12;
 constexpr uint32_t SAVEMAP_PARTY_IDS = SAVEMAP_BASE + 0x4F8;      // 0xDC0230
 
 // ---------------------------------------------------------------------------
+// FRIENDLY LOCATION NAME — the MPNAM buffer (v2.24, found + confirmed
+// 2026-07-16 in one session):
+//
+//   STATIC (ff7_mpnam_static.py): MPNAM = field opcode 0x43 (FFNx enum:
+//   MESSAGE,MPARA,MPRA2,MPNAM consecutive; MESSAGE=0x40 is the mod's
+//   oldest live-proven table entry). Handler 0x618E33 reads the one-byte
+//   dialog-text id and calls the storage callee 0x633691, which walks the
+//   field text entry via the text-block pointer 0xCC08E8 (u16 offset at
+//   ptr+2+id*2), DECODES tokens (0xE2-family expansions; character-name
+//   tokens 0xEA+ resolved through 0x6CB9B8), and writes the result to the
+//   static buffer below, at most 0x17 bytes, 0xFF-terminated.
+//
+//   LIVE (ff7_mpnam_verify.py, same day): buffer read "Sector 1 Station"
+//   on field 117, "Platform" on field 116, updating exactly on the
+//   player's screen changes. ⚠ Bytes BEYOND the 0xFF terminator keep the
+//   previous name's tail ("Platform\xFFSTATION…") — always stop at 0xFF.
+//
+//   The buffer is savemap+0xF0C (0xDC0C44 − 0xDBFD38), which is WHY saved
+//   games remember the location caption. A field without an MPNAM keeps
+//   the previous field's name — the same persistence the sighted menu
+//   caption has, so speaking it stale is information parity, not a bug.
+// ---------------------------------------------------------------------------
+constexpr uint32_t LOCATION_NAME_BUFFER = 0x00DC0C44;  // savemap + 0xF0C
+constexpr uint32_t LOCATION_NAME_MAX    = 0x17;        // handler's write cap
+
+// ---------------------------------------------------------------------------
 // Named anchor functions whose absolute addresses are known from FFNx's
 // naming convention. These are the starting points for dynamic discovery.
 // ---------------------------------------------------------------------------

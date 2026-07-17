@@ -196,6 +196,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | `SAVEMAP_CHAR_RECORDS` | `0xDBFD8C` | First of 9 savemap character records (Cloud), stride 0x84; **FF7-encoded live name (renames included) at +0x10, 12 bytes, 0xFF-terminated**. Derived, not scanned (v2.19): 7thHeaven equipment blocks at savemap+0x70 start with the weapon byte = record offset 0x1C → records at +0x54; 9·0x84 ends exactly at the party IDs below — two anchors agree |
 | `SAVEMAP_PARTY_IDS` | `0xDC0230` | u8[3] — character IDs of party slots 0-2 (0xFF = empty; 9=Young Cloud→record 6, 10=Sephiroth→record 7 during the Kalm flashback). **Self-verifying at runtime**: slot 0's byte must equal PARTY_LEADER (0xDC09E5) or PartySlotLabel falls back to positional "ally N" (v2.19) |
 | *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
+| `LOCATION_NAME_BUFFER` | `0xDC0C44` | **The friendly location caption** ("Sector 1 Station") the main menu displays — savemap+0xF0C, which is why saves remember it. Written by the MPNAM opcode (0x43) storage callee 0x633691: field text entry decoded token-by-token (char-name tokens via 0x6CB9B8), ≤ 0x17 bytes, 0xFF-terminated. ⚠ bytes past the terminator hold the PREVIOUS caption's tail (live-observed) — always stop at 0xFF. Found statically + LIVE-CONFIRMED 2026-07-16 in one session (ff7_mpnam_static.py / ff7_mpnam_verify.py: "Sector 1 Station" ↔ "Platform" tracking the player's screen changes). A field without MPNAM keeps the previous caption — same persistence the sighted menu shows. v2.24 speaks it in the screen-change announce and the M key |
+| `FIELD_TEXT_BLOCK_PTR` | `0xCC08E8` | Pointer to the current field's dialog-TEXT block: u16 offset table at ptr+2 (entry id → ptr + u16[ptr+2+id·2]). Read by the MPNAM callee 0x633691 (static disasm 2026-07-16); 0 when no field is loaded (the callee's own guard). Complements FIELD_SCRIPT_PTR (0xCBF5E8, section-0 base — same 0xCC08xx field cluster as FIELD_LINE_COUNT 0xCC088C) |
 | *(walkmesh section)* | — | Raw field file (behind FIELD_FILE_BUFFER 0xCFF594) **section index 4** (offset table entry buf+6+4×4 = the `level_data+0x16` FFNx's renderer reads): u32 size prefix, u32 nTriangles, triangle pool (24B each: 3 × s16 x,y,z,res — same coord space as model_pos>>12), then ACCESS pool (3 × u16 per triangle = neighbor across each edge, 0xFFFF = wall). Triangle layout FFNx-production-confirmed; access pool **CONFIRMED GAME-WIDE OFFLINE 2026-07-16** (ff7_walkmesh_route_dryrun.py: 720/720 fields, 184,358 links, 100% id-valid + geometrically adjacent, 100.00% reciprocal) **and LIVE 2026-07-16** (nmkin_2 parsed in-game with the exact dry-run triangle count, turn-by-turn routes play-confirmed). Source of v2.22 turn-by-turn + v2.23 journeys; constants at ff7_addresses.h SECTION 1h; format detail §5 |
 | *(player/model walkmesh triangle)* | — | field_event_data **+0x78 s16 field_triangle_id** (see offsets row above): the model's live walkmesh triangle — v2.22 uses it as the exact A*/journey endpoint (player and model targets), immune to stacked-layer ambiguity; <0 = off-mesh (the v2.15 People filter) |
 
@@ -1153,9 +1155,84 @@ lower→slide-platform correctly reports no chain. Run clean, journey sim
 OK, all v2.22 invariants still green.
 
 Deployed to the 2026 install 2026-07-16 13:27 (installed cfg updated with
-the two new keys). PENDING PLAY-TEST: journey phrasing usefulness in the
-reactor, screen-change announcement timing/added chatter, "up and left"
-comprehension.
+the two new keys). PLAY-TEST same day: screen announcements CONFIRMED,
+turn-by-turn + diagonals CONFIRMED, no battle garbage since v2.22.1;
+journey sequencing still untested in play.
+
+### v2.24 (2026-07-16): FRIENDLY location names — "Screen: Sector 1 Station"
+
+User request during the v2.23 play test: the screen announcements speak
+internal names ("nmkin 2"); they wanted the real names. One evening
+session, full pipeline:
+
+**1. Live scan disproved the savemap-preview theory**
+(ff7_location_name_scan.py): savemap+0x00..0x53 stays ALL ZERO during
+play, across screen changes and a menu open — the preview block is
+generated at save time only. (Side lesson: the script's pywin32 SAPI
+path silently degraded to console-only on this box — investigation
+scripts now speak via a PowerShell System.Speech subprocess, which needs
+nothing installed.)
+
+**2. Static hunt** (ff7_mpnam_static.py, the v2.17 opcode-table method):
+MPNAM = opcode 0x43 (FFNx enum counting anchored on live-proven
+MESSAGE=0x40). Handler 0x618E33 → storage callee 0x633691, which reads
+the text entry via a NEW pointer global 0xCC08E8 (u16 offset table at
++2), decodes tokens (0xE2-family jump table at 0x6338CF; char-name
+tokens via 0x6CB9B8), and writes ≤0x17 FF7-encoded bytes to
+**0xDC0C44** — savemap+0xF0C, which is why saves remember the caption.
+
+**3. Live verify** (ff7_mpnam_verify.py, minutes later): the buffer read
+"Sector 1 Station" on field 117 and "Platform" on 116, tracking the
+player's own screen crossings in real time. Also observed: bytes past
+the 0xFF terminator keep the previous caption's tail — decode must stop
+at the terminator.
+
+**Mod changes**: FriendlyLocationName() (proxy.cpp) reads/decodes the
+buffer; the v2.23 screen-change announce speaks the caption ("Screen:
+Sector 1 Station"), internal name only as fallback; the M key speaks
+BOTH ("Sector 1 Station, nmkin 2") — several screens share one caption
+and M is the precision key. A field without MPNAM keeps the previous
+caption, exactly like the sighted menu — information parity, accepted.
+
+Deployed to the 2026 install 2026-07-16 19:46. **PLAY-CONFIRMED same
+evening: "the screen and map names work as advertised."**
+
+### v2.25 (2026-07-16): exits named by DESTINATION — "To Sector 1 Station"
+
+User request right after confirming v2.24: "hear the destination rather
+than exit 1 or exit 2". Gateways have always carried their destination
+FIELD ID (+0x12, v2.14) — what was missing was names for ids. Two layers:
+
+**1. maplist** (investigate/ff7_maplist_catalog.py): flevel.lgp contains
+the engine's own id→filename table — the "maplist" file: u16 count +
+32-byte zero-padded ASCII names, index = field id (format hypothesis
+picked by the live anchor: entry 122 must read "nmkin_2", known from the
+session logs; it did, under the count-prefix layout). 788 entries.
+Generated into AccessibilityMod/src/ff7_field_names.h (checked in;
+regenerate with the script if flevel ever changes). Neighbors
+double-confirm: [116]=md1stin (the opening "Platform" screen),
+[117]=md1_1 ("Sector 1 Station"), [121]=elevtr1.
+
+**2. Visited-places cache** (proxy.cpp): the friendly caption for ANOTHER
+field cannot be read at runtime (it lives in that field's own script) —
+but while the player stands on field X the mod sees X and X's caption
+(v2.24 buffer), so it LEARNS X→caption and persists it to
+ffvii_accessibility_places.txt next to the DLL. Exits to anywhere the
+player has ever been speak the friendly name; the file is the player's
+own growing map knowledge, kept across sessions. Inheritance caveat
+accepted: a no-MPNAM field records its inherited caption — exactly what
+the sighted menu displays while standing there.
+
+**Exit naming** (DestinationName): learned caption ("To No. 1 Reactor") →
+maplist internal name ("To nmkin 2"; wm* = "To World map") → "Exit N"
+only when the id resolves to nothing. Duplicate destinations get
+slot-order ordinals ("To Platform 2"); a name may upgrade mid-session
+(internal → caption after first visit) — slot order, and therefore
+identity, never changes.
+
+Deployed to the 2026 install 2026-07-16 20:05; both cfgs updated.
+PENDING PLAY-TEST: exit names in the reactor area, the places file
+growing, world-map exits.
 
 Side effect: walkmesh pathfinding now exists, which unblocks the deferred
 FF4 keys Shift+\ (valid-path-only filter — A* reachability is a byproduct)
@@ -1498,6 +1575,9 @@ Proven payoffs of cluster reasoning so far:
 | `0x6D72E9` / `0x6D1CC0` | kernel2 request consumer / dispatcher | real CALL to 0x41963C at 0x6D72C6 |
 | `0x6E97E0` | build_dialog_window | |
 | `0x6111D8` / `0x6115AD` / `0x6114D0` | opcode LINE / LINON / SLINE handlers (table[0xD0]/[0xD1]/[0xD3]) | all three write FIELD_LINE_ARRAY 0xCC1F70 — the triple agreement that validated the v2.17 line-array layout; LINE also writes the entity→slot map 0xCBF600 and count 0xCC088C (ff7_line_triggers_static.py, 2026-07-14) |
+| `0x618E33` | opcode MPNAM handler (table[0x43]) | reads the 1-byte text id from the script, calls the storage callee (ff7_mpnam_static.py, 2026-07-16) |
+| `0x633691` | MPNAM storage callee | decodes field text entry (via FIELD_TEXT_BLOCK_PTR 0xCC08E8) into LOCATION_NAME_BUFFER 0xDC0C44, ≤0x17 bytes; token jump table 0x6338CF handles 0xE2-family expansions; char-name tokens (0xEA+) resolved via CALL 0x6CB9B8 |
+| `0x6CB9B8` | character-name-for-token resolver | returns a pointer to the FF7-encoded live name for dialog char tokens; shared by the MPNAM path (2026-07-16) — candidate anchor if a token ever needs resolving outside dialogs |
 | `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |
 | `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
 | `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
@@ -1561,6 +1641,7 @@ and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 | `0xCBF9D8` | field_global_object_ptr | → modules_global_object |
 | `0xCC0418` | current_dialog_message_speed | from ff7.h comment (unused by us so far) |
 | `0xCC088C` | FIELD_LINE_COUNT | u16, LINE zones on this field (v2.17) |
+| `0xCC08E8` | FIELD_TEXT_BLOCK_PTR | → field dialog-text block (u16 offset table at +2); the MPNAM callee's text source (2026-07-16). 0x5C past FIELD_LINE_COUNT — the cluster rule again |
 | `0xCC0960` | field_entity_id_list | |
 | `0xCC0964` | current_entity_id | |
 | `0xCC0B60` | field_event_data_ptr | → 0xCC1670 (observed) |
@@ -1617,6 +1698,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
 | `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var) |
 | `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |
+| `0xDC0C44` | LOCATION_NAME_BUFFER | savemap+0xF0C: the friendly menu caption ("Sector 1 Station"), FF7-encoded, ≤0x17 bytes, 0xFF-terminated, written by MPNAM's callee 0x633691 — live-confirmed 2026-07-16, spoken by v2.24. Persisting in the savemap is WHY save files remember the caption |
 | `0xDC0E10–0xDC0E24` | CONFIG_* value bytes | **these sit INSIDE the savemap range** — FF7 persists config in the save header region, which is why the sliders live here and not with the menu cursors |
 
 ### Menu module block: 0xDC0FA0 – 0xDC38F0
