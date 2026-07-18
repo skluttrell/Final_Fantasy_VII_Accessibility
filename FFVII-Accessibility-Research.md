@@ -1545,6 +1545,38 @@ save and the game shows NO second confirmation; the one dialog already
 handled covers both fresh and overwrite saves. The save/continue menu
 feature (v2.29–v2.29.5) is complete.
 
+### v2.30 (2026-07-18): party KO / revival announcements
+
+The feature the user requested 2026-07-13 ("Cloud is down"), deferred
+until the party had a second member — the latest save preview
+(save00.ff7 slot 0, portraits `00 01 FF`) shows Cloud + Barret, so the
+deferral condition is met. No new addresses: the v2.12 enemy liveness
+watcher in BattleActionThread now has a party-side twin over actor
+slots 0–2 (same BATTLE_ACTOR_VARS reads: statusMask bit 0x01,
+current/max HP i32s, same max-plausibility gate — an empty third party
+slot never becomes plausible and never announces).
+
+Design differences from the enemy watcher, both deliberate:
+
+- **Three states, not a bool** (`Unseen`/`Alive`/`Dead`): a member can
+  *start* a battle already KO'd (carried over from the previous
+  fight). Unseen→Dead records silently (seen-alive-first rule: no
+  spurious "is down" at battle init), but the recorded Dead state
+  means a later Phoenix Down still announces. Revival ("X is back up")
+  is the Dead→Alive transition — enemies never needed it.
+- **Distinct phrasing**: party = "is down" / "is back up", enemies =
+  "defeated", so the player knows which side lost someone from the
+  verb alone.
+
+Delivery rides the SAME pending_defeats quiet-gap buffer as enemy
+defeats (two-sided 600ms window, 5s cap, flush on battle exit) — a KO
+lands in the killing action's announce-burst tick (the v2.12.1
+lesson), so speaking at detection time would be cancelled within the
+millisecond. Names come from PartySlotLabel (v2.19 savemap machinery).
+
+Deployed to both installs 2026-07-18 (hash-verified). **Awaiting
+play-test**: needs a real party KO in battle to confirm.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

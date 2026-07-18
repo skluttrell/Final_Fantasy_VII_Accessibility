@@ -207,31 +207,18 @@ byte the game wrote), so navigating there and pressing Confirm reveals the
 truth — fix kNameGrid in proxy.cpp when observed.
 
 
-[TTS] Party member KO announcements ("Cloud is down")
--------------------------------------------------------
-Requested 2026-07-13, deferred until the player has more party members to
-test with (currently solo Cloud early-game).
-
-A blind player currently only notices a party KO indirectly (that member's
-command menu stops arriving). Announce it the moment it happens, exactly
-like the v2.12 enemy defeat announcements.
-
-Implementation notes (everything needed is already in place):
-  - Extend BattleActionThread's liveness watcher (proxy.cpp) from enemy
-    slots 4-9 to party slots 0-2. Same actor-vars reads: currentHP i32 at
-    BATTLE_ACTOR_VARS + slot*0x68 + 0x2C, statusMask bit 0x01 (Death), same
-    seen-alive-first rule, same reset on GAME_MODE != 2.
-  - MUST use the v2.12.2 two-sided quiet-gap pattern (pending text spoken
-    only when BOTH it is >=600ms old AND TTS::LastSpeakTick() is >=600ms
-    ago) — KOs land in the same tick as action announcements, exactly like
-    enemy defeats did.
-  - Naming: DONE in v2.19 — PartySlotLabel(slot) (proxy.cpp) speaks the
-    real savemap name for all three party slots (SAVEMAP_PARTY_IDS +
-    SAVEMAP_CHAR_RECORDS, self-guarded against layout drift by the
-    PARTY_LEADER cross-check). The KO announcer just calls it.
-  - Also consider announcing revival ("Cloud is back up") on dead->alive,
-    same watcher, trivial addition.
-  - Phrasing: "<name> is down" (distinct from enemies' "defeated").
+[TTS] Party member KO announcements — SHIPPED v2.30 (2026-07-18), awaiting play-test
+--------------------------------------------------------------------------------------
+Requested 2026-07-13, deferred until the party had a second member; the
+latest save (portraits 00 01 FF = Cloud + Barret) met the condition, so
+v2.30 shipped it per the original notes: BattleActionThread's liveness
+watcher extended to party slots 0-2 (same actor-vars reads), three-state
+Unseen/Alive/Dead tracking (battle-start KO recorded silently, so a
+later revival still announces), "X is down" / "X is back up" via
+PartySlotLabel, delivery through the shared v2.12.2 quiet-gap buffer.
+Research doc §8 v2.30 has the full design. Deployed to both installs
+2026-07-18. PENDING PLAY-TEST: needs a real KO (and ideally a Phoenix
+Down revival) in battle.
 
 [NAV] v2.22 turn-by-turn: CONFIRMED in play (2026-07-16); v2.23 additions pending
 ----------------------------------------------------------------------------------

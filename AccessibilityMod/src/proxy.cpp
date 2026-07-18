@@ -1808,6 +1808,17 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // (index 0 = slot 4). Reset whenever the battle module is not active.
     bool enemy_was_alive[6] = {};
 
+    // v2.30: party KO / revival announcements ("Cloud is down" / "Cloud is
+    // back up"), user-requested 2026-07-13 and deferred until the party had
+    // a second member. Party slots need THREE states where enemies needed a
+    // bool: a member can start the battle already KO'd (carried over from
+    // the previous fight), and that must be recorded silently — the
+    // seen-alive-first rule means no "is down" announce, but a later
+    // Phoenix Down still owes the player an "is back up". Reset with the
+    // enemy tracker whenever the battle module is not active.
+    enum class PartyLife : uint8_t { Unseen, Alive, Dead };
+    PartyLife party_life[3] = {};
+
     // v2.12.1: defeats are NOT spoken at detection time. The v2.12 debug log
     // proved the killing blow's tick also fires action announcements (flash
     // resolution + next-turn) whose interrupt=true cancelled the queued
@@ -1899,6 +1910,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
             if (game_mode != 2) {
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
+                party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
             } else {
                 for (uint8_t slot = 4; slot <= 9; ++slot) {
                     const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
@@ -1963,6 +1975,67 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     } else if (alive) {
                         was_alive = true;
                     }
+                }
+
+                // ---- v2.30: party KO / revival watcher ------------------
+                // Same actor-vars reads and plausibility rules as the enemy
+                // loop above, over party slots 0-2. Announcements ride the
+                // SAME pending_defeats quiet-gap buffer: a KO lands in the
+                // same tick as the killing action's announce burst (the
+                // v2.12.1 lesson), so speaking here would be cancelled
+                // within the millisecond. Phrasing is deliberately distinct
+                // from enemies ("is down", not "defeated") so the player
+                // knows which side lost someone without hearing the name.
+                for (uint8_t slot = 0; slot <= 2; ++slot) {
+                    const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
+                        static_cast<uint32_t>(slot) * FF7Addr::BATTLE_ACTOR_VARS_STRIDE;
+                    const uint32_t status = *reinterpret_cast<const volatile uint32_t*>(
+                        base + 0x00);   // statusMask; bit 0x01 = Death
+                    const int32_t cur = *reinterpret_cast<const volatile int32_t*>(
+                        base + FF7Addr::BAVARS_OFF_CURRENT_HP);
+                    const int32_t max = *reinterpret_cast<const volatile int32_t*>(
+                        base + FF7Addr::BAVARS_OFF_MAX_HP);
+
+                    // Empty party slot (2-member party) never becomes
+                    // plausible, so it stays Unseen and never announces.
+                    const bool plausible = (max > 0 && max <= 10000000);
+                    const bool dead  = plausible && (cur <= 0 || (status & 0x01));
+                    const bool alive = plausible && cur > 0 && cur <= max &&
+                                       !(status & 0x01);
+
+                    PartyLife& life = party_life[slot];
+                    const wchar_t* event_suffix = nullptr;
+                    if (dead && life != PartyLife::Dead) {
+                        // Unseen -> Dead records a battle-start KO silently
+                        // (see party_life above); only Alive -> Dead speaks.
+                        if (life == PartyLife::Alive)
+                            event_suffix = L" is down";
+                        life = PartyLife::Dead;
+                    } else if (alive && life != PartyLife::Alive) {
+                        if (life == PartyLife::Dead)
+                            event_suffix = L" is back up";
+                        life = PartyLife::Alive;
+                    }
+                    if (!event_suffix)
+                        continue;
+
+                    wchar_t label[64];
+                    PartySlotLabel(slot, label, _countof(label));
+                    std::wstring msg = label;
+                    msg += event_suffix;
+                    char dbg[160];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] BATTLE party slot=%u cur=%ld max=%ld "
+                        "status=%08lX => %ls",
+                        static_cast<unsigned>(slot),
+                        static_cast<long>(cur), static_cast<long>(max),
+                        static_cast<unsigned long>(status), msg.c_str());
+                    Log::Write(dbg);
+                    if (pending_defeats.empty())
+                        first_defeat_tick = GetTickCount64();
+                    else
+                        pending_defeats += L". ";
+                    pending_defeats += msg;
                 }
             }
 
