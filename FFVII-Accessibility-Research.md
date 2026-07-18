@@ -1673,11 +1673,14 @@ repeated uses in the pane speak "N left" from the inventory word
 changing under the held cursor. Unmapped mode values stay silent and
 debug-log for harvesting. Config gate: speak_menus (no new key).
 
-Deployed both installs 2026-07-18. RESIDUALS in TODO.txt: list-cursor
-window-vs-absolute (3 items can't scroll), Arrange popup + Key Items
-pane unmapped, dispatch-index value on the plain main menu unobserved
-(possible spurious "Item menu" announce — play-test will tell),
-equipment description sections.
+Deployed both installs 2026-07-18. **PLAY-CONFIRMED same day
+("everything we can test works")**: list/top-bar/target announces,
+descriptions, counts — and no spurious "Item menu" on the plain main
+menu, so the dispatch-index gate holds in practice. Remaining
+residuals are the story/state-gated ones in TODO.txt: list-cursor
+window-vs-absolute (needs >1 screen of items), Arrange popup + Key
+Items pane (unmapped modes, silent + debug-logged), equipment
+description sections, key-item names.
 
 ### v2.31.1 (2026-07-18): main-menu labels one row off from Materia down
 
