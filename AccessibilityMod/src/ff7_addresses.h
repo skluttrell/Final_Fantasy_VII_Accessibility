@@ -619,6 +619,49 @@ constexpr uint32_t ITEMMENU_TARGET_CURSOR = 0x00DD1A8C; // u8 party slot 0..2
 constexpr uint32_t ITEMMENU_SCREEN_INDEX  = 1;          // dispatch index of ITEM
 
 // ---------------------------------------------------------------------------
+// ORDER "screen" + main-menu focus state (v2.32, 2026-07-18)
+//
+// The Order screen is NOT a dispatched sub-screen: the dispatcher index
+// stays 0 (= the main-menu screen) and the player hears no confirm chime —
+// the main-menu screen just moves input focus into the party pane
+// (player-observed, then proven by disasm of the main-menu sub
+// menu_subs_call_table[0] = 0x6CA346; ff7_order_block_disasm.py, log
+// order_block_disasm_20260718_154555). The full confirm handler decoded:
+//
+//   0x6CA4CD  bit test: u16[0xDC1130] >> MENU_CURSOR & 1 → row DISABLED,
+//             activation skipped (the grayed Materia/PHS rows)
+//   0x6CA50C  switch(MENU_CURSOR) jump table 0x6CB53E (rows 0..10)
+//   0x6CA513  char-select rows: play chime (0x74580A(1)), FOCUS_MODE = 1
+//   0x6CA526  ORDER row: FOCUS_MODE = 2, NO SOUND CALL — the missing chime
+//             the player noticed is right there in the code
+//   0x6CA598  mode-1 confirm: cursor 0xDC118C → chosen slot 0xDC1288
+//             (empty slot = error buzz 0x74580A(3)); FOCUS_MODE = 0
+//   0x6CA608  mode-2 (Order) confirm: latch 0xDC1320 0→1, first slot saved
+//             to 0xDC110C; second confirm: latch→0, same slot = row byte
+//             at char_record+0x20 XOR 1 (0xFF front ↔ 0xFE back — matches
+//             the guided scan's single toggle candidate 0xDBFDAC = Cloud's
+//             record+0x20; the community's +0x1F claim is one byte off),
+//             different slot = PARTY_IDS bytes swapped (scan-confirmed).
+//   0x919928  static u32 table: character id → record index (the game's
+//             own 9=Young Cloud/10=Sephiroth aliasing — mod keeps its
+//             equivalent hardcoded map in SavemapCharName)
+//
+// Cursor/latch were found first by the guided scan (order_menu_scan_
+// 20260718_152825: single candidates, cursor speak-back verified); the
+// BSS entry-flag probe found NOTHING because it excluded these known
+// addresses and the focus byte's A/B/A failed one round (see log
+// order_entry_probe_20260718_153813) — the disasm settled it instead.
+// FOCUS_MODE semantics are static-derived; live confirm rides the v2.32
+// play-test (debug log on transitions).
+constexpr uint32_t MENU_DISABLED_ROWS   = 0x00DC1130; // u16 bitmask, bit N = row N grayed
+constexpr uint32_t MENU_FOCUS_MODE      = 0x00DC1324; // u8: 0=menu bar, 1=char-select pane, 2=Order pane
+constexpr uint32_t ORDERMENU_CURSOR     = 0x00DC11C4; // u8 party slot 0..2 (rides empty slots)
+constexpr uint32_t ORDERMENU_LATCH      = 0x00DC1320; // u32 1 = first member selected
+constexpr uint32_t ORDERMENU_FIRST_SLOT = 0x00DC110C; // s8 slot saved at first confirm
+constexpr uint32_t CHARSEL_CURSOR       = 0x00DC118C; // u32 mode-1 pane cursor (Magic/Equip/Status)
+constexpr uint32_t CHARSEL_CHOSEN       = 0x00DC1288; // u32 slot chosen in mode 1 (not yet consumed)
+
+// ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
 //
 // SAVEMAP_BASE (0xDBFD38) is the start of a region that includes both the
@@ -705,6 +748,15 @@ constexpr uint32_t SAVEMAP_CHAR_HP_OFF     = 0x2C;
 constexpr uint32_t SAVEMAP_CHAR_MAXHP_OFF  = 0x38;
 constexpr uint32_t SAVEMAP_CHAR_MP_OFF     = 0x30;
 constexpr uint32_t SAVEMAP_CHAR_MAXMP_OFF  = 0x3A;
+
+// Battle-row byte (v2.32): 0xFF = front row, 0xFE = back row. LIVE-CONFIRMED
+// by the Order-menu scan (record+0x20 toggled 0xFF↔0xFE — the single A/B/A
+// candidate) AND by the Order handler disasm (XOR 1 at 0x6CA67F..0x6CA6A4).
+// ⚠ The community savemap doc places this at +0x1F ("flags") — that is one
+// byte off; +0x1F stayed 0 throughout the live toggle.
+constexpr uint32_t SAVEMAP_CHAR_ROW_OFF    = 0x20;
+constexpr uint8_t  SAVEMAP_ROW_FRONT       = 0xFF;
+constexpr uint8_t  SAVEMAP_ROW_BACK        = 0xFE;
 
 // Party inventory: savemap items[320] (v2.31). Offset +0x4FC is pinned by
 // the FFNx savemap struct layout: party_members[3] at +0x4F8 (live-verified

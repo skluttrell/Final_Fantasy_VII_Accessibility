@@ -166,6 +166,13 @@ every confirmed address — the clustering itself is a discovery tool.
 | `ITEMMENU_TOPBAR_CURSOR` | `0x00DD1A18` | u8 top-bar cursor: 0=Use 1=Arrange 2=Key Items. Single intersected Right/Left candidate ×2 rounds (same scan) |
 | `ITEMMENU_LIST_CURSOR` | `0x00DD1A54` | u8 item-list row; **speak-back verified live** (tracked 0..4 over a 3-item inventory — the cursor rides EMPTY rows, so v2.31 speaks "Empty"). ⚠ window-vs-absolute UNRESOLVED: 3 items cannot scroll the list (the v2.29.2 lesson); re-verify + hunt the nearby scroll word once inventory exceeds the visible rows |
 | `ITEMMENU_TARGET_CURSOR` | `0x00DD1A8C` | u8 use-on-whom party cursor 0..2 top-to-bottom (party slot order → PartySlotLabel + savemap HP/MP readout). Single intersected Down/Up candidate ×2 rounds (same scan) |
+| `MENU_DISABLED_ROWS` | `0x00DC1130` | u16 bitmask, bit N = main-menu row N grayed/refuses activation (disasm 0x6CA4CD bit test — what grays Materia/PHS early game). v2.32 appends ", not available" from it |
+| `MENU_FOCUS_MODE` | `0x00DC1324` | u8 main-menu input focus: **0 = menu bar, 1 = character-select pane (set WITH confirm chime — Magic/Equip/Status rows), 2 = Order pane (set at 0x6CA526 with NO sound call — the "no chime" the player noticed)**. Static-derived (v2.32 disasm); the missing Order entry signal both live probes couldn't see |
+| `ORDERMENU_CURSOR` | `0x00DC11C4` | u8 Order-pane party cursor 0..2 (rides the empty slot). Single intersected candidate + speak-back verified (order_menu_scan_20260718_152825) |
+| `ORDERMENU_LATCH` | `0x00DC1320` | u32, 1 = first member selected (flashing cursor). Scan A/B/A single real candidate AND disasm-confirmed exact write sites (0x6CA61B set / 0x6CA634 clear / 0x6CA363 init) |
+| `ORDERMENU_FIRST_SLOT` | `0x00DC110C` | s8 slot latched at the first confirm (disasm 0x6CA616). Same-slot second confirm = row toggle; different = swap |
+| `CHARSEL_CURSOR` / `CHARSEL_CHOSEN` | `0x00DC118C` / `0x00DC1288` | Mode-1 character-select pane cursor and the chosen slot it commits (disasm 0x6CA598 block; empty slot = error buzz 0x74580A(3)). Pre-solves the Magic/Equip/Status entry step; v2.32 speaks the cursor |
+| *(savemap row byte)* | — | Char record **+0x20**: 0xFF = front row, 0xFE = back row (toggled by XOR 1 at 0x6CA67F). LIVE-CONFIRMED by the scan's single toggle candidate + disasm agreement. ⚠ community savemap doc says +0x1F — one byte off. Game's char-id→record map: static u32 table 0x919928 |
 | `FIELD_ID` | `0x00CC15D0` | s16, non-zero on named field maps, 0 on title/world. **Does NOT zero during battle** (live-corrected 2026-07-09; earlier belief wrong) |
 | `G_ACTIVE_ACTOR_ID` | `0x00BE1170` | u8 slot of last-acting battle actor (0–2 party, 4–9 enemy); never resets between battles (v2.5) |
 | `G_BATTLE_MODEL_STATE` | `0x00BE1178` | Per-actor battle array, stride 0x1AEC; commandID u8 at +0x23 (v2.5) |
@@ -1699,6 +1706,55 @@ never surfaced the error. Deployed both installs same day.
 **PLAY-CONFIRMED same day**: "I did indeed hear Materia and PHS in the
 correct places" — the full corrected row order is verified in-game.
 
+### v2.32 (2026-07-18): the ORDER menu speaks — and the player's ear beat the scanner
+
+User request: announce each member's position when selected and explain
+how to change the order. Three-step investigation, each step forced by
+the last:
+
+1. **Guided scan** (ff7_order_menu_scan.py, log order_menu_scan_
+   20260718_152825): party cursor 0xDC11C4 (single candidate, speak-back
+   verified, rides the empty third slot), selection latch 0xDC1320
+   (0↔1), row byte = **char record +0x20** flipping 0xFF↔0xFE (single
+   toggle candidate 0xDBFDAC = Cloud's record — the community's +0x1F
+   claim is one byte off), swap = PARTY_IDS bytes exchanged. BONUS: the
+   dispatch index read **0 on the plain main menu** (closing the v2.31
+   caveat — Item's 1 is genuinely distinctive)… and 0 inside "the Order
+   screen" too.
+2. **The player's observation**: "the order menu does not make an
+   in-game chime like the other menus — perhaps it's not actually going
+   into another menu screen." Exactly right, and it explained why the
+   follow-up A/B/A entry probe (order_entry_probe_20260718_153813)
+   found nothing: there is no screen entry to detect.
+3. **Disasm of the main-menu sub** (menu_subs_call_table[0] = 0x6CA346;
+   ff7_order_block_disasm.py): the whole confirm handler decoded.
+   **MENU_FOCUS_MODE 0xDC1324** (0 = menu bar, 1 = character-select
+   pane with confirm chime 0x74580A(1), **2 = Order pane with NO sound
+   call** — the missing chime is literally in the code). Also decoded:
+   first-selected slot 0xDC110C, row-toggle = XOR 1 on record+0x20,
+   **MENU_DISABLED_ROWS 0xDC1130** (u16 bitmask gating row activation =
+   what grays Materia/PHS), char-select pane cursor 0xDC118C + chosen
+   slot 0xDC1288 (pre-solves Magic/Equip/Status), and the game's own
+   char-id→record table 0x919928.
+
+**Implementation (OrderMenuThread + MenuCursorThread change):**
+- Focus 0→2: spoken how-to ("Confirm one member, then another, to swap
+  places. Confirm the same member twice to change rows.") + current
+  member. Cursor moves: "Barret, position 2, front row" ("Empty,
+  position 3" on the empty slot).
+- Latch set: "<name> selected. Confirm another member to swap, or
+  <name> again to change rows." Latch clear: outcome READ FROM THE DATA
+  (party-ID array → "Swapped. <new order>"; row byte → "<name>, back
+  row"; nothing changed → "Cancelled") — a missed press can never
+  announce a wrong result.
+- Focus 0→1 (Magic/Equip/Status char-select): "Choose a member." +
+  name announces on the 0xDC118C cursor.
+- Main menu rows now append ", not available" when their
+  MENU_DISABLED_ROWS bit is set — the gray the sighted player sees.
+
+Deployed both installs 2026-07-18. Awaiting play-test (focus-mode
+semantics are static-derived; transitions debug-logged for validation).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -2157,7 +2213,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0xDBFD38` | savemap base | live game state, persisted on save |
-| `0xDBFD8C–0xDC022F` | SAVEMAP_CHAR_RECORDS | 9 character records × 0x84 (savemap+0x54..+0x4F7); live name at record+0x10, equipment at +0x1C (= the 7thHeaven "+0x70 blocks") (v2.19) |
+| `0xDBFD8C–0xDC022F` | SAVEMAP_CHAR_RECORDS | 9 character records × 0x84 (savemap+0x54..+0x4F7); live name at record+0x10, equipment at +0x1C (= the 7thHeaven "+0x70 blocks") (v2.19); battle-row byte at **+0x20** (0xFF front/0xFE back — LIVE-toggled + disasm XOR 1, v2.32; community's +0x1F is one byte off); HP/MP words +0x2C/+0x38/+0x30/+0x3A (v2.31) |
 | `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
 | `0xDC0234–0xDC04B3` | SAVEMAP_ITEMS | items[320] u16 (savemap+0x4FC, pinned by party_members[3]+pad in FFNx's savemap struct): id = bits 0-8, qty = bits 9-15, EMPTY = 0xFFFF (FFNx menu.cpp's own reimplementation). Screen row order = array order. Read by v2.31's item-menu speaker |
 | `0xDC0894–0xDC08B3` | SAVEMAP_KEYITEM_BITS | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed |
@@ -2175,7 +2231,15 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC0FC0` | menu_objects | FFNx externals |
 | `0xDC108C` | SOUND_CURSOR | |
 | `0xDC10F0` | CONFIG_ROW | |
+| `0xDC110C` | ORDERMENU_FIRST_SLOT | s8 slot latched at the Order pane's first confirm (v2.32 disasm) |
+| `0xDC1130` | MENU_DISABLED_ROWS | u16 bitmask, bit N = main-menu row N grayed (v2.32 — the Materia/PHS gray) |
 | `0xDC1154` | MENU_CURSOR | frozen at 9 (Save row) for the whole save-menu session — v2.29's save-mode gate (the Config frozen-row signature again) |
+| `0xDC118C` | CHARSEL_CURSOR | u32 character-select pane cursor (mode-1 rows: Magic/Equip/Status; v2.32 speaks it) |
+| `0xDC11C4` | ORDERMENU_CURSOR | u8 Order-pane party cursor, scan speak-back verified (v2.32) |
+| `0xDC1259` | (unresolved) | read 9 in the Order pane, 10 with a member selected (scan latch pass); maybe a widget/cursor count — not consumed |
+| `0xDC1288` | CHARSEL_CHOSEN | u32 slot committed by the mode-1 pane (v2.32 disasm; not yet consumed) |
+| `0xDC1320` | ORDERMENU_LATCH | u32 1 = first member selected (v2.32, scan + disasm) |
+| `0xDC1324` | MENU_FOCUS_MODE | u8 0=menu bar / 1=char-select pane (chimed) / 2=Order pane (silent — the player-noticed missing chime); v2.32's Order gate |
 | `0xDC1210` | (frame parity) | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. CAUSE FOUND (v2.31 dispatcher disasm): the sub-screen dispatcher XOR-toggles it every menu tick. Never read |
 | `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen AND the naming screen (v2.8.3) |
 | `0xDC12E8` | MENU_DISPATCH_TRANS | u32 sub-screen index used by the dispatcher during fade-transition frames (menu_sub_6CB56A disasm, v2.31) |

@@ -149,6 +149,7 @@ static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
 static HANDLE g_savemenu_thread   = nullptr;
 static HANDLE g_itemmenu_thread   = nullptr;
+static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
@@ -616,11 +617,23 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             continue;
         }
 
-        char dbg[80];
+        // v2.32: the activation handler refuses rows whose bit is set in
+        // the disabled-rows mask (disasm 0x6CA4CD — this is exactly what
+        // grays Materia/PHS early game). Sighted players see the gray;
+        // append the same information.
+        const uint16_t disabled_rows =
+            *reinterpret_cast<const volatile uint16_t*>(FF7Addr::MENU_DISABLED_ROWS);
+        const bool row_disabled = ((disabled_rows >> curr) & 1u) != 0;
+
+        wchar_t line[64];
+        _snwprintf_s(line, _countof(line), _TRUNCATE, L"%ls%ls",
+                     label, row_disabled ? L", not available" : L"");
+        char dbg[96];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] MENU cursor=%u (%ls)", curr, label);
+            "[FF7Access] MENU cursor=%u (%ls)%s", curr, label,
+            row_disabled ? " disabled" : "");
         Log::Write(dbg);
-        TTS::Speak(label, /*interrupt=*/true);
+        TTS::Speak(line, /*interrupt=*/true);
     }
 
     return 0;
@@ -2065,6 +2078,251 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             break;
         }
         last_mode = mode;
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// ORDER menu TTS + main-menu pane focus (v2.32, 2026-07-18).
+//
+// The Order "screen" is the main-menu screen with input focus moved into
+// the party pane — no dispatch change, no confirm chime (player-observed;
+// proven by the 0x6CA346 handler disasm — provenance in ff7_addresses.h at
+// the ORDERMENU block). MENU_FOCUS_MODE drives everything:
+//   0 = menu bar (MenuCursorThread's domain — silent here)
+//   1 = character-select pane (Magic/Equip/Status/... rows): speak the
+//       pane cursor by name so "whose screen?" is audible
+//   2 = Order pane: full flow — member + position + row on cursor moves,
+//       spoken how-to on entry (the user's explicit request), selection /
+//       swap / row-toggle outcomes read back from the data that actually
+//       changed (party-ID array, row bytes), never inferred from input.
+// ---------------------------------------------------------------------------
+
+// Battle-row spoken label for a party slot, or nullptr when unknown/empty.
+static const wchar_t* PartySlotRowLabel(uint8_t slot)
+{
+    const uint8_t char_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS + slot);
+    if (char_id == 0xFF)
+        return nullptr;
+    uint8_t rec = char_id;
+    if (char_id == 9)  rec = 6;   // flashback aliases, as SavemapCharName
+    if (char_id == 10) rec = 7;
+    if (rec > 8)
+        return nullptr;
+    const uint8_t row = *reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::SAVEMAP_CHAR_RECORDS + rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE +
+        FF7Addr::SAVEMAP_CHAR_ROW_OFF);
+    if (row == FF7Addr::SAVEMAP_ROW_FRONT) return L"front row";
+    if (row == FF7Addr::SAVEMAP_ROW_BACK)  return L"back row";
+    return nullptr;   // unexpected value — say nothing rather than guess
+}
+
+// "Cloud, position 1, front row" / "Empty, position 3" for one pane slot.
+static void OrderSlotAnnounceText(uint8_t slot, std::wstring& out)
+{
+    const uint8_t char_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS + slot);
+    wchar_t buf[80];
+    if (char_id == 0xFF) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                     L"Empty, position %u", static_cast<unsigned>(slot + 1u));
+        out = buf;
+        return;
+    }
+    wchar_t label[64];
+    PartySlotLabel(slot, label, _countof(label));
+    const wchar_t* row = PartySlotRowLabel(slot);
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"%ls, position %u%ls%ls",
+                 label, static_cast<unsigned>(slot + 1u),
+                 row ? L", " : L"", row ? row : L"");
+    out = buf;
+}
+
+static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
+{
+    uint8_t  last_focus   = 0xFF;   // 0xFF = gate closed last poll
+    uint8_t  last_cursor  = 0xFF;   // Order-pane cursor
+    uint32_t last_charsel = 0xFFFFFFFF;   // mode-1 pane cursor
+    bool     latch_armed  = false;  // latch was 1 last poll
+    // Data snapshot taken when the latch sets, diffed when it clears —
+    // the outcome (swap / row toggle / cancel) is read from what actually
+    // changed, so a missed press can never announce a wrong result.
+    uint8_t  snap_ids[3]  = {};
+    uint8_t  snap_rows[3] = {};
+
+    const auto row_byte_of_slot = [](uint8_t slot) -> uint8_t {
+        const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::SAVEMAP_PARTY_IDS + slot);
+        uint8_t rec = char_id;
+        if (char_id == 9)  rec = 6;
+        if (char_id == 10) rec = 7;
+        if (char_id == 0xFF || rec > 8)
+            return 0;
+        return *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::SAVEMAP_CHAR_RECORDS + rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE +
+            FF7Addr::SAVEMAP_CHAR_ROW_OFF);
+    };
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            last_focus = 0xFF;
+            continue;
+        }
+
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        const uint32_t screen =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
+        if (menu_open != 1 || field_id == 0 || screen != 0) {
+            last_focus = 0xFF;
+            latch_armed = false;
+            continue;
+        }
+
+        const uint8_t focus =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_FOCUS_MODE);
+
+        if (focus != last_focus) {
+            char dbg[64];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] ORDER focus=%u (was %u)", focus, last_focus);
+            Log::Write(dbg);
+            if (focus == 2 && last_focus != 0xFF) {
+                // Entering the Order pane (the transition the entry probe
+                // couldn't see — FOCUS_MODE is written silently at 0x6CA526).
+                // last_focus != 0xFF: only a REAL bar→pane transition — a
+                // stale 2 at gate-open must not lecture the player.
+                TTS::Speak(L"Order. Confirm one member, then another, to "
+                           L"swap places. Confirm the same member twice to "
+                           L"change rows.", /*interrupt=*/true);
+                std::wstring msg;
+                OrderSlotAnnounceText(*reinterpret_cast<const volatile uint8_t*>(
+                    FF7Addr::ORDERMENU_CURSOR), msg);
+                TTS::Speak(msg, /*interrupt=*/false);
+            } else if (focus == 1 && last_focus != 0xFF) {
+                // Character-select pane (Magic/Equip/Status rows). Only on a
+                // real transition (not gate-open with stale 1) — the chime
+                // already told the player something happened; name the pane.
+                TTS::Speak(L"Choose a member.", /*interrupt=*/true);
+                wchar_t label[64];
+                PartySlotLabel(static_cast<uint8_t>(
+                    *reinterpret_cast<const volatile uint32_t*>(
+                        FF7Addr::CHARSEL_CURSOR) & 0xFF), label, _countof(label));
+                TTS::Speak(label, /*interrupt=*/false);
+            }
+            last_focus = focus;
+            last_cursor = 0xFF;
+            last_charsel = 0xFFFFFFFF;
+            // A focus change with the latch armed means the pane was left
+            // mid-selection — drop the pending outcome.
+            latch_armed = (focus == 2) ? latch_armed : false;
+            continue;   // announce settled; next poll resumes tracking
+        }
+
+        if (focus == 2) {
+            // ── Order pane ──────────────────────────────────────────────
+            const uint8_t cursor = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::ORDERMENU_CURSOR);
+            if (cursor <= 2 && cursor != last_cursor) {
+                if (last_cursor != 0xFF) {   // first poll after entry already spoke
+                    std::wstring msg;
+                    OrderSlotAnnounceText(cursor, msg);
+                    TTS::Speak(msg, /*interrupt=*/true);
+                }
+                last_cursor = cursor;
+            }
+
+            const uint32_t latch = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::ORDERMENU_LATCH);
+            if (latch == 1 && !latch_armed) {
+                latch_armed = true;
+                for (uint8_t s = 0; s <= 2; ++s) {
+                    snap_ids[s] = *reinterpret_cast<const volatile uint8_t*>(
+                        FF7Addr::SAVEMAP_PARTY_IDS + s);
+                    snap_rows[s] = row_byte_of_slot(s);
+                }
+                const uint8_t first = *reinterpret_cast<const volatile uint8_t*>(
+                    FF7Addr::ORDERMENU_FIRST_SLOT);
+                wchar_t label[64];
+                PartySlotLabel(first <= 2 ? first : 0, label, _countof(label));
+                wchar_t msg[160];
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                    L"%ls selected. Confirm another member to swap, or %ls "
+                    L"again to change rows.", label, label);
+                TTS::Speak(msg, /*interrupt=*/true);
+            } else if (latch == 0 && latch_armed) {
+                latch_armed = false;
+                bool ids_changed = false, rows_changed = false;
+                uint8_t row_slot = 0xFF;
+                for (uint8_t s = 0; s <= 2; ++s) {
+                    if (*reinterpret_cast<const volatile uint8_t*>(
+                            FF7Addr::SAVEMAP_PARTY_IDS + s) != snap_ids[s])
+                        ids_changed = true;
+                    if (row_byte_of_slot(s) != snap_rows[s]) {
+                        rows_changed = true;
+                        row_slot = s;
+                    }
+                }
+                if (ids_changed) {
+                    // Speak the resulting order — the outcome the player
+                    // actually cares about, read from the rewritten array.
+                    std::wstring msg = L"Swapped. ";
+                    bool first_part = true;
+                    for (uint8_t s = 0; s <= 2; ++s) {
+                        const uint8_t id = *reinterpret_cast<const volatile uint8_t*>(
+                            FF7Addr::SAVEMAP_PARTY_IDS + s);
+                        if (id == 0xFF)
+                            continue;
+                        wchar_t part[96];
+                        wchar_t label[64];
+                        PartySlotLabel(s, label, _countof(label));
+                        _snwprintf_s(part, _countof(part), _TRUNCATE,
+                                     L"%ls%ls position %u",
+                                     first_part ? L"" : L", ",
+                                     label, static_cast<unsigned>(s + 1u));
+                        msg += part;
+                        first_part = false;
+                    }
+                    TTS::Speak(msg, /*interrupt=*/true);
+                } else if (rows_changed) {
+                    wchar_t label[64];
+                    PartySlotLabel(row_slot, label, _countof(label));
+                    const wchar_t* row = PartySlotRowLabel(row_slot);
+                    wchar_t msg[96];
+                    _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls, %ls",
+                                 label, row ? row : L"row changed");
+                    TTS::Speak(msg, /*interrupt=*/true);
+                } else {
+                    TTS::Speak(L"Cancelled", /*interrupt=*/true);
+                }
+            }
+        } else if (focus == 1) {
+            // ── Character-select pane ───────────────────────────────────
+            const uint32_t sel = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::CHARSEL_CURSOR);
+            if (sel <= 2 && sel != last_charsel) {
+                if (last_charsel != 0xFFFFFFFF) {
+                    const uint8_t id = *reinterpret_cast<const volatile uint8_t*>(
+                        FF7Addr::SAVEMAP_PARTY_IDS + sel);
+                    if (id == 0xFF) {
+                        TTS::Speak(L"Empty", /*interrupt=*/true);
+                    } else {
+                        wchar_t label[64];
+                        PartySlotLabel(static_cast<uint8_t>(sel),
+                                       label, _countof(label));
+                        TTS::Speak(label, /*interrupt=*/true);
+                    }
+                }
+                last_charsel = sel;
+            }
+        }
     }
 
     return 0;
@@ -6232,6 +6490,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start item menu thread.");
         }
 
+        // Order menu + main-menu pane focus TTS (v2.32). Cursor/latch from
+        // the guided scan (order_menu_scan_20260718_152825); focus mode and
+        // outcome semantics from the 0x6CA346 handler disasm (provenance in
+        // ff7_addresses.h ORDERMENU block).
+        g_ordermenu_thread = CreateThread(nullptr, 0, OrderMenuThread, nullptr, 0, nullptr);
+        if (g_ordermenu_thread) {
+            Log::Write("[FF7Access] Order menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start order menu thread.");
+        }
+
         // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
         // turn detection, then the flash-message struct (battle_actor_data,
         // 0xDC38E0) for the exact action, resolving names from the kernel2
@@ -6298,7 +6567,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         }
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
-            !g_savemenu_thread && !g_itemmenu_thread &&
+            !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
@@ -6437,6 +6706,11 @@ void Shutdown()
         WaitForSingleObject(g_itemmenu_thread, 500);
         CloseHandle(g_itemmenu_thread);
         g_itemmenu_thread = nullptr;
+    }
+    if (g_ordermenu_thread) {
+        WaitForSingleObject(g_ordermenu_thread, 500);
+        CloseHandle(g_ordermenu_thread);
+        g_ordermenu_thread = nullptr;
     }
     if (g_battle_thread) {
         WaitForSingleObject(g_battle_thread, 500);

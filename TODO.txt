@@ -5,6 +5,28 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MENU] Order menu TTS — SHIPPED v2.32 (2026-07-18), awaiting play-test
+------------------------------------------------------------------------
+User request: position + row when a member is selected, spoken how-to
+for changing order. KEY INSIGHT (user's ear): Order plays NO chime — it
+is not a screen at all; the main menu moves focus into the party pane
+(dispatch index stays 0). Guided scan found cursor 0xDC11C4 / latch
+0xDC1320 / row byte = char record +0x20 (community's +0x1F is one byte
+off); the 0x6CA346 handler disasm found the rest: MENU_FOCUS_MODE
+0xDC1324 (0 bar / 1 char-select+chime / 2 Order, silent),
+MENU_DISABLED_ROWS 0xDC1130, char-select cursor 0xDC118C (pre-solves
+Magic/Equip/Status entry). Speaks: entry how-to + member; "Name,
+position N, front/back row"; "Name selected. Confirm another member to
+swap, or Name again to change rows."; outcomes read from data ("Swapped.
+<new order>" / "Name, back row" / "Cancelled"); mode-1 "Choose a
+member." + names; main-menu rows append ", not available" when grayed
+(the user's Materia observation, now with parity). Research §8 v2.32.
+PENDING PLAY-TEST: (1) Order flow end-to-end incl. row change + swap
+announces, (2) "not available" on Materia/PHS rows, (3) "Choose a
+member." when entering Magic/Equip/Status (focus-mode semantics are
+static-derived; transitions are debug-logged), (4) confirm no false
+"Order" announces anywhere.
+
 [MENU] Item menu TTS — v2.31 PLAY-CONFIRMED 2026-07-18
 ------------------------------------------------------------------------
 User request with screenshots; shipped and PLAY-CONFIRMED the same day
