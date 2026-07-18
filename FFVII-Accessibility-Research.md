@@ -1696,6 +1696,8 @@ identifies BOTH old "unlockable, identity TBD" slots: 6 = Limit
 Save=9 were coincidentally correct in both tables, which is why the
 config sub-menu work and the v2.29 save-mode gate (MENU_CURSOR==9)
 never surfaced the error. Deployed both installs same day.
+**PLAY-CONFIRMED same day**: "I did indeed hear Materia and PHS in the
+correct places" — the full corrected row order is verified in-game.
 
 ---
 
