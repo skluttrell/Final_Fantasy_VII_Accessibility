@@ -431,14 +431,18 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 // Polls FF7Addr::MENU_CURSOR (0x00CC1B42) and announces the highlighted
 // main-menu option by name whenever the cursor moves.
 //
-// CURSOR INDEX → OPTION NAME:
-//   0=Item  1=Magic  2=Equip  3=Status  4=Order  5=Limit
-//   6=???   (unlockable, identity TBD — skipped until confirmed)
-//   7=Config
-//   8=???   (unlockable, identity TBD — skipped until confirmed)
-//   9=Save  10=Quit
-// Confirmed via ff7_menu_cursor_poll.py (2026-07-01): static BSS address in
-// the 0xCC region, verified clean cursor tracking with correct index range.
+// CURSOR INDEX → OPTION NAME (v2.31.1, player-corrected 2026-07-18):
+//   0=Item  1=Magic  2=Materia  3=Equip  4=Status  5=Order  6=Limit
+//   7=Config  8=PHS  9=Save  10=Quit
+// The original 2026-07-01 table was built before the player could compare
+// rows in game and OMITTED Materia — everything from Equip down was one
+// row early ("equip, status, order and limit all need to move down 1; the
+// selection directly under magic is not available yet" = the grayed
+// Materia row). The shift also resolves both old "unlockable, identity
+// TBD" slots: 6 is just Limit, 8 is PHS (grayed until the story grants
+// it). Config=7 and Save=9 were correct in both tables — which is why the
+// v2.29 save-mode gate (MENU_CURSOR==9) never misfired.
+// Address confirmed via ff7_menu_cursor_poll.py (2026-07-01).
 //
 // FIELD_ID GATE:
 //   The main menu can only be opened from a field map. FIELD_ID (0xCC15D0)
@@ -466,17 +470,17 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
     // Map cursor index → spoken label. nullptr entries are unlockable options
     // whose names are not yet confirmed; they are logged but not spoken.
     static const wchar_t* const kMenuLabels[] = {
-        L"Item",    // 0
-        L"Magic",   // 1
-        L"Equip",   // 2
-        L"Status",  // 3
-        L"Order",   // 4
-        L"Limit",   // 5
-        nullptr,    // 6 — unlockable; identity TBD, update when seen in game
-        L"Config",  // 7
-        nullptr,    // 8 — unlockable; identity TBD, update when seen in game
-        L"Save",    // 9
-        L"Quit",    // 10
+        L"Item",     // 0
+        L"Magic",    // 1
+        L"Materia",  // 2 — grayed until the story grants materia
+        L"Equip",    // 3
+        L"Status",   // 4
+        L"Order",    // 5
+        L"Limit",    // 6
+        L"Config",   // 7
+        L"P H S",    // 8 — spaced so TTS spells the letters; grayed until granted
+        L"Save",     // 9
+        L"Quit",     // 10
     };
     static const uint8_t kMenuMax = 10;   // highest valid main-menu index
 

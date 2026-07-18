@@ -1670,6 +1670,21 @@ pane unmapped, dispatch-index value on the plain main menu unobserved
 (possible spurious "Item menu" announce — play-test will tell),
 equipment description sections.
 
+### v2.31.1 (2026-07-18): main-menu labels one row off from Materia down
+
+Player report, row by row: "equip, status, order, and limit all need
+to move down 1; the selection directly under magic is not available
+yet." The unavailable row under Magic is the grayed MATERIA row — the
+original 2026-07-01 label table was built without in-game row
+comparison and omitted it, so Equip through Limit announced one row
+early ever since. The corrected table (Item, Magic, Materia, Equip,
+Status, Order, Limit, Config, PHS, Save, Quit) also retroactively
+identifies BOTH old "unlockable, identity TBD" slots: 6 = Limit
+(shifted), 8 = PHS ("P H S" spaced so TTS spells it). Config=7 and
+Save=9 were coincidentally correct in both tables, which is why the
+config sub-menu work and the v2.29 save-mode gate (MENU_CURSOR==9)
+never surfaced the error. Deployed both installs same day.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -1899,7 +1914,7 @@ CONFIG_ROW != 1.
 | Sound sub-menu volume value TTS (Left/Right) | IAT hook on `dotemuRegSetValueExA` implemented but non-functional (v2.4). Alt: hook `GetProcAddress` call for this fn, or find `external_music_volume`/`external_sfx_volume` in a stable AF3DN.P data section |
 | ASK per-option TTS as cursor moves | `opcode_ask + 0x8E` → inner loop; needs FF7 original opcode_ask address |
 | Item/Magic/Equip/Status/Order/Limit sub-menu cursors | Isolate scan within each sub-menu |
-| Main menu unlockable slots 6 and 8 | Identity TBD — not yet encountered in-game |
+| ~~Main menu unlockable slots 6 and 8~~ | **RESOLVED v2.31.1 (2026-07-18, player row-by-row report)**: the 2026-07-01 label table had omitted Materia (index 2), shifting Equip..Limit one row early; slot 6 = Limit, slot 8 = PHS. Full order: Item, Magic, Materia, Equip, Status, Order, Limit, Config, PHS, Save, Quit |
 | Battle turn announcement | `battle_set_do_render_menu_call` — but BATTLE_MENU_STATE 0→1 transition + ACTIVE_SLOT (2026-07-12) is likely the cleaner poll-based signal |
 | ~~Battle menu cursor TTS~~ | **DONE v2.9 (2026-07-12)** — BattleMenuThread; see §8 v2.9 entry. Remaining battle-menu polish: ~~real enemy names in target announcements~~ (DONE v2.10), ~~Sense HP readout during targeting~~ (DONE v2.11), ~~enemy defeat announcements~~ (DONE v2.12, 2026-07-13), ~~same-tick action-announce clobber~~ (DONE v2.13, chained announces), limit/E.Skill/W-command list widgets (states 0x14/0x18/0x1A/0x1B, 26/27), list-entry disabled-flag announce (u8[entry+4] bits), party-KO announcements (in TODO.txt with implementation notes — awaiting a fuller party to test) |
 | World map dialog | `world_opcode_message_sub_75EE86`, `world_opcode_ask_sub_75EEBB` |
