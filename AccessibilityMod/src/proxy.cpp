@@ -150,6 +150,7 @@ static HANDLE g_config_thread     = nullptr;
 static HANDLE g_savemenu_thread   = nullptr;
 static HANDLE g_itemmenu_thread   = nullptr;
 static HANDLE g_ordermenu_thread  = nullptr;
+static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
@@ -2323,6 +2324,190 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
                 last_charsel = sel;
             }
         }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// STATUS screen TTS (v2.33, 2026-07-18). A real dispatched sub-screen
+// (dispatch index 5 = FFNx's own status_menu_sub name for table[5]), shown
+// for the character committed by the v2.32 char-select pane. The screen is
+// a static stat sheet with no cursor, so the reader speaks the whole sheet
+// once on entry (and again if the viewed character somehow changes) — the
+// screen-reader equivalent of what a sighted player takes in at a glance.
+//
+// Numbers come from two places (provenance: ff7_addresses.h v2.33 notes):
+//   savemap record  — level, EXP/next, limit level, equipment ids, and the
+//                     BASE stats (fallback only);
+//   char-data block — EFFECTIVE stats + derived Attack/Defense/Magic
+//                     atk/def (what the screen actually shows; Cloud's
+//                     materia made record and screen disagree, so base
+//                     stats alone would contradict a sighted helper).
+// The block is trusted only when its HP/maxHP words equal the savemap
+// record's (staleness guard) — on mismatch the reader speaks base stats
+// and skips the derived four, degraded but never wrong.
+// Residual: Attack%/Defense%/Magic def% are drawn from kernel equipment
+// data and exist nowhere in memory — not spoken (TODO).
+// ---------------------------------------------------------------------------
+static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
+{
+    bool     was_open  = false;
+    uint32_t last_slot = 0xFFFFFFFF;
+    ULONGLONG next_scan_tick = 0;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            was_open = false;
+            continue;
+        }
+
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        const uint32_t screen =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
+        if (menu_open != 1 || field_id == 0 ||
+            screen != FF7Addr::STATUSMENU_SCREEN_INDEX) {
+            was_open = false;
+            last_slot = 0xFFFFFFFF;
+            continue;
+        }
+
+        const uint32_t slot = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::CHARSEL_CHOSEN);
+        if (slot > 2)
+            continue;
+        if (was_open && slot == last_slot)
+            continue;
+        was_open = true;
+        last_slot = slot;
+
+        // Equipment names want the kernel2 sections; nudge the scan if the
+        // status screen is the session's first consumer.
+        if (!g_k2.weapon || !g_k2.armor || !g_k2.accessory) {
+            const ULONGLONG now = GetTickCount64();
+            if (now >= next_scan_tick) {
+                next_scan_tick = now + 3000;
+                ScanKernel2Sections();
+            }
+        }
+
+        // ── Resolve the character's savemap record ─────────────────────
+        const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::SAVEMAP_PARTY_IDS + slot);
+        uint8_t rec = char_id;
+        if (char_id == 9)  rec = 6;
+        if (char_id == 10) rec = 7;
+        if (char_id == 0xFF || rec > 8) {
+            TTS::Speak(L"Status", /*interrupt=*/true);
+            continue;
+        }
+        const uint32_t rbase = FF7Addr::SAVEMAP_CHAR_RECORDS +
+                               rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE;
+        const auto r8  = [&](uint32_t off) {
+            return *reinterpret_cast<const volatile uint8_t*>(rbase + off); };
+        const auto r16 = [&](uint32_t off) {
+            return *reinterpret_cast<const volatile uint16_t*>(rbase + off); };
+        const auto r32 = [&](uint32_t off) {
+            return *reinterpret_cast<const volatile uint32_t*>(rbase + off); };
+
+        // ── Char-data block (effective stats), with staleness guard ────
+        const uint32_t cbase = FF7Addr::BATTLE_CHAR_BLOCK +
+                               slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE;
+        const auto c16 = [&](uint32_t off) {
+            return *reinterpret_cast<const volatile uint16_t*>(cbase + off); };
+        const bool block_ok =
+            c16(FF7Addr::BCHAR_OFF_HP)     == r16(FF7Addr::SAVEMAP_CHAR_HP_OFF) &&
+            c16(FF7Addr::BCHAR_OFF_HP + 2) == r16(FF7Addr::SAVEMAP_CHAR_MAXHP_OFF);
+        if (!block_ok)
+            Log::Write("[FF7Access] STATUS char block stale — base stats only");
+
+        uint8_t stats[6];   // str, vit, mag, spr, dex, luck (internal order)
+        for (int i = 0; i < 6; ++i)
+            stats[i] = block_ok
+                ? *reinterpret_cast<const volatile uint8_t*>(
+                      cbase + FF7Addr::BCHAR_OFF_EFF_STATS + i)
+                : r8(0x02 + i);
+
+        // ── Compose the sheet (screen order) ───────────────────────────
+        wchar_t label[64];
+        PartySlotLabel(static_cast<uint8_t>(slot), label, _countof(label));
+        wchar_t head[256];
+        _snwprintf_s(head, _countof(head), _TRUNCATE,
+            L"Status. %ls, level %u. HP %u of %u. MP %u of %u. "
+            L"Experience %lu, %lu to next level. Limit level %u. ",
+            label,
+            static_cast<unsigned>(r8(FF7Addr::SAVEMAP_CHAR_LEVEL_OFF)),
+            static_cast<unsigned>(r16(FF7Addr::SAVEMAP_CHAR_HP_OFF)),
+            static_cast<unsigned>(r16(FF7Addr::SAVEMAP_CHAR_MAXHP_OFF)),
+            static_cast<unsigned>(r16(FF7Addr::SAVEMAP_CHAR_MP_OFF)),
+            static_cast<unsigned>(r16(FF7Addr::SAVEMAP_CHAR_MAXMP_OFF)),
+            static_cast<unsigned long>(r32(FF7Addr::SAVEMAP_CHAR_EXP_OFF)),
+            static_cast<unsigned long>(r32(FF7Addr::SAVEMAP_CHAR_EXPNEXT_OFF)),
+            static_cast<unsigned>(r8(FF7Addr::SAVEMAP_CHAR_LIMITLVL_OFF)));
+        std::wstring msg = head;
+
+        wchar_t part[192];
+        _snwprintf_s(part, _countof(part), _TRUNCATE,
+            L"Strength %u. Dexterity %u. Vitality %u. Magic %u. "
+            L"Spirit %u. Luck %u. ",
+            stats[0], stats[4], stats[1], stats[2], stats[3], stats[5]);
+        msg += part;
+
+        if (block_ok) {
+            _snwprintf_s(part, _countof(part), _TRUNCATE,
+                L"Attack %u. Defense %u. Magic attack %u. Magic defense %u. ",
+                static_cast<unsigned>(c16(FF7Addr::BCHAR_OFF_ATTACK)),
+                static_cast<unsigned>(c16(FF7Addr::BCHAR_OFF_DEFENSE)),
+                static_cast<unsigned>(c16(FF7Addr::BCHAR_OFF_MAGIC_ATK)),
+                static_cast<unsigned>(c16(FF7Addr::BCHAR_OFF_MAGIC_DEF)));
+            msg += part;
+        }
+
+        // Equipment names via the v2.31 kernel sections; numeric fallback.
+        struct EquipLine {
+            const wchar_t* caption;
+            uint8_t        id;
+            const uint8_t** section;
+            const char*    sig;
+        } lines[3] = {
+            { L"Weapon",    r8(FF7Addr::SAVEMAP_CHAR_WEAPON_OFF),
+              &g_k2.weapon,    "Buster Sword|" },
+            { L"Armor",     r8(FF7Addr::SAVEMAP_CHAR_ARMOR_OFF),
+              &g_k2.armor,     "Bronze Bangle|" },
+            { L"Accessory", r8(FF7Addr::SAVEMAP_CHAR_ACCESS_OFF),
+              &g_k2.accessory, "Power Wrist|" },
+        };
+        for (const EquipLine& e : lines) {
+            if (e.id == 0xFF) {
+                msg += e.caption;
+                msg += L", none. ";
+                continue;
+            }
+            std::wstring name;
+            if (SectionEntryText(ValidatedSection(e.section, e.sig), e.id, name)) {
+                msg += e.caption;
+                msg += L", ";
+                msg += name;
+                msg += L". ";
+            } else {
+                _snwprintf_s(part, _countof(part), _TRUNCATE,
+                             L"%ls %u. ", e.caption, e.id);
+                msg += part;
+            }
+        }
+
+        char dbg[128];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] STATUS slot=%lu rec=%u block_ok=%d",
+            static_cast<unsigned long>(slot), rec, block_ok ? 1 : 0);
+        Log::Write(dbg);
+        TTS::Speak(msg, /*interrupt=*/true);
     }
 
     return 0;
@@ -6501,6 +6686,16 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start order menu thread.");
         }
 
+        // Status screen TTS (v2.33). Dispatch index 5 (FFNx status_menu_sub);
+        // effective stats from the menu-populated char-data block, guarded
+        // against staleness by the savemap HP cross-check.
+        g_statusmenu_thread = CreateThread(nullptr, 0, StatusMenuThread, nullptr, 0, nullptr);
+        if (g_statusmenu_thread) {
+            Log::Write("[FF7Access] Status menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start status menu thread.");
+        }
+
         // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
         // turn detection, then the flash-message struct (battle_actor_data,
         // 0xDC38E0) for the exact action, resolving names from the kernel2
@@ -6568,6 +6763,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
+            !g_statusmenu_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
@@ -6711,6 +6907,11 @@ void Shutdown()
         WaitForSingleObject(g_ordermenu_thread, 500);
         CloseHandle(g_ordermenu_thread);
         g_ordermenu_thread = nullptr;
+    }
+    if (g_statusmenu_thread) {
+        WaitForSingleObject(g_statusmenu_thread, 500);
+        CloseHandle(g_statusmenu_thread);
+        g_statusmenu_thread = nullptr;
     }
     if (g_battle_thread) {
         WaitForSingleObject(g_battle_thread, 500);

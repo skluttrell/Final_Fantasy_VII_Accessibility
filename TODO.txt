@@ -5,6 +5,25 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MENU] Status screen TTS — SHIPPED v2.33 (2026-07-18), awaiting play-test
+------------------------------------------------------------------------
+Full stat sheet on entry: name/level/HP/MP/EXP+next/limit, six
+EFFECTIVE stats + Attack/Defense/Magic atk/Magic def (from the shared
+char-data block 0xDBA498 — the "battle" block is menu-populated too,
+found by a single-hit BSS pattern scan against the screenshot),
+equipment names. Gate = dispatch index 5 (FFNx's own status_menu_sub
+name); character = CHARSEL_CHOSEN. Staleness guard: block HP pair must
+match savemap record, else base stats only. Research §8 v2.33.
+RESIDUALS:
+  - Attack%/Defense%/Magic def% not spoken (drawn from kernel
+    weapon/armor data records at render time, nowhere in memory —
+    needs kernel equipment-data parsing; def% alone = dex/4 if a
+    partial ever seems worthwhile).
+  - Status pages 2/3 (elemental/added-effect tables): unmapped,
+    silent. Needs a page-indicator find if wanted.
+  - PENDING PLAY-TEST: sheet reads correctly for both characters;
+    "Choose a member." -> confirm -> sheet flow feels right.
+
 [MENU] Order menu TTS — v2.32 PLAY-CONFIRMED 2026-07-18 ("It works perfectly.")
 ------------------------------------------------------------------------
 User request: position + row when a member is selected, spoken how-to

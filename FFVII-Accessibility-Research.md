@@ -198,7 +198,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `BATTLE_ACTIVE_SLOT` | `0x00DC3C7C` | u8 party slot (0–2) whose battle menu is open; selects the widget block AND the char data block below (✓ live 2026-07-12, slot=0) |
 | `BATTLE_MENU_BUSY` | `0x00DC35AC` | u32, 1 = menu transition/animation in progress; handlers skip input while set (static 2026-07-12) |
 | `BATTLE_WIDGET_BLOCK` | `0x00DC20A0` | **THE BATTLE MENU CURSOR — LIVE-CONFIRMED 2026-07-12** (spoke Attack/Magic/Item correctly through two full battles). Per-slot block at +slot·0x700; 0x38-byte widget structs: +0x00 command widget, +0x38 state-5 (item) list, +0x70 state-6 (magic) list, +0xA8 state-7 (summon) list. Widget fields: +0 horiz cursor (LEFT/RIGHT), +4 vert cursor (UP/DOWN), +0x08 horiz wrap count, +0x0C visible rows, +0x14 scroll offset, +0x1C total entries, +0x28/+0x2C axis modes, +0x30 scroll-busy. Command menu: selected entry index = **row + col·4** (column-major, 4 rows/col, `and 3` wrap); col wraps mod u8[0xDBA4B9+slot·0x440]. List widgets: selected index = w0+w4+scroll (✓ live for magic list) |
-| `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+col·4: u8[+0] command id, u8[+1] action type (Confirm jump-table selector 0–0xB), u8[+2] action id. **Command ids are 1-BASED for basic commands** (✓ live: 1=Attack, 2=Magic, 4=Item; 0xFF=empty cell) **but Limit keeps kernel id 0x14=20** (✓ live: replaces Attack's row-0 entry when the gauge fills; Confirm → state 24). +0x108 (0xDBA5A0) magic list (✓ live via state 6), +0x2C8 (0xDBA760) summon list, both 6-byte entries |
+| `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+col·4: u8[+0] command id, u8[+1] action type (Confirm jump-table selector 0–0xB), u8[+2] action id. **Command ids are 1-BASED for basic commands** (✓ live: 1=Attack, 2=Magic, 4=Item; 0xFF=empty cell) **but Limit keeps kernel id 0x14=20** (✓ live: replaces Attack's row-0 entry when the gauge fills; Confirm → state 24). +0x108 (0xDBA5A0) magic list (✓ live via state 6), +0x2C8 (0xDBA760) summon list, both 6-byte entries. **v2.33: NOT battle-only — the menu populates it too**, with EFFECTIVE stats (materia applied): +0x02..+0x07 u8 str/vit/mag/spr/dex/luck, +0x08/+0x0A/+0x0C/+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/maxHP/MP/maxMP (single BSS pattern hit against the status screenshot; hunt + dump logs 2026-07-18). Menu consumers must guard staleness: block HP pair == savemap record HP pair |
 | `BATTLE_LIST5_TABLE` | `0x009AC354` | Global (not per-slot) 6-byte entries for the state-5 list = ITEM list (inventory is party-wide; the magic guess was wrong — magic is the per-actor state-6 table): u16[+0] entry id (0xFFFF=empty), u8[+3] → 0xDC3C84 on Confirm, u8[+4] enable-flag bits |
 | *(list entry format)* | — | List entry u16 = **low byte action index + high byte flags** (✓ live: Ice showed 0x41E = spell 30 + flag 0x04; ISSUED_ACTION received 30 on Confirm — same index v2.7 logged for Ice). id 0 = empty/padding row |
 | `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id (✓ live: 1 on Attack confirm, 2 on Magic, 19=0x13 on Right press = Change-row, 20 on Limit) |
@@ -218,7 +218,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
-| `SAVEMAP_CHAR_RECORDS` | `0xDBFD8C` | First of 9 savemap character records (Cloud), stride 0x84; **FF7-encoded live name (renames included) at +0x10, 12 bytes, 0xFF-terminated**. Derived, not scanned (v2.19): 7thHeaven equipment blocks at savemap+0x70 start with the weapon byte = record offset 0x1C → records at +0x54; 9·0x84 ends exactly at the party IDs below — two anchors agree |
+| `SAVEMAP_CHAR_RECORDS` | `0xDBFD8C` | First of 9 savemap character records (Cloud), stride 0x84; **FF7-encoded live name (renames included) at +0x10, 12 bytes, 0xFF-terminated**. Derived, not scanned (v2.19): 7thHeaven equipment blocks at savemap+0x70 start with the weapon byte = record offset 0x1C → records at +0x54; 9·0x84 ends exactly at the party IDs below — two anchors agree. v2.33 screenshot-verified field map (status_record_verify log): +0x01 level, +0x02..+0x07 **BASE** str/vit/mag/spr/dex/luck (dex FFNx-named; screen shows EFFECTIVE — see BATTLE_CHAR_BLOCK), +0x0E limit level, +0x1C/+0x1D/+0x1E weapon/armor/accessory ids (0xFF = none), +0x20 row byte (v2.32), +0x2C/+0x38 HP/maxHP, +0x30/+0x3A MP/maxMP, +0x3C exp u32, +0x40 materia[16] u32, +0x80 exp-to-next u32 |
 | `SAVEMAP_PARTY_IDS` | `0xDC0230` | u8[3] — character IDs of party slots 0-2 (0xFF = empty; 9=Young Cloud→record 6, 10=Sephiroth→record 7 during the Kalm flashback). **Self-verifying at runtime**: slot 0's byte must equal PARTY_LEADER (0xDC09E5) or PartySlotLabel falls back to positional "ally N" (v2.19) |
 | `SAVEMAP_ITEMS` | `0xDC0234` | **Party inventory items[320]** u16 (savemap+0x4FC — pinned by party_members[3]+pad in FFNx's savemap struct, i.e. 4 bytes past the live-verified party IDs): id = bits 0-8 (0-127 items, 128-255 weapons, 256-287 armor, 288-319 accessories), qty = bits 9-15, **EMPTY = 0xFFFF** (format from FFNx's own menu_decrease_item_quantity reimplementation, menu.cpp). Screen row order = array order (Arrange rewrites the array). v2.31's item-list data source — needed NO scan |
 | `SAVEMAP_KEYITEM_BITS` | `0xDC0894` | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed (player has no key items to verify against) |
@@ -1759,6 +1759,45 @@ with the whole flow: entry how-to, position/row announces, swap and
 row-toggle outcomes, "not available" rows, and the mode-1 "Choose a
 member." pane.
 
+### v2.33 (2026-07-18): the STATUS screen speaks — zero user scans
+
+The "easy get" it was predicted to be (user request + screenshot
+status_screen_1.jpg = ground truth), assembled entirely from prior
+finds plus two read-only live dumps run while the player sat in the
+menu — no guided scan:
+
+- **Gate**: dispatch index 5 — FFNx's ff7_data.h itself names
+  menu_subs_call_table[5] "status_menu_sub" (0x703ABD in our table
+  dump). Character shown = CHARSEL_CHOSEN (v2.32's mode-1 commit).
+- **Record verify** (ff7_status_record_verify.py): every claimed
+  savemap offset checked against the screenshot — level, limit level,
+  HP/MP, EXP 856 / next 93 exact, weapon/armor 0 = Buster Sword /
+  Bronze Bangle, accessory 0xFF, row 0xFF. ONE productive surprise:
+  +0x02/+0x04 read 22/20 vs screen's 20/24 — **the record stores BASE
+  stats; the screen shows EFFECTIVE** (Cloud's materia at work).
+- **Effective-stats hunt** (ff7_status_stats_hunt.py): pattern-scanned
+  the whole BSS for the screen's exact stat run (20,16,24,17,9,17) —
+  **exactly one hit: 0xDBA49A = BATTLE_CHAR_BLOCK+2**. The v2.9
+  "battle" block is really the game's shared char-data block, menu-
+  populated too. Follow-up dump mapped the stat head: effective u8
+  stats at +0x02, derived u16 Attack/Defense/Magic atk/Magic def at
+  +0x08..+0x0E, HP/MP pairs at +0x10..+0x16 (all seven screenshot
+  values matched in place).
+- **StatusMenuThread**: on entry (and on viewed-slot change) reads the
+  whole sheet in screen order — name, level, HP/MP, EXP + to-next,
+  limit level, six effective stats, the derived four, equipment names
+  via the v2.31 weapon/armor/accessory sections ("Accessory, none"
+  for 0xFF). Staleness guard: the block's HP pair must equal the
+  savemap record's, else it speaks base stats and skips the derived
+  four (degraded, never wrong — the block is battle-shared, so a
+  stale-after-battle mismatch must not misreport).
+
+RESIDUALS: Attack%/Defense%/Magic def% (drawn from kernel equipment
+records at render time, present nowhere in memory — needs kernel
+weapon/armor data parsing if wanted); status pages 2/3 (elemental /
+added-effect tables) unmapped and silent — page-cycle input isn't
+detected. Deployed both installs 2026-07-18; awaiting play-test.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -2211,6 +2250,12 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file — dialog text (§5), model labels (v2.16), and since v2.22 the WALKMESH (section index 4: triangles + adjacency, the turn-by-turn/journey data source; §4 *(walkmesh section)* row) |
 | `0xCFF738` | FIELD_ANIM_DATA_PTR | → field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
+
+### Shared char-data block: 0xDBA498 – ≈0xDBB158 (3 × 0x440)
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDBA498` | BATTLE_CHAR_BLOCK | Per-party-slot char data, stride 0x440 — battle command/magic/summon tables (v2.9) AND, v2.33, the menu's computed EFFECTIVE stats: +0x02..+0x07 u8 stats, +0x08..+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/MP pairs. See the §4 row for the full field map. Sits BELOW the savemap — the two must not be conflated |
 
 ### Savemap: 0xDBFD38 – ≈0xDC0E2C (0x10F4 bytes)
 

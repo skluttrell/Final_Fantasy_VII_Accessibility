@@ -659,7 +659,27 @@ constexpr uint32_t ORDERMENU_CURSOR     = 0x00DC11C4; // u8 party slot 0..2 (rid
 constexpr uint32_t ORDERMENU_LATCH      = 0x00DC1320; // u32 1 = first member selected
 constexpr uint32_t ORDERMENU_FIRST_SLOT = 0x00DC110C; // s8 slot saved at first confirm
 constexpr uint32_t CHARSEL_CURSOR       = 0x00DC118C; // u32 mode-1 pane cursor (Magic/Equip/Status)
-constexpr uint32_t CHARSEL_CHOSEN       = 0x00DC1288; // u32 slot chosen in mode 1 (not yet consumed)
+constexpr uint32_t CHARSEL_CHOSEN       = 0x00DC1288; // u32 slot chosen in mode 1 (v2.33 status reader)
+
+// STATUS screen (v2.33): a real dispatched sub-screen, unlike Order —
+// FFNx's own ff7_data.h names menu_subs_call_table[5] status_menu_sub
+// (table[5] = 0x703ABD in our table dump), so the dispatch index IS the
+// gate, same shape as the item screen's index 1. Character shown =
+// CHARSEL_CHOSEN (the v2.32 mode-1 commit). Savemap record offsets used
+// by the reader (all screenshot-verified 2026-07-18, status_record_verify
+// log): +0x01 level, +0x0E limit level, +0x1C weapon id, +0x1D armor id,
+// +0x1E accessory id (0xFF = none), +0x3C exp u32, +0x80 exp-to-next u32.
+// ⚠ record +0x02..+0x07 are BASE stats — the screen shows EFFECTIVE
+// (record str 22/mag 20 vs screen 20/24, Cloud's materia at work); the
+// effective values come from BATTLE_CHAR_BLOCK (see its v2.33 note).
+constexpr uint32_t STATUSMENU_SCREEN_INDEX  = 5;
+constexpr uint32_t SAVEMAP_CHAR_LEVEL_OFF   = 0x01;
+constexpr uint32_t SAVEMAP_CHAR_LIMITLVL_OFF = 0x0E;
+constexpr uint32_t SAVEMAP_CHAR_WEAPON_OFF  = 0x1C;
+constexpr uint32_t SAVEMAP_CHAR_ARMOR_OFF   = 0x1D;
+constexpr uint32_t SAVEMAP_CHAR_ACCESS_OFF  = 0x1E;
+constexpr uint32_t SAVEMAP_CHAR_EXP_OFF     = 0x3C;
+constexpr uint32_t SAVEMAP_CHAR_EXPNEXT_OFF = 0x80;
 
 // ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
@@ -1077,12 +1097,34 @@ constexpr uint32_t BWIDGET_OFF_VERT    = 0x04;
 constexpr uint32_t BWIDGET_OFF_SCROLL  = 0x14;
 
 // Per-slot battle character data block (command table, list tables).
+// v2.33: this block is NOT battle-only — the MENU populates it too, with
+// the character's EFFECTIVE stats (materia/equipment modifiers applied).
+// Live-proven 2026-07-18: pattern-scanning the whole BSS for the status
+// screen's exact stat run (20,16,24,17,9,17) hit EXACTLY ONCE, at
+// 0xDBA49A = this block + 2, while the savemap record held base 22/20
+// (ff7_status_stats_hunt / ff7_char_block_dump logs; screenshot
+// status_screen_1.jpg = ground truth). Layout of the stat head:
+//   +0x02..+0x07 u8  effective str, vit, mag, spr, dex, luck
+//   +0x08 u16 Attack, +0x0A Defense, +0x0C Magic atk, +0x0E Magic def
+//   +0x10/+0x12 u16 HP/maxHP, +0x14/+0x16 u16 MP/maxMP
+// The three % stats (Attack%/Defense%/Magic def%) are NOT in the block —
+// the screen draws them from kernel equipment data (residual).
+// STALENESS GUARD for menu use: the block's HP/maxHP must equal the
+// savemap record's — mismatch means the block describes someone/somewhen
+// else; fall back to savemap base stats rather than speak wrong numbers.
 constexpr uint32_t BATTLE_CHAR_BLOCK        = 0x00DBA498;
 constexpr uint32_t BATTLE_CHAR_SLOT_STRIDE  = 0x440;
 constexpr uint32_t BCHAR_OFF_CMD_NCOLS      = 0x21;   // u8 command column count
 constexpr uint32_t BCHAR_OFF_CMD_TABLE      = 0x4C;   // 6-byte entries
 constexpr uint32_t BCHAR_OFF_MAGIC_LIST     = 0x108;  // 6-byte entries
 constexpr uint32_t BCHAR_OFF_SUMMON_LIST    = 0x2C8;  // 6-byte entries
+constexpr uint32_t BCHAR_OFF_EFF_STATS      = 0x02;   // 6× u8 (see above)
+constexpr uint32_t BCHAR_OFF_ATTACK         = 0x08;   // u16
+constexpr uint32_t BCHAR_OFF_DEFENSE        = 0x0A;   // u16
+constexpr uint32_t BCHAR_OFF_MAGIC_ATK      = 0x0C;   // u16
+constexpr uint32_t BCHAR_OFF_MAGIC_DEF      = 0x0E;   // u16
+constexpr uint32_t BCHAR_OFF_HP             = 0x10;   // u16 pair cur/max
+constexpr uint32_t BCHAR_OFF_MP             = 0x14;   // u16 pair cur/max
 constexpr uint32_t BATTLE_ITEM_LIST_TABLE   = 0x009AC354; // global, 6-byte entries
 
 // Confirm-flow staging block (all = FFNx externals, resolved + live-checked).
