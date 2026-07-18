@@ -28,9 +28,12 @@ Also confirmed along the way:
 - `ff7_en.exe` in the 2026 release is **32-bit** (`PE32 executable (GUI) Intel 80386`) — same as 2013.
 - FFNx still uses the filename **`AF3DN.P`** for its driver replacement in the 2026 release.
 
-**Not yet tested**: battle action TTS, and the battle-menu-cursor problem specifically (already known
-unsolved from the 2013 investigation — no reason to expect this one gap to resolve itself just from the
-new release, since the underlying binary is confirmed the same).
+**Both of the then-open gaps have since been closed on this install** (this paragraph originally read
+"not yet tested"): battle action TTS was confirmed working as v2.7 (2026-07-11) and the long-unsolved
+battle-menu-cursor problem was cracked and shipped as v2.9 (2026-07-12) — see
+`FFVII-Accessibility-Research.md` §8 for those entries and everything since (the mod has continued
+active development on this install: battle announcements, field navigation/pathfinding, save/continue
+menus, the item menu, and more — §8 is the authoritative version history, TODO.txt the live backlog).
 
 ### What this means going forward
 
