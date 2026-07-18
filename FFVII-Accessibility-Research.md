@@ -1614,6 +1614,62 @@ Deployed to both installs 2026-07-18 (hash-verified). Awaiting
 play-test: normal wall bumps should be unchanged; a party wipe should
 now be silent through the game-over screen.
 
+### v2.31 (2026-07-18): the ITEM menu speaks — one static morning + one guided scan
+
+User request with screenshots (Screenshots/Menus/items_menu_1/2.png =
+ground truth for captions and layout). Everything except the cursors
+came without touching the running game:
+
+**Static (ff7_item_menu_static.py + ff7_menu_dispatch_disasm.py):**
+- Inventory data: savemap items[320] at 0xDC0234 (savemap+0x4FC, pinned
+  by the live-verified party_members at +0x4F8), word = id | qty<<9,
+  EMPTY = 0xFFFF — format from FFNx's own menu_decrease_item_quantity
+  reimplementation. Key-item bitmask at 0xDC0894 (+0xB5C). Screen row
+  order = array order.
+- Sub-screen dispatcher: menu_sub_6CB56A (FFNx name-embedded) calls
+  menu_subs_call_table[16] @0x91AB98 (operand at +0x2EC; table read
+  cross-checked against FFNx's [10]=0x6FEDB0 save menu) indexed by u32
+  [0xDC12EC] ([0xDC12E8] during transition frames). Bonus: the same
+  disasm shows the dispatcher XOR-toggling 0xDC1210 every tick —
+  closing the v2.29.2 "why did the phase byte oscillate" question.
+- METHOD LESSONS (both cost a wasted run): (1) the first sweep filtered
+  memory operands to plain [imm32] — but array access compiles as
+  [reg*2+disp], so the items-array discriminator found ZERO refs
+  anywhere; indexed operands must be kept (tagged) for array evidence.
+  (2) A depth-4 call sweep converges on shared menu helpers and scores
+  every sub-screen equally — discriminate SHALLOW (depth 2), mine deep
+  only inside the chosen entry. (3) The static caption evidence picked
+  table[3]; LIVE dispatch reads 1 — table[1] also had the most direct
+  items refs, and the live value wins (the 0xDCA7F8 "exclusive block"
+  of table[3] stayed 0 all session — belongs to some other screen).
+
+**Live (ff7_item_menu_scan.py, log item_menu_scan_20260718_114427, run
+by the player):** every pass produced exactly ONE candidate — the
+cleanest scan of the project. ITEMMENU_MODE 0xDD19C8 (0 top bar / 1
+item list / 2 target pane; BOTH A/B/A toggles landed on it),
+TOPBAR_CURSOR 0xDD1A18, LIST_CURSOR 0xDD1A54 (speak-back verified;
+rides empty rows), TARGET_CURSOR 0xDD1A8C. Player flow correction:
+the menu OPENS in the item list; Cancel goes up to the top bar.
+
+**Implementation (ItemMenuThread, proxy.cpp):** gate = MENU_OPEN &&
+FIELD_ID!=0 && [0xDC12EC]==1. Speaks "Item menu" on entry then the
+current row; item rows as "Potion, 4. Restores HP by 100" (three NEW
+kernel2 sections: armor "Bronze Bangle|", accessory "Power Wrist|",
+item descriptions "Restores HP by 100|" — the screenshot's own caption
+is entry 0's head; names cover the full inventory id space 0-319);
+empty rows as "Empty"; top bar as Use/Arrange/Key Items; target pane
+via PartySlotLabel + savemap HP/MP (offsets +0x2C/+0x38/+0x30/+0x3A
+from FFNx savemap_char — heal-target parity with the sighted pane);
+repeated uses in the pane speak "N left" from the inventory word
+changing under the held cursor. Unmapped mode values stay silent and
+debug-log for harvesting. Config gate: speak_menus (no new key).
+
+Deployed both installs 2026-07-18. RESIDUALS in TODO.txt: list-cursor
+window-vs-absolute (3 items can't scroll), Arrange popup + Key Items
+pane unmapped, dispatch-index value on the plain main menu unobserved
+(possible spurious "Item menu" announce — play-test will tell),
+equipment description sections.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -2074,6 +2130,8 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDBFD38` | savemap base | live game state, persisted on save |
 | `0xDBFD8C–0xDC022F` | SAVEMAP_CHAR_RECORDS | 9 character records × 0x84 (savemap+0x54..+0x4F7); live name at record+0x10, equipment at +0x1C (= the 7thHeaven "+0x70 blocks") (v2.19) |
 | `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
+| `0xDC0234–0xDC04B3` | SAVEMAP_ITEMS | items[320] u16 (savemap+0x4FC, pinned by party_members[3]+pad in FFNx's savemap struct): id = bits 0-8, qty = bits 9-15, EMPTY = 0xFFFF (FFNx menu.cpp's own reimplementation). Screen row order = array order. Read by v2.31's item-menu speaker |
+| `0xDC0894–0xDC08B3` | SAVEMAP_KEYITEM_BITS | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed |
 | `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var) |
 | `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |
 | `0xDC0C44` | LOCATION_NAME_BUFFER | savemap+0xF0C: the friendly menu caption ("Sector 1 Station"), FF7-encoded, ≤0x17 bytes, 0xFF-terminated, written by MPNAM's callee 0x633691 — live-confirmed 2026-07-16, spoken by v2.24. Persisting in the savemap is WHY save files remember the caption |
@@ -2089,8 +2147,11 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC108C` | SOUND_CURSOR | |
 | `0xDC10F0` | CONFIG_ROW | |
 | `0xDC1154` | MENU_CURSOR | frozen at 9 (Save row) for the whole save-menu session — v2.29's save-mode gate (the Config frozen-row signature again) |
-| `0xDC1210` | SAVEMENU_PHASE | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. Do not read; pane = LOADMENU_LIST_PTR nonzero |
+| `0xDC1210` | (frame parity) | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. CAUSE FOUND (v2.31 dispatcher disasm): the sub-screen dispatcher XOR-toggles it every menu tick. Never read |
 | `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen AND the naming screen (v2.8.3) |
+| `0xDC12E8` | MENU_DISPATCH_TRANS | u32 sub-screen index used by the dispatcher during fade-transition frames (menu_sub_6CB56A disasm, v2.31) |
+| `0xDC12EC` | MENU_DISPATCH_INDEX | u32 steady-state sub-screen index into menu_subs_call_table[16] @0x91AB98 — ITEM screen = 1 (LIVE: constant 1 through the whole item-menu scan session; overrides the static caption guess of 3). Known table ids: [8]=config, [10]=save/load (FFNx). v2.31's which-screen gate. ⚠ value on the PLAIN main menu not yet observed |
+| `0xDC1138` | (menu frame counter) | u32, +1 every dispatcher tick (same disasm); not consumed |
 | `0xDC6AE0` | SAVEMENU_GRID_CURSOR | u8 0..4 file-grid COLUMN (not 0..9 — v2.29.3); holds selected file while slot list open (v2.29) |
 | `0xDC6AE4` | SAVEMENU_GRID_ROW | u8 grid row (0=top/1=bottom); LIVE-CONFIRMED by the field probe (v2.29.4) |
 | `0xDC6B1C` | SAVEMENU_SLOT_CURSOR | u8 0..2 visible ROW of the 3-row slot window (NOT absolute slot — v2.29.2), grid+0x3C — same DC6Axx save-menu struct. Holds still while the confirm dialog is up |
@@ -2103,6 +2164,18 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |
 | `0xDCA028` | SAVEMENU_WIDGET_STATE | save-menu widget state machine: 0=file grid, 1=slot list, 7=save-confirm dialog (v2.29.5; only 7 acted on) |
+
+### Item menu block: 0xDD19C8 – 0xDD1A8C
+
+All four = the SINGLE intersected candidates of the guided scan
+item_menu_scan_20260718_114427 (list cursor speak-back verified live).
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDD19C8` | ITEMMENU_MODE | the item menu's own state machine: 0=top bar, 1=item list (ENTRY state — the menu opens in the list, Cancel goes UP; player-corrected flow), 2=use-on-whom target pane. Both A/B/A toggles landed on this one address. Other values (Arrange popup? Key Items pane?) unmapped — v2.31 debug-logs them |
+| `0xDD1A18` | ITEMMENU_TOPBAR_CURSOR | u8 0=Use 1=Arrange 2=Key Items |
+| `0xDD1A54` | ITEMMENU_LIST_CURSOR | u8 item-list row; tracked 0..4 over a 3-item inventory in speak-back (cursor DOES ride empty rows → "Empty"). ⚠ window-vs-absolute UNRESOLVED (3 items can't scroll — the v2.29.2 lesson); re-verify once inventory > visible rows |
+| `0xDD1A8C` | ITEMMENU_TARGET_CURSOR | u8 party slot 0..2, top-to-bottom |
 
 ### Title / name-entry block: 0xDD4400 – 0xDD7704
 

@@ -5,7 +5,36 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[MENU] Save / Continue menu TTS — IN PROGRESS 2026-07-17 (user request)
+[MENU] Item menu TTS — SHIPPED v2.31 (2026-07-18), awaiting play-test
+------------------------------------------------------------------------
+User request with screenshots (Screenshots/Menus/items_menu_1/2.png).
+Shipped same day: static morning (savemap items[320] + dispatcher
+disasm) + one guided scan (item_menu_scan_20260718_114427 — every pass
+a SINGLE candidate, list cursor speak-back verified). Research doc §8
+v2.31 has the full derivation; §4/§14 have the addresses. Speaks:
+entry "Item menu" + current row, item rows "Potion, 4. Restores HP by
+100", "Empty" rows, Use/Arrange/Key Items top bar, target pane with
+name + HP/MP, "N left" on repeated uses. Gate: speak_menus.
+RESIDUALS (play reports will drive):
+  - List cursor window-vs-absolute UNRESOLVED: 3 items can't scroll
+    (the v2.29.2 save-menu lesson). Once inventory > visible rows,
+    re-verify; if rows past the window misannounce, scan for the
+    nearby scroll word and add it (save menu: cursor+~0x10).
+  - Arrange popup and Key Items pane: ITEMMENU_MODE values unmapped
+    (player had no key items; popup not scanned). v2.31 stays SILENT
+    there and debug-logs "ITEMMENU unmapped mode=N" — a play report
+    plus that log line maps them.
+  - MENU_DISPATCH_INDEX (0xDC12EC) value on the PLAIN main menu never
+    observed. If opening the main menu ever speaks a spurious "Item
+    menu", that value is 1 outside the item screen — log it and add a
+    differentiator (candidates: the mode byte, MENU_CURSOR row).
+  - Equipment rows speak name+quantity but no description (weapon/
+    armor/accessory description sections not yet signature-scanned).
+  - Key-item names: kernel section not yet located (no key items to
+    ground a signature against). Needed for the Key Items pane.
+
+
+[MENU] Save / Continue menu TTS — COMPLETE (v2.29-v2.29.5, 2026-07-17)
 ------------------------------------------------------------------------
 User request with screenshots (Screenshots/Menus/): make the save-point
 SAVE menu and the title-screen CONTINUE (load) menu speak. Both share

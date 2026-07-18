@@ -574,6 +574,51 @@ constexpr uint32_t LOADMENU_SLOT_SCROLL = 0x00DD6DE4; // u8 0..12, LIVE-CONFIRME
 constexpr uint32_t LOADMENU_LIST_PTR    = 0x00DD7700; // u32 != 0 = slot list open
 
 // ---------------------------------------------------------------------------
+// ITEM menu state (v2.31, 2026-07-18)
+//
+// Sub-screen identity: the main-menu dispatcher (FFNx menu_sub_6CB56A,
+// name-embedded VA 0x6CB56A) calls menu_subs_call_table[16] (@0x91AB98,
+// operand at dispatcher+0x2EC) indexed by u32 [0xDC12EC] in steady state
+// ([0xDC12E8] during the fade-transition frames — both call sites in
+// ff7_menu_dispatch_disasm.py, log menu_dispatch_disasm_20260718_113028).
+// The ITEM screen is INDEX 1: LIVE-observed constant 1 through the whole
+// item-menu scan session (item_menu_scan_20260718_114427) — overriding the
+// static caption-evidence guess of index 3, whose 0xDCA7F8 "exclusive
+// block" stayed 0 all session (that block belongs to some other screen).
+// The same disasm also settled a v2.29 mystery: 0xDC1210 is XOR-toggled
+// every dispatcher tick (frame parity), which is WHY it oscillated and got
+// DISPROVED as a save-menu phase flag.
+//
+// Cursor/state block (all single intersected candidates of the guided scan
+// item_menu_scan_20260718_114427; list cursor speak-back verified live):
+//   ITEMMENU_MODE: the menu's own state machine, exactly like the save
+//     menu's widget byte — 0 = top bar (Use/Arrange/Key Items), 1 = item
+//     list (both A/B/A toggles landed on THIS one address: 0<->1 on
+//     top-bar/list, 1<->2 on list/target). ENTRY STATE IS 1: the menu
+//     opens in the item list, Cancel goes UP to the top bar (player-
+//     corrected flow, 2026-07-18 — the scan script's docstring had it
+//     backwards).
+//   ITEMMENU_TOPBAR_CURSOR: 0 = Use, 1 = Arrange, 2 = Key Items.
+//   ITEMMENU_LIST_CURSOR: item-list row; the speak-back pass tracked it
+//     0..4 over a 3-item inventory, so the cursor DOES move onto empty
+//     rows (speak "Empty"). ⚠ WINDOW-vs-ABSOLUTE UNRESOLVED: with 3 items
+//     the list cannot scroll (the v2.29.2 save-menu lesson); re-verify +
+//     find the expected nearby scroll word once inventory > visible rows.
+//   ITEMMENU_TARGET_CURSOR: use-on-whom party cursor, 0..2 top-to-bottom
+//     (party slot order — speak via PartySlotLabel).
+// Values other than 0/1/2 in ITEMMENU_MODE (Arrange popup? Key Items
+// pane?) are NOT yet mapped: the speaker stays silent and debug-logs them
+// for harvesting (player had no key items and the Arrange popup was not
+// scanned this session).
+constexpr uint32_t MENU_DISPATCH_INDEX  = 0x00DC12EC; // u32; 1 = item screen
+constexpr uint32_t MENU_DISPATCH_TRANS  = 0x00DC12E8; // u32; transition twin
+constexpr uint32_t ITEMMENU_MODE          = 0x00DD19C8; // u8 0/1/2 (see above)
+constexpr uint32_t ITEMMENU_TOPBAR_CURSOR = 0x00DD1A18; // u8 0=Use 1=Arrange 2=Key Items
+constexpr uint32_t ITEMMENU_LIST_CURSOR   = 0x00DD1A54; // u8 row (window Q open)
+constexpr uint32_t ITEMMENU_TARGET_CURSOR = 0x00DD1A8C; // u8 party slot 0..2
+constexpr uint32_t ITEMMENU_SCREEN_INDEX  = 1;          // dispatch index of ITEM
+
+// ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
 //
 // SAVEMAP_BASE (0xDBFD38) is the start of a region that includes both the
@@ -649,6 +694,36 @@ constexpr uint32_t SAVEMAP_CHAR_NAME_LEN = 12;
 // flashback uses 9 (Young Cloud, data stored in Cait Sith's record) and
 // 10 (Sephiroth, data stored in Vincent's record).
 constexpr uint32_t SAVEMAP_PARTY_IDS = SAVEMAP_BASE + 0x4F8;      // 0xDC0230
+
+// Character record HP/MP words (v2.31, offsets from FFNx's savemap_char
+// struct — same struct that gave the live-verified +0x10 name field, and
+// the id/level bytes at +0x00/+0x01 already used by the v2.19 machinery):
+//   +0x2C current HP, +0x38 max HP, +0x30 current MP, +0x3A max MP.
+// Spoken in the item menu's use-on-whom pane for heal-target parity (the
+// sighted pane shows exactly these four numbers — items_menu_2.png).
+constexpr uint32_t SAVEMAP_CHAR_HP_OFF     = 0x2C;
+constexpr uint32_t SAVEMAP_CHAR_MAXHP_OFF  = 0x38;
+constexpr uint32_t SAVEMAP_CHAR_MP_OFF     = 0x30;
+constexpr uint32_t SAVEMAP_CHAR_MAXMP_OFF  = 0x3A;
+
+// Party inventory: savemap items[320] (v2.31). Offset +0x4FC is pinned by
+// the FFNx savemap struct layout: party_members[3] at +0x4F8 (live-verified
+// above) + one padding byte. Word format per FFNx's own reimplementation
+// of menu_decrease_item_quantity (FFNx/src/ff7/menu.cpp):
+//   id = word & 0x1FF, quantity = word >> 9, EMPTY SLOT = 0xFFFF.
+// The on-screen item-list ROW ORDER is the ARRAY ORDER (the menu draws
+// slots as stored; Arrange rewrites the array itself).
+// Item id namespace (id = word & 0x1FF):
+//   0-127 items, 128-255 weapons (-128), 256-287 armor (-256),
+//   288-319 accessories (-288) — same split ResolveActionName already uses
+//   for thrown weapons (id space shared with battle).
+constexpr uint32_t SAVEMAP_ITEMS       = SAVEMAP_BASE + 0x4FC;    // 0xDC0234
+constexpr uint32_t SAVEMAP_ITEMS_COUNT = 320;
+
+// Key items: 32-byte bitmask (256 key-item bits) right after the materia
+// arrays (FFNx savemap struct field_B5C). NOT yet consumed by the mod —
+// recorded for the Key Items pane follow-up (player has none yet).
+constexpr uint32_t SAVEMAP_KEYITEM_BITS = SAVEMAP_BASE + 0xB5C;   // 0xDC0894
 
 // ---------------------------------------------------------------------------
 // FRIENDLY LOCATION NAME — the MPNAM buffer (v2.24, found + confirmed

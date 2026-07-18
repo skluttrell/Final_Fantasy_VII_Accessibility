@@ -148,6 +148,7 @@ static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
 static HANDLE g_savemenu_thread   = nullptr;
+static HANDLE g_itemmenu_thread   = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
@@ -1300,8 +1301,19 @@ struct Kernel2Sections {
                              // The -1 comes from the menu/battle id space
                              // being 1-based (v2.9, live-corrected) while the
                              // kernel command-name table is 0-based.
+    // v2.31 (item menu): the menu inventory mixes equipment ids in with
+    // items (id 128+, see SAVEMAP_ITEMS in ff7_addresses.h), and the
+    // sighted menu shows a description bar — three more sections, same
+    // format, same signature discipline (head = entry 0's known English
+    // text; a wrong guess finds nothing and callers fall back, never lie).
+    const uint8_t* armor;      // entries 0-31 armor names
+    const uint8_t* accessory;  // entries 0-31 accessory names
+    const uint8_t* item_desc;  // entries 0-127 item descriptions (entry 0 =
+                               // Potion's "Restores HP by 100", the exact
+                               // items_menu_1.png caption)
 };
-static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr, nullptr };
+static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr, nullptr,
+                                nullptr, nullptr, nullptr };
 
 // Scan-in-progress guard.  v2.9 added a second thread (BattleMenuThread) that
 // can trigger ScanKernel2Sections lazily, so two threads could otherwise scan
@@ -1419,17 +1431,26 @@ static void ScanKernel2Sections()
         return;
 
     uint8_t sig_magic[24], sig_item[24], sig_weapon[24], sig_command[24];
+    uint8_t sig_armor[24], sig_access[24], sig_idesc[24];
     const size_t len_magic  = EncodeSignature("Cure|Cure2|",        sig_magic,  sizeof(sig_magic));
     const size_t len_item   = EncodeSignature("Potion|Hi-Potion|",  sig_item,   sizeof(sig_item));
     const size_t len_weapon = EncodeSignature("Buster Sword|",      sig_weapon, sizeof(sig_weapon));
     // Command-name section head: entries 0,1,... are "Attack","Magic",...
     // stored back-to-back like every other kernel2 text section.
     const size_t len_command = EncodeSignature("Attack|Magic|",     sig_command, sizeof(sig_command));
+    // v2.31 item-menu sections. Armor/accessory heads are kernel entry 0
+    // ("Bronze Bangle"/"Power Wrist", both present in walkthrough.txt);
+    // the item-description head is Potion's caption, ground-truthed by
+    // items_menu_1.png. Signature-or-fallback as always.
+    const size_t len_armor  = EncodeSignature("Bronze Bangle|",       sig_armor,  sizeof(sig_armor));
+    const size_t len_access = EncodeSignature("Power Wrist|",         sig_access, sizeof(sig_access));
+    const size_t len_idesc  = EncodeSignature("Restores HP by 100|",  sig_idesc,  sizeof(sig_idesc));
 
     MEMORY_BASIC_INFORMATION mbi = {};
     uintptr_t addr = 0x00400000;
     while (addr < 0x7FFF0000 &&
-           (!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command)) {
+           (!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command ||
+            !g_k2.armor || !g_k2.accessory || !g_k2.item_desc)) {
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
             break;
         const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -1444,14 +1465,19 @@ static void ScanKernel2Sections()
             if (!g_k2.item)    g_k2.item    = FindSectionBase(p, mbi.RegionSize, sig_item,    len_item);
             if (!g_k2.weapon)  g_k2.weapon  = FindSectionBase(p, mbi.RegionSize, sig_weapon,  len_weapon);
             if (!g_k2.command) g_k2.command = FindSectionBase(p, mbi.RegionSize, sig_command, len_command);
+            if (!g_k2.armor)     g_k2.armor     = FindSectionBase(p, mbi.RegionSize, sig_armor,  len_armor);
+            if (!g_k2.accessory) g_k2.accessory = FindSectionBase(p, mbi.RegionSize, sig_access, len_access);
+            if (!g_k2.item_desc) g_k2.item_desc = FindSectionBase(p, mbi.RegionSize, sig_idesc,  len_idesc);
         }
         addr = base + mbi.RegionSize;
     }
 
-    char dbg[192];
+    char dbg[256];
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-        "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p",
-        g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command);
+        "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p "
+        "armor=%p accessory=%p item_desc=%p",
+        g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command,
+        g_k2.armor, g_k2.accessory, g_k2.item_desc);
     Log::Write(dbg);
 
     InterlockedExchange(&g_k2_scan_busy, 0);
@@ -1795,6 +1821,249 @@ static void PartySlotLabel(uint8_t slot, wchar_t* buf, size_t buf_count)
 
     _snwprintf_s(buf, buf_count, _TRUNCATE, L"ally %u",
                  static_cast<unsigned>(slot + 1u));
+}
+
+// ---------------------------------------------------------------------------
+// ITEM menu TTS (v2.31, 2026-07-18). Addresses and their provenance: the
+// ITEMMENU_* block in ff7_addresses.h (guided scan item_menu_scan_20260718_
+// 114427 — every pass a single intersected candidate — plus the dispatcher
+// disasm that supplies the which-screen gate). Inventory data comes straight
+// from savemap items[320]; names/descriptions from the kernel2 sections.
+// ---------------------------------------------------------------------------
+
+// Savemap HP/MP readout for the use-on-whom pane, guarded by the same
+// leader cross-check as PartySlotLabel (wrong layout -> no numbers spoken,
+// never wrong numbers). Appends ", HP x of y, MP a of b" to `msg`.
+static void AppendPartyHpMp(uint8_t slot, std::wstring& msg)
+{
+    const uint8_t leader_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
+    const uint8_t slot0_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS);
+    const uint8_t char_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS + slot);
+    if (slot > 2 || slot0_id != leader_id || char_id == 0xFF)
+        return;
+    uint8_t rec = char_id;
+    if (char_id == 9)  rec = 6;   // flashback aliases, as SavemapCharName
+    if (char_id == 10) rec = 7;
+    if (rec > 8)
+        return;
+    const uint32_t base = FF7Addr::SAVEMAP_CHAR_RECORDS +
+                          rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE;
+    const uint16_t hp    = *reinterpret_cast<const volatile uint16_t*>(
+        base + FF7Addr::SAVEMAP_CHAR_HP_OFF);
+    const uint16_t maxhp = *reinterpret_cast<const volatile uint16_t*>(
+        base + FF7Addr::SAVEMAP_CHAR_MAXHP_OFF);
+    const uint16_t mp    = *reinterpret_cast<const volatile uint16_t*>(
+        base + FF7Addr::SAVEMAP_CHAR_MP_OFF);
+    const uint16_t maxmp = *reinterpret_cast<const volatile uint16_t*>(
+        base + FF7Addr::SAVEMAP_CHAR_MAXMP_OFF);
+    if (maxhp == 0)   // zeroed savemap (no save loaded) — numbers meaningless
+        return;
+    wchar_t tail[64];
+    _snwprintf_s(tail, _countof(tail), _TRUNCATE,
+                 L", HP %u of %u, MP %u of %u",
+                 static_cast<unsigned>(hp), static_cast<unsigned>(maxhp),
+                 static_cast<unsigned>(mp), static_cast<unsigned>(maxmp));
+    msg += tail;
+}
+
+// Name for one inventory word's id across the four kernel namespaces (the
+// id-range split ResolveActionName already uses for thrown weapons, now
+// with the armor/accessory sections added for menu use).
+static bool InventoryEntryName(uint32_t id, std::wstring& out)
+{
+    if (id < 128)
+        return SectionEntryText(
+            ValidatedSection(&g_k2.item, "Potion|Hi-Potion|"), id, out);
+    if (id < 256)
+        return SectionEntryText(
+            ValidatedSection(&g_k2.weapon, "Buster Sword|"), id - 128, out);
+    if (id < 288)
+        return SectionEntryText(
+            ValidatedSection(&g_k2.armor, "Bronze Bangle|"), id - 256, out);
+    if (id < 320)
+        return SectionEntryText(
+            ValidatedSection(&g_k2.accessory, "Power Wrist|"), id - 288, out);
+    return false;
+}
+
+static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
+{
+    bool      was_open  = false;
+    uint8_t   last_mode = 0xFF;
+    uint8_t   last_top  = 0xFF;
+    uint8_t   last_row  = 0xFF;
+    uint8_t   last_tgt  = 0xFF;
+    uint16_t  last_word = 0xFFFF;  // slot word under the cursor: using an item
+                                   // rewrites it (qty-1 or 0xFFFF) while the
+                                   // cursor stays put — re-announce so the
+                                   // player hears the new count
+    uint8_t   last_unknown = 0xFF; // debug-log throttle for unmapped modes
+    ULONGLONG next_scan_tick = 0;  // kernel2 rescan rate limit
+
+    static const wchar_t* const kTopBar[3] = { L"Use", L"Arrange", L"Key Items" };
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            was_open = false;
+            continue;
+        }
+
+        // Gate: main menu open, in field, and the dispatcher is running the
+        // ITEM sub-screen. The dispatch index is the menu module's own
+        // "which screen" variable (see ff7_addresses.h) — but its value on
+        // the PLAIN main menu is not yet observed, so if play ever shows a
+        // spurious "Item menu" announce on menu open, log the index here
+        // and add the missing differentiator.
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        const uint32_t screen =
+            *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
+        if (menu_open != 1 || field_id == 0 ||
+            screen != FF7Addr::ITEMMENU_SCREEN_INDEX) {
+            was_open = false;
+            last_mode = last_top = last_row = last_tgt = 0xFF;
+            last_word = 0xFFFF;
+            last_unknown = 0xFF;
+            continue;
+        }
+
+        // The list needs item names; kick the (rate-limited) kernel2 scan
+        // if the menu opened before any battle populated the sections.
+        if ((!g_k2.item || !g_k2.armor || !g_k2.accessory || !g_k2.item_desc)) {
+            const ULONGLONG now = GetTickCount64();
+            if (now >= next_scan_tick) {
+                next_scan_tick = now + 3000;
+                ScanKernel2Sections();
+            }
+        }
+
+        const uint8_t mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::ITEMMENU_MODE);
+
+        if (!was_open) {
+            was_open = true;
+            TTS::Speak(L"Item menu", /*interrupt=*/true);
+            // Leave last_* unseeded so the state announce below fires and
+            // describes where the cursor actually is (the menu opens in
+            // the ITEM LIST — player-corrected flow 2026-07-18).
+        }
+
+        // A state announce right after "Item menu" (or any unseeded entry)
+        // must QUEUE behind it, not cancel it; navigation announces
+        // interrupt as every other menu cursor does.
+        const bool chain = (last_mode == 0xFF);
+
+        switch (mode) {
+        case 0: {   // top bar: Use / Arrange / Key Items
+            const uint8_t top = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::ITEMMENU_TOPBAR_CURSOR);
+            if (top <= 2 && (top != last_top || mode != last_mode))
+                TTS::Speak(kTopBar[top], /*interrupt=*/!chain);
+            last_top = top;
+            break;
+        }
+        case 1: {   // item list
+            const uint8_t row = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::ITEMMENU_LIST_CURSOR);
+            uint16_t word = 0xFFFF;
+            if (row < FF7Addr::SAVEMAP_ITEMS_COUNT)
+                word = *reinterpret_cast<const volatile uint16_t*>(
+                    FF7Addr::SAVEMAP_ITEMS + row * 2u);
+            if (row != last_row || mode != last_mode || word != last_word) {
+                std::wstring msg;
+                if (word == 0xFFFF) {
+                    msg = L"Empty";
+                } else {
+                    const uint32_t id  = word & 0x1FF;
+                    const uint32_t qty = word >> 9;
+                    std::wstring name;
+                    if (!InventoryEntryName(id, name)) {
+                        wchar_t fb[24];
+                        _snwprintf_s(fb, _countof(fb), _TRUNCATE,
+                                     L"item %u", id);
+                        name = fb;
+                    }
+                    wchar_t line[96];
+                    _snwprintf_s(line, _countof(line), _TRUNCATE,
+                                 L"%ls, %u", name.c_str(), qty);
+                    msg = line;
+                    // Description bar parity (items only — the sighted bar
+                    // shows one for equipment too, but those live in other
+                    // kernel sections; extend when a play report asks).
+                    std::wstring desc;
+                    if (id < 128 &&
+                        SectionEntryText(
+                            ValidatedSection(&g_k2.item_desc,
+                                             "Restores HP by 100|"),
+                            id, desc)) {
+                        msg += L". ";
+                        msg += desc;
+                    }
+                }
+                TTS::Speak(msg, /*interrupt=*/!chain);
+            }
+            last_row = row;
+            last_word = word;
+            break;
+        }
+        case 2: {   // use-on-whom target pane
+            const uint8_t tgt = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::ITEMMENU_TARGET_CURSOR);
+            if (tgt <= 2 && (tgt != last_tgt || mode != last_mode)) {
+                wchar_t label[64];
+                PartySlotLabel(tgt, label, _countof(label));
+                std::wstring msg = label;
+                AppendPartyHpMp(tgt, msg);
+                TTS::Speak(msg, /*interrupt=*/!chain);
+            }
+            last_tgt = tgt;
+
+            // Using the item (OK press) rewrites its inventory word while
+            // the pane stays open — the player can use several in a row.
+            // Speak the remaining count so each use is audible. last_row/
+            // last_word survive from the list state that opened this pane.
+            if (last_row < FF7Addr::SAVEMAP_ITEMS_COUNT &&
+                last_word != 0xFFFF) {
+                const uint16_t word = *reinterpret_cast<const volatile uint16_t*>(
+                    FF7Addr::SAVEMAP_ITEMS + last_row * 2u);
+                if (word != last_word) {
+                    if (word == 0xFFFF) {
+                        TTS::Speak(L"None left", /*interrupt=*/false);
+                    } else {
+                        wchar_t line[32];
+                        _snwprintf_s(line, _countof(line), _TRUNCATE,
+                                     L"%u left", word >> 9);
+                        TTS::Speak(line, /*interrupt=*/false);
+                    }
+                    last_word = word;
+                }
+            }
+            break;
+        }
+        default:
+            // Unmapped mode (Arrange popup? Key Items pane?) — stay silent,
+            // log once per distinct value so play sessions harvest the map.
+            if (mode != last_unknown) {
+                last_unknown = mode;
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] ITEMMENU unmapped mode=%u", mode);
+                Log::Write(dbg);
+            }
+            break;
+        }
+        last_mode = mode;
+    }
+
+    return 0;
 }
 
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
@@ -5948,6 +6217,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start save menu thread.");
         }
 
+        // Item menu TTS (v2.31). Cursor/mode addresses from the guided scan
+        // ff7_item_menu_scan.py (2026-07-18, all single candidates, list
+        // cursor speak-back verified); inventory read from savemap
+        // items[320]; the which-screen gate from the dispatcher disasm.
+        g_itemmenu_thread = CreateThread(nullptr, 0, ItemMenuThread, nullptr, 0, nullptr);
+        if (g_itemmenu_thread) {
+            Log::Write("[FF7Access] Item menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start item menu thread.");
+        }
+
         // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
         // turn detection, then the flash-message struct (battle_actor_data,
         // 0xDC38E0) for the exact action, resolving names from the kernel2
@@ -6014,7 +6294,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         }
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
-            !g_savemenu_thread &&
+            !g_savemenu_thread && !g_itemmenu_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
@@ -6148,6 +6428,11 @@ void Shutdown()
         WaitForSingleObject(g_savemenu_thread, 500);
         CloseHandle(g_savemenu_thread);
         g_savemenu_thread = nullptr;
+    }
+    if (g_itemmenu_thread) {
+        WaitForSingleObject(g_itemmenu_thread, 500);
+        CloseHandle(g_itemmenu_thread);
+        g_itemmenu_thread = nullptr;
     }
     if (g_battle_thread) {
         WaitForSingleObject(g_battle_thread, 500);
