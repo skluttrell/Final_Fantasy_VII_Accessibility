@@ -1796,7 +1796,8 @@ RESIDUALS: Attack%/Defense%/Magic def% (drawn from kernel equipment
 records at render time, present nowhere in memory — needs kernel
 weapon/armor data parsing if wanted); status pages 2/3 (elemental /
 added-effect tables) unmapped and silent — page-cycle input isn't
-detected. Deployed both installs 2026-07-18; awaiting play-test.
+detected. Deployed both installs 2026-07-18. **PLAY-CONFIRMED same
+day: "Status menu works as expected."**
 
 ---
 

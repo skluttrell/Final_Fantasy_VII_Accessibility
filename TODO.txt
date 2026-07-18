@@ -5,7 +5,7 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[MENU] Status screen TTS — SHIPPED v2.33 (2026-07-18), awaiting play-test
+[MENU] Status screen TTS — v2.33 PLAY-CONFIRMED 2026-07-18
 ------------------------------------------------------------------------
 Full stat sheet on entry: name/level/HP/MP/EXP+next/limit, six
 EFFECTIVE stats + Attack/Defense/Magic atk/Magic def (from the shared
@@ -21,8 +21,7 @@ RESIDUALS:
     partial ever seems worthwhile).
   - Status pages 2/3 (elemental/added-effect tables): unmapped,
     silent. Needs a page-indicator find if wanted.
-  - PENDING PLAY-TEST: sheet reads correctly for both characters;
-    "Choose a member." -> confirm -> sheet flow feels right.
+  - PLAY-CONFIRMED 2026-07-18: "Status menu works as expected."
 
 [MENU] Order menu TTS — v2.32 PLAY-CONFIRMED 2026-07-18 ("It works perfectly.")
 ------------------------------------------------------------------------
