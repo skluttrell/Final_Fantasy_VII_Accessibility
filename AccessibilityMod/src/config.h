@@ -123,6 +123,14 @@ struct Settings {
     // Default: true.
     bool proximity_tone = true;
 
+    // timer_announcements: If true, an active field countdown timer (timed
+    // escapes — first one: the No.1 Reactor run) announces itself: start,
+    // each minute boundary, the 30-second mark, and a spoken countdown over
+    // the final 10 seconds. The T key (announce time left on demand) and
+    // Shift+T (freeze toggle) work regardless of this setting — this only
+    // controls the AUTOMATIC announcements. Default: true.
+    bool timer_announcements = true;
+
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the
     // character is not moving). Vanilla FF7 has no footstep sounds, so without

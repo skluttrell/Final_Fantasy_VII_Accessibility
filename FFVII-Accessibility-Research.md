@@ -222,6 +222,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | `SAVEMAP_PARTY_IDS` | `0xDC0230` | u8[3] — character IDs of party slots 0-2 (0xFF = empty; 9=Young Cloud→record 6, 10=Sephiroth→record 7 during the Kalm flashback). **Self-verifying at runtime**: slot 0's byte must equal PARTY_LEADER (0xDC09E5) or PartySlotLabel falls back to positional "ally N" (v2.19) |
 | `SAVEMAP_ITEMS` | `0xDC0234` | **Party inventory items[320]** u16 (savemap+0x4FC — pinned by party_members[3]+pad in FFNx's savemap struct, i.e. 4 bytes past the live-verified party IDs): id = bits 0-8 (0-127 items, 128-255 weapons, 256-287 armor, 288-319 accessories), qty = bits 9-15, **EMPTY = 0xFFFF** (format from FFNx's own menu_decrease_item_quantity reimplementation, menu.cpp). Screen row order = array order (Arrange rewrites the array). v2.31's item-list data source — needed NO scan |
 | `SAVEMAP_KEYITEM_BITS` | `0xDC0894` | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed (player has no key items to verify against) |
+| `COUNTDOWN_TIMER_SECONDS` | `0xDC08BC` | **The timed-escape clock, u32 WHOLE SECONDS** (savemap+0xB84 = FFNx's own `countdown_timer` field). STATIC-PROVEN pre-play (v2.34, the scorpion one-shot problem): the STTIM opcode (0x38) handler 0x61FCD8 stores h·3600+m·60+s here (ff7_timer_static.py). The WSPCL clock window renders FROM it → rewriting it freezes display AND satisfies script time checks (Shift+T). Persists in saves (it's savemap) — announcer requires observed DECREASE before trusting it |
+| `COUNTDOWN_TIMER_MS` | `0xDC08C0` | u32 sub-second accumulator driving the 1/sec tick (= FFNx `millisecond_counter`, operand at timer_menu_sub+0xD06). Not consumed by the mod |
 | *(savemap char HP/MP)* | — | Character record words (record base = SAVEMAP_CHAR_RECORDS + rec·0x84): **+0x2C cur HP, +0x38 max HP, +0x30 cur MP, +0x3A max MP** — offsets from FFNx's savemap_char struct, the same struct that supplied the live-verified +0x10 name field. v2.31 speaks them in the use-on-whom pane (heal-target parity), guarded by the v2.19 leader cross-check |
 | *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
 | `LOCATION_NAME_BUFFER` | `0xDC0C44` | **The friendly location caption** ("Sector 1 Station") the main menu displays — savemap+0xF0C, which is why saves remember it. Written by the MPNAM opcode (0x43) storage callee 0x633691: field text entry decoded token-by-token (char-name tokens via 0x6CB9B8), ≤ 0x17 bytes, 0xFF-terminated. ⚠ bytes past the terminator hold the PREVIOUS caption's tail (live-observed) — always stop at 0xFF. Found statically + LIVE-CONFIRMED 2026-07-16 in one session (ff7_mpnam_static.py / ff7_mpnam_verify.py: "Sector 1 Station" ↔ "Platform" tracking the player's screen changes). A field without MPNAM keeps the previous caption — same persistence the sighted menu shows. v2.24 speaks it in the screen-change announce and the M key |
@@ -1799,6 +1801,47 @@ added-effect tables) unmapped and silent — page-cycle input isn't
 detected. Deployed both installs 2026-07-18. **PLAY-CONFIRMED same
 day: "Status menu works as expected."**
 
+### v2.34 (2026-07-18): countdown-timer announcements + freeze — shipped BEFORE the first timer exists
+
+User request ahead of the No.1 Reactor timed escape (after the one-shot
+scorpion boss): minute-boundary announcements, 30-second mark, final-10
+countdown — then a way to DISABLE the timer for players who find the
+pressure too much. The planning problem: the first timer in the game is
+behind a boss the player must beat, so live scanning was off the table.
+The whole feature was therefore proven statically and shipped
+speculatively, with the player's first real escape run as the live
+verify:
+
+- **STTIM opcode (0x38** — FFNx FieldOpcode enum counted to MESSAGE=0x40,
+  the LINE/MPNAM rule): handler 0x61FCD8 reads the h,m,s script args and
+  stores **h·3600 + m·60 + s to 0xDC08BC = savemap+0xB84** — the field
+  FFNx's savemap struct ALREADY NAMES `countdown_timer`. Two independent
+  sources agree on the address; the handler's arithmetic settles the
+  units (whole seconds) without a single live sample.
+- **0xDC08C0** (next dword) = FFNx `millisecond_counter` (operand at
+  timer_menu_sub+0xD06) — the sub-second accumulator behind the 1/sec
+  tick. WSPCL (0x36) creates the on-screen clock window that renders
+  from the seconds value: freezing the VALUE freezes the DISPLAY and
+  keeps field-script time checks satisfied — no game-over while frozen.
+- **TimerThread (v2.34)**: behavioral running-detection (nonzero AND
+  recently decreased — a stale savemap value from a load can never
+  false-start it, the v2.30.1 lesson applied to data). Announces per
+  the user's spec; battle announces queue behind battle speech EXCEPT
+  the final-10 countdown, which always interrupts. First-run
+  diagnostics: logs the first 5 tick intervals (cadence proof) and all
+  start/stop/jump transitions.
+- **T / Shift+T** exactly per accessiblity_keys.txt ("Announce active
+  timers" / "Toggle timer freeze" — the FF1-6 scheme already defined
+  this pair). Shift+T is the mod's FIRST GAMEPLAY MEMORY WRITE: while
+  frozen the countdown value is rewritten every 250ms poll (plain
+  savemap data, no protection change). T works in any mode, battle
+  included.
+
+Deployed both installs 2026-07-18; installed cfgs get the
+timer_announcements block and debug_log=true until the escape run
+verifies the static assumptions (tick cadence, menu/battle pause
+behavior — the log will show both).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -2267,6 +2310,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
 | `0xDC0234–0xDC04B3` | SAVEMAP_ITEMS | items[320] u16 (savemap+0x4FC, pinned by party_members[3]+pad in FFNx's savemap struct): id = bits 0-8, qty = bits 9-15, EMPTY = 0xFFFF (FFNx menu.cpp's own reimplementation). Screen row order = array order. Read by v2.31's item-menu speaker |
 | `0xDC0894–0xDC08B3` | SAVEMAP_KEYITEM_BITS | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed |
+| `0xDC08BC` | COUNTDOWN_TIMER_SECONDS | u32 seconds, timed-escape clock (savemap+0xB84, STTIM-written; v2.34 announcer + Shift+T freeze). +0x4 = ms accumulator 0xDC08C0 |
 | `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var) |
 | `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |
 | `0xDC0C44` | LOCATION_NAME_BUFFER | savemap+0xF0C: the friendly menu caption ("Sector 1 Station"), FF7-encoded, ≤0x17 bytes, 0xFF-terminated, written by MPNAM's callee 0x633691 — live-confirmed 2026-07-16, spoken by v2.24. Persisting in the savemap is WHY save files remember the caption |

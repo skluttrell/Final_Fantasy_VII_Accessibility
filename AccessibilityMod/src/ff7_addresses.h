@@ -798,6 +798,28 @@ constexpr uint32_t SAVEMAP_ITEMS_COUNT = 320;
 constexpr uint32_t SAVEMAP_KEYITEM_BITS = SAVEMAP_BASE + 0xB5C;   // 0xDC0894
 
 // ---------------------------------------------------------------------------
+// COUNTDOWN TIMER (v2.34, 2026-07-18) — the timed-escape clock.
+//
+// STATIC-PROVEN before the first timer was ever reachable in play (the
+// scorpion-boss one-shot problem): the STTIM field opcode (0x38 — FFNx
+// FieldOpcode enum counted to the MESSAGE=0x40 anchor) handler at 0x61FCD8
+// reads its three byte args and stores h*3600 + m*60 + s — WHOLE SECONDS —
+// directly to 0xDC08BC = savemap+0xB84, which FFNx's savemap struct
+// already names `countdown_timer` (two independent sources agree). The
+// dword right after (0xDC08C0) is FFNx's `millisecond_counter` (operand at
+// timer_menu_sub+0xD06) — the sub-second accumulator that drives the
+// once-per-second tick. Being savemap state, the timer persists in saves.
+//
+// The on-screen clock window (WSPCL special window, opcode 0x36) renders
+// FROM this value, so freezing = rewriting the value each poll freezes the
+// display too, and field-script time checks keep seeing a healthy number —
+// no game-over can fire while frozen. Tick cadence/pause behavior (menus,
+// battles) is captured by TimerThread's debug logging on the first real
+// escape run (ff7_timer_static.py, log timer_static_20260718_183947).
+constexpr uint32_t COUNTDOWN_TIMER_SECONDS = SAVEMAP_BASE + 0xB84; // 0xDC08BC u32
+constexpr uint32_t COUNTDOWN_TIMER_MS      = SAVEMAP_BASE + 0xB88; // 0xDC08C0 u32
+
+// ---------------------------------------------------------------------------
 // FRIENDLY LOCATION NAME — the MPNAM buffer (v2.24, found + confirmed
 // 2026-07-16 in one session):
 //

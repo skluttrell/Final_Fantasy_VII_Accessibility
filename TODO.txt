@@ -5,6 +5,25 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TIMER] Countdown announcements + freeze — SHIPPED v2.34 (2026-07-18), awaiting the escape run
+------------------------------------------------------------------------
+Shipped BEFORE the first timer is reachable (scorpion one-shot):
+STTIM handler disasm proved value+units statically (u32 SECONDS at
+0xDC08BC = savemap+0xB84 = FFNx countdown_timer; h*3600+m*60+s).
+Announces start / minute boundaries / 30s / final-10 countdown /
+"Time is up"; T = on-demand readout; Shift+T = freeze (first gameplay
+memory WRITE — value rewritten per poll; display renders from it and
+scripts read it, so freeze is game-over-proof). Research §8 v2.34.
+VERIFY ON THE ESCAPE RUN (debug_log=true in both installed cfgs):
+  - announcements fire at the right marks; tick cadence log lines
+    ("TIMER tick N -> N-1 (Xms)") should show ~1000ms;
+  - whether the clock pauses in menus/battles (log start/stop lines);
+  - T readout matches the on-screen clock; Shift+T freezes the
+    visible clock and resumes cleanly.
+  - AFTER the run: set debug_log=false in both installed cfgs.
+  - If announcements never fire, grab the log — the TIMER lines will
+    show whether the address moved at all.
+
 [MENU] Status screen TTS — v2.33 PLAY-CONFIRMED 2026-07-18
 ------------------------------------------------------------------------
 Full stat sheet on entry: name/level/HP/MP/EXP+next/limit, six

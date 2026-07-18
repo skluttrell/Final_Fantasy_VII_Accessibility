@@ -151,6 +151,7 @@ static HANDLE g_savemenu_thread   = nullptr;
 static HANDLE g_itemmenu_thread   = nullptr;
 static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_statusmenu_thread = nullptr;
+static HANDLE g_timer_thread      = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
@@ -2322,6 +2323,222 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
                     }
                 }
                 last_charsel = sel;
+            }
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// COUNTDOWN TIMER announcements + freeze (v2.34, 2026-07-18).
+//
+// The timed-escape clock (first: the No.1 Reactor run). Value = u32 WHOLE
+// SECONDS at savemap+0xB84, written by the STTIM opcode as h*3600+m*60+s
+// and ticked down ~1/sec — all established STATICALLY before the first
+// timer was reachable in play (provenance: ff7_addresses.h COUNTDOWN
+// block). This thread was therefore shipped SPECULATIVELY with heavy debug
+// logging; the player's first real escape run is the live verify.
+//
+// ANNOUNCEMENTS (user spec, config timer_announcements):
+//   start → "Timer started, N minutes S seconds"; every minute boundary →
+//   "N minutes remaining"; 30s → "30 seconds"; final 10 → bare numbers;
+//   0 → "Time is up". Battle announces QUEUE (interrupt=false) behind
+//   battle speech except the final countdown, which always interrupts —
+//   in the last ten seconds the clock outranks everything.
+//
+// RUNNING DETECTION is behavioral: the value must be nonzero AND have
+// decreased recently. A stale savemap value (loaded save, finished escape)
+// never decreases, so it can never false-start the announcer — the same
+// never-trust-a-static-snapshot rule as the wall-tone fix.
+//
+// KEYS (accessiblity_keys.txt, FF1-6 parity — same focus/edge discipline
+// as FieldNavThread): T = announce time left on demand ("No active timer"
+// when none). Shift+T = FREEZE toggle — the mod's first gameplay memory
+// WRITE: while frozen, the countdown value is rewritten every poll, which
+// freezes the on-screen clock (it renders from this value) and keeps
+// field-script time checks satisfied indefinitely. The write targets
+// plain savemap data, not code — no protection change needed.
+// ---------------------------------------------------------------------------
+static void TimerSpeakRemaining(uint32_t secs, const wchar_t* prefix)
+{
+    wchar_t msg[96];
+    const uint32_t m = secs / 60, s = secs % 60;
+    if (m > 0 && s > 0)
+        _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                     L"%ls%u minute%ls %u second%ls remaining", prefix,
+                     m, m == 1 ? L"" : L"s", s, s == 1 ? L"" : L"s");
+    else if (m > 0)
+        _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                     L"%ls%u minute%ls remaining", prefix,
+                     m, m == 1 ? L"" : L"s");
+    else
+        _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                     L"%ls%u second%ls remaining", prefix,
+                     s, s == 1 ? L"" : L"s");
+    TTS::Speak(msg, /*interrupt=*/true);
+}
+
+static DWORD WINAPI TimerThread(LPVOID /*unused*/)
+{
+    constexpr DWORD     kPollMs        = 250;
+    constexpr ULONGLONG kStaleMs       = 3000;  // no tick this long = not running
+    constexpr uint32_t  kMaxSane       = 24 * 3600;
+
+    uint32_t  last_val    = 0;
+    bool      have_last   = false;
+    bool      running     = false;
+    ULONGLONG last_change = 0;
+    // Tick-cadence diagnostics for the first live run: log the first few
+    // observed tick intervals so the log proves (or corrects) the 1/sec
+    // static assumption, and shows whether menus/battles pause the clock.
+    int       cadence_logged = 0;
+    ULONGLONG prev_change    = 0;
+    // Freeze state (Shift+T).
+    bool      frozen     = false;
+    uint32_t  frozen_val = 0;
+    // Key edge state.
+    bool      t_was_down = false;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, kPollMs) == WAIT_OBJECT_0)
+            break;
+
+        volatile uint32_t* const timer =
+            reinterpret_cast<volatile uint32_t*>(FF7Addr::COUNTDOWN_TIMER_SECONDS);
+
+        // ── Freeze: hold the value every poll while enabled ─────────────
+        if (frozen)
+            *timer = frozen_val;
+
+        uint32_t val = *timer;
+        const ULONGLONG now = GetTickCount64();
+
+        if (val > kMaxSane) {   // garbage (pre-init) — ignore entirely
+            have_last = false;
+            running = false;
+        } else if (have_last && val != last_val && !frozen) {
+            if (val < last_val && (last_val - val) <= 5) {
+                // Normal downward tick(s).
+                if (!running && val > 0) {
+                    running = true;
+                    cadence_logged = 0;
+                    char dbg[96];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] TIMER started: %lu seconds",
+                        static_cast<unsigned long>(val));
+                    Log::Write(dbg);
+                    if (Config::Get().timer_announcements)
+                        TimerSpeakRemaining(val, L"Timer started. ");
+                } else if (running) {
+                    if (cadence_logged < 5 && prev_change != 0) {
+                        char dbg[96];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] TIMER tick %lu -> %lu (%lums)",
+                            static_cast<unsigned long>(last_val),
+                            static_cast<unsigned long>(val),
+                            static_cast<unsigned long>(now - prev_change));
+                        Log::Write(dbg);
+                        cadence_logged++;
+                    }
+                    if (Config::Get().timer_announcements) {
+                        const uint8_t game_mode =
+                            *reinterpret_cast<const volatile uint8_t*>(
+                                FF7Addr::GAME_MODE);
+                        const bool in_battle = (game_mode == 2);
+                        // Handle every value crossed since the last poll so
+                        // a slow poll can't skip a boundary.
+                        for (uint32_t v = last_val - 1; ; --v) {
+                            if (v == 0) {
+                                Log::Write("[FF7Access] TIMER reached zero");
+                                TTS::Speak(L"Time is up", /*interrupt=*/true);
+                            } else if (v <= 10) {
+                                wchar_t num[8];
+                                _snwprintf_s(num, _countof(num), _TRUNCATE,
+                                             L"%u", v);
+                                // Final countdown outranks everything.
+                                TTS::Speak(num, /*interrupt=*/true);
+                            } else if (v == 30) {
+                                TTS::Speak(L"30 seconds",
+                                           /*interrupt=*/!in_battle);
+                            } else if (v % 60 == 0) {
+                                wchar_t msg[48];
+                                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                                    L"%u minute%ls remaining", v / 60,
+                                    v / 60 == 1 ? L"" : L"s");
+                                TTS::Speak(msg, /*interrupt=*/!in_battle);
+                            }
+                            if (v == val)
+                                break;
+                        }
+                    }
+                }
+                prev_change = now;
+            } else {
+                // Jump (new STTIM, save load, script rewrite) — re-detect.
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] TIMER value jump %lu -> %lu (re-detecting)",
+                    static_cast<unsigned long>(last_val),
+                    static_cast<unsigned long>(val));
+                Log::Write(dbg);
+                running = false;
+            }
+            last_change = now;
+        }
+        if (running && !frozen && now - last_change > kStaleMs) {
+            char dbg[96];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] TIMER stopped/paused at %lu seconds",
+                static_cast<unsigned long>(val));
+            Log::Write(dbg);
+            running = false;
+        }
+        last_val = val;
+        have_last = true;
+
+        // ── T / Shift+T (focus-gated edges, as FieldNavThread) ──────────
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        const bool focused = (fg_pid == GetCurrentProcessId());
+        const bool t_down = (GetAsyncKeyState('T') & 0x8000) != 0;
+        const bool t_edge = focused && t_down && !t_was_down;
+        t_was_down = t_down;
+        if (!t_edge)
+            continue;
+        const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        const bool timer_live = frozen || running ||
+            (val > 0 && val <= kMaxSane && now - last_change < kStaleMs);
+
+        if (!shift) {
+            // T: on-demand time readout.
+            if (frozen)
+                TimerSpeakRemaining(frozen_val, L"Timer frozen. ");
+            else if (timer_live)
+                TimerSpeakRemaining(val, L"");
+            else
+                TTS::Speak(L"No active timer", /*interrupt=*/true);
+        } else {
+            // Shift+T: freeze toggle.
+            if (!frozen) {
+                if (timer_live) {
+                    frozen = true;
+                    frozen_val = val;
+                    char dbg[96];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] TIMER frozen at %lu seconds",
+                        static_cast<unsigned long>(frozen_val));
+                    Log::Write(dbg);
+                    TTS::Speak(L"Timer frozen", /*interrupt=*/true);
+                } else {
+                    TTS::Speak(L"No active timer", /*interrupt=*/true);
+                }
+            } else {
+                frozen = false;
+                last_change = now;   // grace period before stale detection
+                running = false;     // re-detect from real ticks
+                Log::Write("[FF7Access] TIMER resumed");
+                TTS::Speak(L"Timer resumed", /*interrupt=*/true);
             }
         }
     }
@@ -6696,6 +6913,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start status menu thread.");
         }
 
+        // Countdown timer announcements + T/Shift+T (v2.34). Value/units
+        // static-proven via the STTIM handler disasm; shipped speculatively
+        // ahead of the first reachable timer with debug logging as the
+        // live verify (see the TimerThread header comment).
+        g_timer_thread = CreateThread(nullptr, 0, TimerThread, nullptr, 0, nullptr);
+        if (g_timer_thread) {
+            Log::Write("[FF7Access] Timer polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start timer thread.");
+        }
+
         // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
         // turn detection, then the flash-message struct (battle_actor_data,
         // 0xDC38E0) for the exact action, resolving names from the kernel2
@@ -6763,7 +6991,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
-            !g_statusmenu_thread &&
+            !g_statusmenu_thread && !g_timer_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
@@ -6912,6 +7140,11 @@ void Shutdown()
         WaitForSingleObject(g_statusmenu_thread, 500);
         CloseHandle(g_statusmenu_thread);
         g_statusmenu_thread = nullptr;
+    }
+    if (g_timer_thread) {
+        WaitForSingleObject(g_timer_thread, 500);
+        CloseHandle(g_timer_thread);
+        g_timer_thread = nullptr;
     }
     if (g_battle_thread) {
         WaitForSingleObject(g_battle_thread, 500);
