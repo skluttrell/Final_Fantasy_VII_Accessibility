@@ -1752,8 +1752,12 @@ the last:
 - Main menu rows now append ", not available" when their
   MENU_DISABLED_ROWS bit is set — the gray the sighted player sees.
 
-Deployed both installs 2026-07-18. Awaiting play-test (focus-mode
-semantics are static-derived; transitions debug-logged for validation).
+Deployed both installs 2026-07-18. **PLAY-CONFIRMED same day: "It
+works perfectly."** — which live-validates the static-derived
+MENU_FOCUS_MODE semantics (0 = bar, 1 = char-select, 2 = Order) along
+with the whole flow: entry how-to, position/row announces, swap and
+row-toggle outcomes, "not available" rows, and the mode-1 "Choose a
+member." pane.
 
 ---
 
