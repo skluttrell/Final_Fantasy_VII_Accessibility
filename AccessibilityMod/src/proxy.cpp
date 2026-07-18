@@ -147,6 +147,7 @@ static HANDLE g_cursor_stop_event = nullptr;
 static HANDLE g_title_thread      = nullptr;
 static HANDLE g_menu_thread       = nullptr;
 static HANDLE g_config_thread     = nullptr;
+static HANDLE g_savemenu_thread   = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
@@ -855,6 +856,376 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
             "[FF7Access] CONFIG row=%u (%ls)", curr, announce);
         Log::Write(dbg);
         TTS::Speak(announce, /*interrupt=*/true);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// SAVE / LOAD menu TTS (v2.29, 2026-07-17).
+//
+// The menu behind main-menu SAVE (at a save point) and the title screen's
+// Continue: a 10-file grid ("Save 1".."Save 10"), then a 15-slot list
+// inside the chosen file. Same UI, but TWO separate implementations with
+// separate state (the shared-module assumption was live-DISPROVED
+// 2026-07-17): the save menu's cursors in the DC6Axx menu block
+// (ff7_save_menu_scan.py) and the Continue menu's own instance in the
+// title block (ff7_continue_menu_scan.py) — each grid cursor was
+// live-verified by its scan's speak-back pass, and both instances share
+// the same +0x3C grid→slot struct spacing. See ff7_addresses.h
+// SAVEMENU_* / LOADMENU_*.
+//
+// The slot PREVIEW data (what the sighted player sees per slot: lead
+// character, level, location, play time, gil, party portraits) is read
+// from the save FILES themselves, not from game memory: the menu renders
+// from saveNN.ff7 on disk, whose layout was derived from the player's own
+// save00.ff7 against screenshot ground truth (research doc §5 "Save file
+// (.ff7) slot-preview layout", ff7_savefile_preview_derive.py). Files are
+// re-read on every announce — 65 KB a press is nothing, and it means a
+// just-written save can never be announced stale.
+//
+// ANNOUNCE MODEL (change-only, the MenuCursorThread rule): neither menu
+// has a known "just opened" flag — in save mode the gate (MENU_OPEN=1
+// with MENU_CURSOR frozen on the Save row, the Config-submenu signature)
+// becomes true while the player is still browsing the main menu, and at
+// the title nothing observable distinguishes the Continue grid from the
+// plain title screen (continue_menu_verify: every known byte constant).
+// So: cursor moves and pane changes announce; entering the slot list
+// announces "Game N" plus the slot under the cursor; everything is
+// range-guarded — any out-of-range value (grid>9, slot>14, phase>1)
+// means some other module owns those bytes right now — reset and stay
+// silent (the TitleCursorThread 0/1-only lesson).
+// ---------------------------------------------------------------------------
+
+// One parsed slot preview. name/location hold the SAVED text (renames and
+// the game's own caption spelling carry through automatically).
+struct SaveSlotPreview {
+    bool     used;
+    uint8_t  level;
+    uint8_t  portraits[3];    // char ids, 0xFF = empty party slot
+    wchar_t  name[20];
+    wchar_t  location[32];
+    uint32_t gil;
+    uint32_t seconds;         // total play time
+};
+
+// .ff7 layout constants — every one verified against the real file
+// (research doc §5): 9-byte header, 15 slots of 0x10F4, preview at the
+// slot head, empty slot = all-zero.
+static const size_t kSaveFileHeader  = 9;
+static const size_t kSaveSlotStride  = 0x10F4;
+static const int    kSaveSlotCount   = 15;
+static const size_t kSaveFileSize    = 9 + 15 * 0x10F4;  // 65,109 bytes
+static const size_t kSavePreviewLen  = 0x48;             // parsed region
+
+// Decode an FF7-encoded, 0xFF-terminated string field into out (drops
+// undecodable bytes, trims trailing spaces). Reuses the dialog decoder's
+// per-byte table via FF7Text::DecodeChar.
+static void SaveDecodeText(const uint8_t* src, size_t max_bytes,
+                           wchar_t* out, size_t out_cap)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < max_bytes && n + 1 < out_cap; ++i) {
+        if (src[i] == 0xFF)
+            break;
+        const wchar_t c = FF7Text::DecodeChar(src[i]);
+        if (c != L'\0')
+            out[n++] = c;
+    }
+    while (n > 0 && out[n - 1] == L' ')
+        --n;
+    out[n] = L'\0';
+}
+
+// Read + parse one save file. Grid entry "Save <idx+1>" = save0<idx>.ff7
+// in the save\ directory next to the DLL (same own-module-directory
+// pattern as Config::Load / PlacesFilePath — immune to CWD games).
+// Returns false if the file is absent or malformed; out[] is then all
+// unused, which speaks as an empty file — exactly what the sighted menu
+// shows for a file that was never saved to.
+static bool ReadSaveFilePreviews(int file_idx, SaveSlotPreview out[/*15*/])
+{
+    memset(out, 0, sizeof(SaveSlotPreview) * kSaveSlotCount);
+
+    HMODULE hSelf = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&ReadSaveFilePreviews), &hSelf);
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(hSelf, path, MAX_PATH);
+    char* sep = strrchr(path, '\\');
+    if (sep) *(sep + 1) = '\0';
+    char full[MAX_PATH];
+    _snprintf_s(full, sizeof(full), _TRUNCATE, "%ssave\\save%02d.ff7",
+                path, file_idx);
+
+    std::ifstream f(full, std::ios::binary);
+    if (!f.is_open())
+        return false;
+    std::vector<uint8_t> data(kSaveFileSize);
+    f.read(reinterpret_cast<char*>(data.data()), kSaveFileSize);
+    if (static_cast<size_t>(f.gcount()) != kSaveFileSize)
+        return false;                     // truncated/foreign file: distrust
+
+    for (int s = 0; s < kSaveSlotCount; ++s) {
+        const uint8_t* p = data.data() + kSaveFileHeader + s * kSaveSlotStride;
+        // Empty slot = all-zero (verified: the real file's unused slot 1 is
+        // zero through its whole 0x10F4 bytes). Checking just the preview
+        // region is sufficient and cheap.
+        bool any = false;
+        for (size_t i = 0; i < kSavePreviewLen && !any; ++i)
+            any = p[i] != 0;
+        if (!any)
+            continue;
+        SaveSlotPreview& sp = out[s];
+        sp.used  = true;
+        sp.level = p[0x04];
+        memcpy(sp.portraits, p + 0x05, 3);
+        SaveDecodeText(p + 0x08, 0x10, sp.name, _countof(sp.name));
+        sp.gil     = *reinterpret_cast<const uint32_t*>(p + 0x20);
+        sp.seconds = *reinterpret_cast<const uint32_t*>(p + 0x24);
+        SaveDecodeText(p + 0x28, 0x1C, sp.location, _countof(sp.location));
+    }
+    return true;
+}
+
+// "1 hour 5 minutes" / "21 minutes" — the menu's HH:MM, made speakable.
+static void SaveTimeSpeakable(uint32_t seconds, wchar_t* out, size_t cap)
+{
+    const uint32_t h = seconds / 3600;
+    const uint32_t m = (seconds / 60) % 60;
+    if (h > 0)
+        _snwprintf_s(out, cap, _TRUNCATE, L"%u hour%ls %u minute%ls",
+                     h, h == 1 ? L"" : L"s", m, m == 1 ? L"" : L"s");
+    else
+        _snwprintf_s(out, cap, _TRUNCATE, L"%u minute%ls",
+                     m, m == 1 ? L"" : L"s");
+}
+
+// Spoken line for one slot: "Slot 2: Cloud, level 7, No.1 Reactor,
+// 21 minutes, 376 gil, with Barret" — the whole sighted preview minus
+// HP/MP (menu-identity noise). Non-lead party from the portrait ids via
+// the DEFAULT names (the lead's name is the saved text; the others'
+// renames are not in the preview block — default names are the honest
+// best available).
+static void SaveSlotLine(int slot_idx, const SaveSlotPreview& sp,
+                         wchar_t* out, size_t cap)
+{
+    if (!sp.used) {
+        _snwprintf_s(out, cap, _TRUNCATE, L"Slot %d, empty", slot_idx + 1);
+        return;
+    }
+    wchar_t tbuf[32];
+    SaveTimeSpeakable(sp.seconds, tbuf, _countof(tbuf));
+    _snwprintf_s(out, cap, _TRUNCATE, L"Slot %d: %ls, level %u, %ls, %ls, %u gil",
+                 slot_idx + 1, sp.name, sp.level, sp.location, tbuf, sp.gil);
+    int companions = 0;                   // portraits[0] is the lead
+    for (int i = 1; i < 3; ++i) {
+        const wchar_t* nm = sp.portraits[i] == 0xFF
+            ? nullptr : FF7Text::DefaultCharName(sp.portraits[i]);
+        if (!nm)
+            continue;                     // party-slot hole: keep joiners right
+        wchar_t part[40];
+        _snwprintf_s(part, _countof(part), _TRUNCATE, L"%ls %ls",
+                     companions == 0 ? L", with" : L" and", nm);
+        wcsncat_s(out, cap, part, _TRUNCATE);
+        ++companions;
+    }
+}
+
+// Spoken line for one file-grid entry: "Save 1, 3 saves" / "Save 2, empty".
+static void SaveGridLine(int file_idx, wchar_t* out, size_t cap)
+{
+    SaveSlotPreview slots[15];
+    ReadSaveFilePreviews(file_idx, slots);
+    int used = 0;
+    for (int s = 0; s < kSaveSlotCount; ++s)
+        used += slots[s].used ? 1 : 0;
+    if (used == 0)
+        _snwprintf_s(out, cap, _TRUNCATE, L"Save %d, empty", file_idx + 1);
+    else
+        _snwprintf_s(out, cap, _TRUNCATE, L"Save %d, %d save%ls",
+                     file_idx + 1, used, used == 1 ? L"" : L"s");
+}
+
+static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
+{
+    uint8_t last_phase = 0xFF;   // 0xFF = unseeded (gate was closed)
+    uint8_t last_grid  = 0xFF;
+    uint8_t last_slot  = 0xFF;
+    bool    in_confirm = false;  // Yes/No dialog open last poll (v2.29.5)
+    uint8_t last_yesno = 0xFF;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            last_phase = last_grid = last_slot = 0xFF;
+            in_confirm = false;
+            last_yesno = 0xFF;
+            continue;
+        }
+
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        const uint8_t menu_cursor =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
+
+        // TWO menu implementations, one speaker (live-proven 2026-07-17:
+        // the title Continue menu does NOT share the save menu's state —
+        // continue_menu_verify log — it has its own instance in the TITLE
+        // block, found by continue_menu_scan the same day):
+        //   SAVE mode — in-field menu module, gated by the frozen-row
+        //   signature (MENU_OPEN=1, MENU_CURSOR held at 9, FIELD_ID!=0).
+        //   LOAD mode — title context (FIELD_ID==0).
+        // The PANE for BOTH comes from LOADMENU_LIST_PTR (nonzero = the
+        // slot list is open; it is the loaded file's heap pointer, and
+        // both scans observed it independently — nonzero-check only,
+        // never deref). The per-menu phase byte 0xDC1210 is DISPROVED:
+        // it oscillates in real use, which made v2.29.1 alternate the
+        // two pane announcements endlessly (player report).
+        //
+        // The slot position is ROW (0..2 visible window) + SCROLL
+        // (0..12) — the "only 3 slots" player report; scroll offsets per
+        // ff7_slot_scroll_probe.py (title instance live-confirmed; save
+        // instance inferred at the same struct offset +0x10).
+        //
+        // The FILE position is likewise split (v2.29.3, the "second row
+        // counts wrong" player report): GRID_CURSOR is the COLUMN 0..4,
+        // the 5×2 grid's row a separate byte at grid+4: 0 = top row
+        // (Save 1-5), 1 = bottom row (Save 6-10). File index =
+        // rowbyte*5 + column. (v2.29.4: the first reading was inverted —
+        // the probe's baseline of 1 was the player already PARKED on the
+        // bottom row, not the top; their play report of Save 6 spoken on
+        // the top row is the decisive observation.)
+        const bool save_mode =
+            menu_open == 1 && menu_cursor == 9 && field_id != 0;
+
+        // v2.29.5: the "Are you sure you want to save?" Yes/No dialog.
+        // Widget-state byte 0xDCA028 == 7 while it is open (1 = slot
+        // list — it is the save menu's little state machine, the SINGLE
+        // A/B/A candidate of ff7_save_confirm_scan 2026-07-17); cursor
+        // 0xDC6C6C 0=Yes 1=No, speak-back verified. The slot-row byte
+        // holds still during the dialog (same scan log), so this block
+        // runs FIRST and short-circuits the pane/cursor logic below
+        // while the dialog is up. Save mode only — the Continue menu
+        // loads without a confirm.
+        if (save_mode) {
+            const uint8_t wstate =
+                *reinterpret_cast<const volatile uint8_t*>(
+                    FF7Addr::SAVEMENU_WIDGET_STATE);
+            const uint8_t yesno =
+                *reinterpret_cast<const volatile uint8_t*>(
+                    FF7Addr::SAVEMENU_CONFIRM_CURSOR);
+            if (wstate == FF7Addr::SAVEMENU_STATE_CONFIRM && yesno <= 1) {
+                if (!in_confirm) {
+                    // Dialog just opened (cursor starts on Yes).
+                    wchar_t line[80];
+                    _snwprintf_s(line, _countof(line), _TRUNCATE,
+                                 L"Are you sure you want to save? %ls",
+                                 yesno ? L"No" : L"Yes");
+                    Log::Write("[FF7Access] SAVEMENU confirm open");
+                    TTS::Speak(line, /*interrupt=*/true);
+                } else if (yesno != last_yesno) {
+                    TTS::Speak(yesno ? L"No" : L"Yes", /*interrupt=*/true);
+                }
+                in_confirm = true;
+                last_yesno = yesno;
+                continue;
+            }
+        }
+        in_confirm = false;
+        last_yesno = 0xFF;
+
+        const uint8_t phase =
+            *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::LOADMENU_LIST_PTR) != 0 ? 1 : 0;
+
+        uint8_t col, grow, row, scroll;
+        if (save_mode) {
+            col = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::SAVEMENU_GRID_CURSOR);
+            grow = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::SAVEMENU_GRID_ROW);
+            row = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::SAVEMENU_SLOT_CURSOR);
+            scroll = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::SAVEMENU_SLOT_SCROLL);
+        } else if (field_id == 0) {
+            col = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::LOADMENU_GRID_CURSOR);
+            grow = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::LOADMENU_GRID_ROW);
+            row = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::LOADMENU_SLOT_CURSOR);
+            scroll = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::LOADMENU_SLOT_SCROLL);
+        } else {
+            last_phase = last_grid = last_slot = 0xFF;
+            continue;
+        }
+        const uint8_t grid = grow * 5 + col;         // file index 0..9
+        const uint8_t slot = row + scroll;           // absolute 0..14
+
+        // Out-of-range = these bytes belong to some other module right now
+        // (e.g. the plain title screen before Continue is chosen).
+        if (col > 4 || grow > 1 || row > 2 || scroll > 12) {
+            last_phase = last_grid = last_slot = 0xFF;
+            continue;
+        }
+
+        // First observation after the gate opens: seed silently. In save
+        // mode the gate opens while the player is still on the main menu's
+        // Save row — announcing then would talk over MenuCursorThread's
+        // own "Save".
+        if (last_phase == 0xFF) {
+            last_phase = phase;
+            last_grid  = grid;
+            last_slot  = slot;
+            continue;
+        }
+
+        wchar_t line[192];
+
+        if (phase != last_phase) {
+            // Pane change. Into the slot list: name the file and the slot
+            // under the cursor (the grid byte HOLDS the selected file
+            // while the list is open — scan-verified). Back to the grid:
+            // re-orient with the grid line.
+            if (phase == 1) {
+                SaveSlotPreview slots[15];
+                ReadSaveFilePreviews(grid, slots);
+                wchar_t sline[160];
+                SaveSlotLine(slot, slots[slot], sline, _countof(sline));
+                _snwprintf_s(line, _countof(line), _TRUNCATE,
+                             L"Game %u. %ls", grid + 1u, sline);
+            } else {
+                SaveGridLine(grid, line, _countof(line));
+            }
+            last_phase = phase;
+            last_grid  = grid;
+            last_slot  = slot;
+        } else if (phase == 0 && grid != last_grid) {
+            SaveGridLine(grid, line, _countof(line));
+            last_grid = grid;
+        } else if (phase == 1 && slot != last_slot) {
+            SaveSlotPreview slots[15];
+            ReadSaveFilePreviews(grid, slots);
+            SaveSlotLine(slot, slots[slot], line, _countof(line));
+            last_slot = slot;
+        } else {
+            continue;
+        }
+
+        char dbg[224];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] SAVEMENU phase=%u grid=%u slot=%u '%ls'",
+            phase, grid, slot, line);
+        Log::Write(dbg);
+        TTS::Speak(line, /*interrupt=*/true);
     }
 
     return 0;
@@ -2437,7 +2808,9 @@ static const wchar_t* DpadSectorName(float deg)
 // LINE trigger zone (v2.17 — script-created lines: ladders, elevators,
 // touch/cross zones — a real segment, exactly like an exit).
 struct NavDest {
-    wchar_t name[32];      // spoken name, e.g. "Exit 2" / "shinra guard 3"
+    wchar_t name[48];      // spoken name, e.g. "To Platform" / "shinra
+                           // guard 3, talk disabled" (widened 32→48 in
+                           // v2.26 for the talk suffix on long labels)
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
     int16_t line_z1, line_z2;   // line endpoint HEIGHTS (v2.23) — lets the
                                 // route builder locate the target on the
@@ -3069,6 +3442,11 @@ static int CategoryForModelClass(ModelClass c)
 //     all 2412 distinct script entity names (new game-wide catalog,
 //     2026-07-15; nmkin_2 validation showed the reactor ladder lines
 //     themselves: 'ladu0'/'ladd0'/'slp0', with Jessie as 'av j').
+//   - per-field context for the short stems (v2.28 second pass):
+//     investigate/short_entity_context_20260717 log — the COMPLETE
+//     entity list of every field where each cryptic 2-3 letter stem
+//     occurs; the neighbouring names are the identification evidence
+//     (e.g. 'dr' beside 'door1..door6' in the same field = door).
 // Every entry below appears in those catalogs; words NOT in the tables
 // are spoken unchanged (parity: better to hear the dev word than nothing,
 // and a wrong translation is worse than a terse one — same principle as
@@ -3099,17 +3477,25 @@ static std::wstring CharDisplayName(uint8_t char_id)
 // Sources: model catalog ("main ballet", "midgal ptifa", "nible cloud8",
 // "market cloudw"...) + entity catalog ("cait" x40, "vince", "fearith",
 // "ycl" = young Cloud on the Mt. Nibel flashback fields).
+// v2.28 adds the devs' two/three-letter party shorthands, grounded by the
+// per-field context catalog (short_entity_context_20260717 log): fields
+// like loslake1 list the whole roster in slot order as
+// 'cl ti cid ba ea re ket vin yuf', and blin69_1 shows 'rd' beside
+// 'cl ba ea ti' (Red XIII). The full-catalog dry run confirmed no other
+// entity or model label contains these as a stray token — except 'op cl'
+// and 'cl a', which kDevEntityNames intercepts BEFORE the word pass.
 struct DevCharWord { const wchar_t* stem; uint8_t char_id; };
 static const DevCharWord kDevCharWords[] = {
     { L"cloud", 0 }, { L"cloudup", 0 }, { L"cloudw", 0 }, { L"pcloud", 0 },
-    { L"ycl", 0 },
-    { L"ballet", 1 }, { L"yballet", 1 }, { L"pballet", 1 },
-    { L"tifa", 2 }, { L"tifas", 2 }, { L"ptifa", 2 },
-    { L"earith", 3 }, { L"earithf", 3 }, { L"fearith", 3 },
-    { L"red", 4 }, { L"pred", 4 },
-    { L"yufi", 5 }, { L"pyufi", 5 },
-    { L"ketcy", 6 }, { L"cait", 6 },
+    { L"ycl", 0 }, { L"cl", 0 },
+    { L"ballet", 1 }, { L"yballet", 1 }, { L"pballet", 1 }, { L"ba", 1 },
+    { L"tifa", 2 }, { L"tifas", 2 }, { L"ptifa", 2 }, { L"ti", 2 },
+    { L"earith", 3 }, { L"earithf", 3 }, { L"fearith", 3 }, { L"ea", 3 },
+    { L"red", 4 }, { L"pred", 4 }, { L"re", 4 }, { L"rd", 4 },
+    { L"yufi", 5 }, { L"pyufi", 5 }, { L"yuf", 5 },
+    { L"ketcy", 6 }, { L"cait", 6 }, { L"ket", 6 },
     { L"vincent", 7 }, { L"vince", 7 }, { L"vinsen", 7 }, { L"yvin", 7 },
+    { L"vin", 7 },
     { L"cid", 8 }, { L"pcid", 8 },
 };
 
@@ -3207,6 +3593,40 @@ static const DevWord kDevWords[] = {
     { L"mizu", L"water" }, { L"turara", L"icicle" },
     { L"moni", L"monitor" },
     { L"evjump", L"jump" }, { L"evjp", L"jump" }, { L"evline", L"line" },
+    // -- v2.28 second pass: the two/three-letter trigger shorthands the
+    // player still heard raw ("ev", "dr", "jp"...). Every entry grounded
+    // by the per-field context catalog (short_entity_context_20260717
+    // log = full entity list of every field each stem occurs in):
+    //   dr  = door  (blin671b/blin67_1 list dr1..dr6 BESIDE door1..door6;
+    //                crcin_2 dr1..dr5 beside 'door')
+    //   jp  = jump  (nmkin_3/mds6_1/elevtr1; colne_b1 has jp0 beside the
+    //                ldu/ldd ladder lines; matches existing evjp)
+    //   ev  = event (used interchangeably with 'event1/event2' — rcktin6
+    //                names them event*, ealin_1/gldst/mds6_1 say ev)
+    { L"dr", L"door" }, { L"ev", L"event" },
+    { L"jp", L"jump" }, { L"ujp", L"jump" }, { L"mjp", L"jump" },
+    { L"sjp", L"jump" }, { L"jpj", L"jump" }, { L"jpr", L"jump" },
+    // mes/meskun ("message-kun") = MESSAGE lines, checkun/chekun the
+    // matching check lines (ealin_1 pairs 'meskun'/'checkun'; gldgate
+    // 'meskun'/'chekun'); bmes = loslake1's message line.
+    { L"mes", L"message" }, { L"bmes", L"message" },
+    { L"meskun", L"message" },
+    { L"checkun", L"check" }, { L"chekun", L"check" },
+    // ln0/lin0 are used exactly like the (already-English) 'line' lines
+    // (blin66_1 'ln0 ln1', sandun_1 'lin4..lin19').
+    { L"ln", L"line" }, { L"lin", L"line" },
+    // ldu/ldd = ladu/ladd contractions (colne_b1: 'ldu0 ldd0 ldu2 ldd2',
+    // the Corel-reactor ladder lines); esc = esca contraction (blin68_1
+    // and blin69_1 list 'esc0' beside 'esca'/'esca2').
+    { L"ldu", L"ladder up" }, { L"ldd", L"ladder down" },
+    { L"esc", L"escalator" },
+    // Shinra-HQ elevator family: eleu/eled = up/down call lines (blin1),
+    // elel/eler = left/right car (blin69_1), *dr = the car doors
+    // (blin66_1 'eleldr elerdr', blin68_1 'eledr0').
+    { L"eleu", L"elevator" }, { L"eled", L"elevator" },
+    { L"elel", L"elevator" }, { L"eler", L"elevator" },
+    { L"eledr", L"elevator door" }, { L"eleldr", L"elevator door" },
+    { L"elerdr", L"elevator door" },
 };
 
 // Entity FULL-NAME table, checked before the word pass (names whose words
@@ -3217,7 +3637,20 @@ static const DevWord kDevEntityNames[] = {
     { L"av m", L"AVALANCHE member" }, { L"av l", L"AVALANCHE member" },
     { L"av s", L"AVALANCHE member" }, { L"av c", L"AVALANCHE member" },
     { L"mk save", L"save point" }, { L"save l", L"save point" },
-    { L"dr", L"door" },
+    // (bare "dr3" now handled by the v2.28 word-level 'dr' entry.)
+    // v2.28 multi-word names whose words would mistranslate in isolation
+    // (context catalog evidence, short_entity_context_20260717 log):
+    // train-car fields tin_1..4 pair 'dr an'/'tr an' = door/train
+    // animation lines; blin60_2 pairs 'op cl1/op cl2' (open-close) with
+    // 'door1/door2' — 'cl' there is NOT Cloud, so intercept before the
+    // word pass turns it into his name.
+    { L"dr an", L"door" }, { L"tr an", L"train" },
+    { L"op cl", L"door" },
+    // fship_22/24 'cl a' is also NOT Cloud (both fields carry a separate
+    // 'cloud' entity; 'cl a' sits among the drctr/ad cutscene
+    // controllers). Meaning unknown -> map to itself so the word pass
+    // cannot invent a wrong name (wrong is worse than terse).
+    { L"cl a", L"cl a" },
 };
 
 // Translate one dev label ("shinra hei 2" style, space-separated) into its
@@ -3942,6 +4375,22 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     constexpr ULONGLONG WANDER_WINDOW_MS = 1000;
     constexpr WORD      WANDER_BEEP_HZ = 880, WANDER_BEEP_MS = 70;
 
+    // Interactable-proximity tone state (v2.27, user request after the
+    // Jessie incident): one chirp on ENTERING an object's interaction
+    // range, re-armed only after leaving it (plus slack, so boundary
+    // jitter can't stutter). armed=true means "will chirp on next entry".
+    bool      prox_armed_m[32];   // models (people/chests/items/saves)
+    bool      prox_armed_l[32];   // LINE trigger zones
+    memset(prox_armed_m, 1, sizeof(prox_armed_m));
+    memset(prox_armed_l, 1, sizeof(prox_armed_l));
+    int16_t   prox_field = 0;
+    ULONGLONG last_prox_beep = 0;
+    constexpr WORD      PROX_BEEP_HZ = 1175, PROX_BEEP_MS = 60;
+    constexpr float     PROX_LINE_RANGE = 35.0f;  // walk-onto distance
+    constexpr float     PROX_REARM_SLACK = 25.0f; // leave range + this
+    constexpr int32_t   PROX_Z_GATE = 150;        // not on another layer
+    constexpr ULONGLONG PROX_MIN_GAP_MS = 250;    // crowd = spaced pings
+
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
@@ -4095,6 +4544,101 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                    track_move_tick[slot] != 0 &&
                    GetTickCount64() - track_move_tick[slot] <= WANDER_WINDOW_MS;
         };
+
+        // ---- interactable proximity tone (v2.27) -------------------------
+        // A sighted player SEES the person/chest/ladder as they pass it;
+        // this chirp is that glance: it fires once when the player enters
+        // an object's interaction range and re-arms after they leave.
+        // Ranges are the game's own: the model's talk_radius (the exact
+        // circle the OK button tests) or a short reach to a trigger LINE.
+        // Skips talk-disabled people (the +0x61 byte — the Jessie lesson:
+        // no ping for someone who won't respond), off-mesh models, and
+        // anything on another LAYER (z gate — a walkway overhead must not
+        // ping the floor below). Suppressed during scripted scenes
+        // (uc_lock) and while a dialog is up, so it never plays over
+        // conversation; the armed state still updates then, so no
+        // spurious ping fires when the dialog closes.
+        if (Config::Get().proximity_tone) {
+            if (field_id != prox_field) {
+                prox_field = field_id;
+                memset(prox_armed_m, 1, sizeof(prox_armed_m));
+                memset(prox_armed_l, 1, sizeof(prox_armed_l));
+            }
+            const uint8_t uc_lock = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::FIELD_UC_LOCK);
+            const bool dialog_up =
+                (GetTickCount() - Hooks::LastDialogActivityTick()) < 500;
+            // Silence gates shared by both loops; the min-gap test runs at
+            // each fire site so simultaneous entries can't double-chirp.
+            const bool quiet_ok = uc_lock == 0 && !dialog_up;
+            const auto try_beep = [&]() {
+                if (quiet_ok &&
+                    GetTickCount64() - last_prox_beep >= PROX_MIN_GAP_MS) {
+                    Beep(PROX_BEEP_HZ, PROX_BEEP_MS);
+                    last_prox_beep = GetTickCount64();
+                }
+            };
+
+            const uint32_t n_prox = (nmod < 32u) ? nmod : 32u;
+            const bool prox_ok = IsReadableSpan(
+                reinterpret_cast<const void*>(arr),
+                n_prox * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+            const int32_t pzv = pos[2] >> 12;
+            for (uint16_t m = 0; prox_ok && m < n_prox; ++m) {
+                if (m == pmid)
+                    continue;
+                const uint8_t* me = reinterpret_cast<const uint8_t*>(
+                    arr + m * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+                const int32_t* mp = reinterpret_cast<const int32_t*>(
+                    me + FF7Addr::FIELD_EVENT_MODEL_POS);
+                const int16_t tri = *reinterpret_cast<const int16_t*>(
+                    me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
+                const int16_t radius = *reinterpret_cast<const int16_t*>(
+                    me + FF7Addr::FIELD_EVENT_TALK_RADIUS);
+                const bool talk_off = *reinterpret_cast<const uint8_t*>(
+                    me + FF7Addr::FIELD_EVENT_TALK_OFF) != 0;
+                const float dx = static_cast<float>((mp[0] >> 12) - px);
+                const float dy = static_cast<float>((mp[1] >> 12) - py);
+                const float dist = sqrtf(dx * dx + dy * dy);
+                const int32_t dz = (mp[2] >> 12) - pzv;
+                const bool reachable = tri >= 0 && radius > 0 && !talk_off &&
+                                       dz > -PROX_Z_GATE && dz < PROX_Z_GATE;
+                if (reachable && dist <= static_cast<float>(radius)) {
+                    if (prox_armed_m[m]) {
+                        prox_armed_m[m] = false;
+                        try_beep();
+                    }
+                } else if (!reachable ||
+                           dist > static_cast<float>(radius) + PROX_REARM_SLACK) {
+                    prox_armed_m[m] = true;
+                }
+            }
+
+            const uint16_t n_lines = *reinterpret_cast<const volatile uint16_t*>(
+                FF7Addr::FIELD_LINE_COUNT);
+            for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
+                const uint8_t* le = reinterpret_cast<const uint8_t*>(
+                    FF7Addr::FIELD_LINE_ARRAY + i * FF7Addr::FLINE_STRIDE);
+                const int16_t* v = reinterpret_cast<const int16_t*>(le);
+                const bool enabled = le[FF7Addr::FLINE_OFF_ENABLED] != 0;
+                const int32_t zmid = (v[2] + v[5]) / 2;
+                const float dist2 = PointSegDist2(
+                    static_cast<float>(px), static_cast<float>(py),
+                    v[0], v[1], v[3], v[4]);
+                const bool reachable = enabled &&
+                    zmid - pzv > -PROX_Z_GATE && zmid - pzv < PROX_Z_GATE;
+                if (reachable && dist2 <= PROX_LINE_RANGE * PROX_LINE_RANGE) {
+                    if (prox_armed_l[i]) {
+                        prox_armed_l[i] = false;
+                        try_beep();
+                    }
+                } else if (!reachable ||
+                           dist2 > (PROX_LINE_RANGE + PROX_REARM_SLACK) *
+                                   (PROX_LINE_RANGE + PROX_REARM_SLACK)) {
+                    prox_armed_l[i] = true;
+                }
+            }
+        }
 
         // ---- direction calibration logging (debug_log only) -------------
         // While a direction is held and the player moves, log the held bits
@@ -4365,6 +4909,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             bool       eligible[32] = {};
             ModelClass cls[32]      = {};
             bool       is_open[32]  = {};   // chests only: lid state
+            bool       talk_off[32] = {};   // TLKON disabled (v2.26)
             int16_t    ex[32], ey[32];
             int16_t    ez[32];              // height (v2.23, layer locates)
             int16_t    etri[32];            // live triangle id (v2.22): the
@@ -4446,6 +4991,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 ey[m] = static_cast<int16_t>(my);
                 ez[m] = static_cast<int16_t>(mpos[2] >> 12);
                 etri[m] = tri;
+                // v2.26: TLKON state — see FIELD_EVENT_TALK_OFF for the
+                // derivation and the Jessie incident that motivated it.
+                talk_off[m] = *reinterpret_cast<const uint8_t*>(
+                    me + FF7Addr::FIELD_EVENT_TALK_OFF) != 0;
             }
 
             // Pass 2: duplicate-label counts (so "shinra guard" ×3 becomes
@@ -4495,6 +5044,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // (identity-stability rule, same as exits/people).
                 if (is_open[m])
                     wcsncat_s(d.name, _countof(d.name), L", opened",
+                              _TRUNCATE);
+                // v2.26: definitive "cannot talk right now" marker (the
+                // TLKON-off byte — the Jessie ladder-tutorial incident:
+                // the pathfinder placed the player 17 units from her,
+                // inside her talk radius, and OK did nothing because her
+                // dialog was script-disabled). People only, and only the
+                // DISABLED side: an enabled byte does not guarantee the
+                // entity has a talk script, so silence stays honest.
+                if (cls[m] == MC_PERSON && talk_off[m])
+                    wcsncat_s(d.name, _countof(d.name), L", talk disabled",
                               _TRUNCATE);
                 d.line_x1 = d.line_x2 = ex[m];
                 d.line_y1 = d.line_y2 = ey[m];
@@ -5274,6 +5833,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start config menu thread.");
         }
 
+        // Save/Load menu TTS (v2.29). Cursor/phase addresses from the
+        // guided scan ff7_save_menu_scan.py (2026-07-17, grid cursor
+        // live-verified in-session); slot previews parsed from the save
+        // files on disk (research doc §5 layout table).
+        g_savemenu_thread = CreateThread(nullptr, 0, SaveMenuThread, nullptr, 0, nullptr);
+        if (g_savemenu_thread) {
+            Log::Write("[FF7Access] Save menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start save menu thread.");
+        }
+
         // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
         // turn detection, then the flash-message struct (battle_actor_data,
         // 0xDC38E0) for the exact action, resolving names from the kernel2
@@ -5340,6 +5910,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         }
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
+            !g_savemenu_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
@@ -5468,6 +6039,11 @@ void Shutdown()
         WaitForSingleObject(g_config_thread, 500);
         CloseHandle(g_config_thread);
         g_config_thread = nullptr;
+    }
+    if (g_savemenu_thread) {
+        WaitForSingleObject(g_savemenu_thread, 500);
+        CloseHandle(g_savemenu_thread);
+        g_savemenu_thread = nullptr;
     }
     if (g_battle_thread) {
         WaitForSingleObject(g_battle_thread, 500);

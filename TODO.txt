@@ -5,6 +5,75 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MENU] Save / Continue menu TTS — IN PROGRESS 2026-07-17 (user request)
+------------------------------------------------------------------------
+User request with screenshots (Screenshots/Menus/): make the save-point
+SAVE menu and the title-screen CONTINUE (load) menu speak. Both share
+the same two screens: a 10-entry file grid ("Save 1".."Save 10"), then
+a 15-slot list per file (preview or EMPTY); only the header verb
+differs, and mode needs no scan — save is only reachable in-field,
+load only from the title (context the mod already tracks).
+
+DONE so far:
+  - Slot preview data source SOLVED WITHOUT MEMORY SCANNING: previews
+    live in workingdir\save\saveNN.ff7; layout DERIVED from the
+    player's real save00.ff7 against screenshot ground truth
+    (ff7_savefile_preview_derive.py; research doc §5 table:
+    slot = 9+n*0x10F4, +0x04 level, +0x05 portraits, +0x08 name,
+    +0x20 gil, +0x24 seconds, +0x28 location, empty = all zero).
+  - Scan script READY: investigate/ff7_save_menu_scan.py (spoken
+    guidance; press-and-revert rounds immune to grid wrap + A/B/A
+    phase toggle + live speak-back verify pass). Finds: grid cursor,
+    grid<->slot-list phase, slot cursor.
+SHIPPED v2.29 (2026-07-17): scan run by user (grid cursor
+live-verified in-session; single candidates for both cursors),
+SAVEMENU_* wired, SaveMenuThread speaking grid/slot/pane from disk
+previews. Deployed ~12:05. Residuals:
+  - PENDING PLAY-TEST: grid/slot announces at the save point; the
+    save-confirm flow.
+  - ~~Title Continue menu expected on same addresses~~ LIVE-DISPROVED
+    then RESOLVED same day (v2.29.1): Continue menu has its own state
+    in the title block — LOADMENU_* 0xDD6D98/0xDD6DD4/0xDD7700 (grid
+    cursor live-verified by scan speak-back; +0x3C struct echo).
+    SaveMenuThread is mode-aware (save = frozen-row gate;
+    load = FIELD_ID==0). Deployed ~12:20.
+  - v2.29.2 (same day, two play reports): slot cursors are the
+    3-row WINDOW index — absolute slot = row + scroll (title scroll
+    0xDD6DE4 live-confirmed by ff7_slot_scroll_probe.py; save-side
+    0xDC6B2C inferred at the same +0x10). SAVEMENU_PHASE 0xDC1210
+    DISPROVED (oscillates -> endless alternating announcements);
+    pane for both menus = LOADMENU_LIST_PTR nonzero. Deployed ~12:45.
+    Slot count to 15 PLAY-CONFIRMED in the Continue menu 2026-07-17.
+  - v2.29.3/.4 (same day, play reports: grid second row misannounced,
+    then rows swapped): grid cursor is the COLUMN 0..4; row byte at
+    grid+4, 0=top 1=bottom (v2.29.3 shipped it inverted — probe
+    baseline misread because the player started the probe parked on
+    the bottom row; play report settled polarity). file = row*5+col.
+    Deployed ~17:40. PLAY-CONFIRMED 2026-07-17 evening: both grid
+    rows correct in both menus, deep slot verified end-to-end
+    ("Save 6 slot 15" matched the game's own GAME 15 header), and
+    the field probe run 20260717_200802 LIVE-CONFIRMED the save-side
+    grid-row 0xDC6AE4 and slot-scroll 0xDC6B2C (no inferred
+    addresses remain).
+  - ~~Save-confirm dialog not spoken~~ RESOLVED v2.29.5 (2026-07-17):
+    scan found SAVEMENU_WIDGET_STATE 0xDCA028 (1=slot list,
+    7=confirm dialog; the menu's own mode variable) and
+    SAVEMENU_CONFIRM_CURSOR 0xDC6C6C (0=Yes 1=No), both single
+    candidates + speak-back verified. Announce on open + Yes/No on
+    toggle. Deployed ~20:30. PLAY-CONFIRMED same evening
+    ("Everything works"), including a real save through Yes.
+    ~~Overwrite watch~~ CLOSED: player overwrote an existing save —
+    the game shows NO second dialog; the one confirm covers both
+    cases. Save/continue menu feature complete (v2.29-v2.29.5).
+  - World-map save menu: currently silent (FIELD_ID==0 there routes
+    to the load branch's title-block addresses). Fix needs a
+    world-map GAME_MODE value sampled live, or a positive save-menu
+    open flag. Low priority until the player reaches the world map.
+  - First grid screen is silent until the first cursor move
+    (no "menu opened" flag known — same main-menu limitation).
+    If a flag is ever wanted: scan main-menu -> save-menu entry.
+
+
 [TTS] Controller-button Unicode glyphs in dialog text
 ------------------------------------------------------
 Some field dialogs contain characters like 0xD6 (Û) and 0xD9 (Ù) in FF7's
@@ -273,6 +342,19 @@ owning entity dev name ('evb', 'drE'). Possible refinements from play:
     as "ladder down"/"ladder up" (both ends of a ladder observed on
     bonevil/nmkin_2) — if play shows the suffix means something else,
     fold both to plain "ladder".
+  - ~~Two/three-letter stems still spoken raw ("ev","dr","jp")~~
+    RESOLVED v2.28 (2026-07-17, user play report): second table pass
+    grounded per-field (investigate/ff7_short_entity_context.py — full
+    entity list of every field each stem occurs in). dr=door, jp=jump
+    (+ujp/mjp/sjp/jpj/jpr), ev=event, ldu/ldd=ladder up/down,
+    esc=escalator, elevator family, mes/meskun=message,
+    checkun/chekun=check, ln/lin=line, party shorthands
+    cl/ti/ba/ea/re/rd/yuf/ket/vin -> live names. STILL RAW BY DESIGN
+    (no evidence): "sp" (jail2+rcktin6 only; NOT the save point —
+    jail2 already has save/savel0), "jl", "se", "lg", "mat", "mate",
+    and the ad/dir/dic/drctr film-crew controllers. If play surfaces
+    one of these, note WHICH FIELD — the context catalog turns a field
+    sighting into a translation.
   - Trigger lines whose script does nothing until a story flag are still
     listed while enabled — same accepted limitation as story-locked
     exits.

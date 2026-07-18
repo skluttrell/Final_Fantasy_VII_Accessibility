@@ -111,6 +111,18 @@ struct Settings {
     // Default: true.
     bool gamepad_nav = true;
 
+    // proximity_tone: If true, a single short high chirp (1175 Hz) fires
+    // the moment the player comes within INTERACTION RANGE of something
+    // usable (v2.27): a talkable person (their actual talk radius, the
+    // same circle the game tests when OK is pressed — people flagged
+    // talk-disabled stay silent), a chest / item / save point, or a
+    // trigger line (ladder, elevator). Fires ONCE per approach: it
+    // re-arms only after walking away, so standing next to someone stays
+    // quiet but coming back pings again. Distinct from the 220 Hz wall
+    // tone and the 880 Hz wandering cue.
+    // Default: true.
+    bool proximity_tone = true;
+
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the
     // character is not moving). Vanilla FF7 has no footstep sounds, so without

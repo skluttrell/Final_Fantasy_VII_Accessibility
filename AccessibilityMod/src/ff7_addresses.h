@@ -451,6 +451,129 @@ constexpr uint32_t QUIT_CURSOR = 0x00DC0FA0;
 constexpr uint32_t QUIT_OPEN = 0x00DC0FB1;  // NOT USED — see note above
 
 // ---------------------------------------------------------------------------
+// SAVE / LOAD menu state (v2.29, ff7_save_menu_scan.py 2026-07-17)
+//
+// The menu behind main-menu SAVE (in-field) and title-screen Continue: a
+// 10-entry file grid ("Save 1".."Save 10"), then a 15-slot list inside the
+// chosen file. Found by press-and-revert delta rounds (two rounds
+// intersected per cursor — the wrap-immune variant of the SOUND_CURSOR
+// method), log save_menu_scan_20260717_114908:
+//
+//   - GRID cursor: the SINGLE intersected candidate, and LIVE-VERIFIED in
+//     the same session — the scan's speak-back pass tracked 0→1→2→3→4→3…
+//     exactly as the player moved. 0-based, 0..9, +1 per Right press
+//     (5-wide × 2 rows, row-major).
+//   - SLOT cursor: the single intersected candidate of the Down/Up rounds.
+//     0x3C after the grid cursor — same DC6Axx menu struct. 0-based, 0..14.
+//     While the slot list is open the grid cursor HOLDS the selected file
+//     index (it appeared in neither slot-round diff), so "which file are
+//     these slots from" is read from SAVEMENU_GRID_CURSOR at any time.
+//   - PHASE: 0 = file grid, 1 = slot list. Chosen from the 6 A/B/A toggle
+//     candidates as the only single-byte 0/1 flag in the DC12xx menu-state
+//     block (0xCC bytes before MENU_OPEN). Runner-up candidates from the
+//     same scan if this one misbehaves in play: 0xDCA028 (also 0/1) and
+//     0xDD7700 (u32, 0 in grid / heap POINTER while the slot list is open —
+//     semantically "selected file's loaded data", nonzero-as-flag usable).
+//
+// GATING (SaveMenuThread): during the whole save-menu session MENU_OPEN
+// stayed 1 with MENU_CURSOR frozen at 9 (the Save row) — the same
+// frozen-row signature the Config sub-menu shows (see CONFIG_ROW note), so
+// save mode gates on FIELD_ID!=0 && MENU_OPEN==1 && MENU_CURSOR==9.
+// ⚠ The title-screen CONTINUE menu was ASSUMED to reuse this module —
+// LIVE-DISPROVED 2026-07-17 (ff7_continue_menu_verify.py, log
+// continue_menu_verify_20260717_120914): all three bytes sat FROZEN
+// (grid=0 slot=0 phase=16 = title-module data) through 90 s of Continue-
+// grid navigation. The Continue menu keeps its own state; scan pending
+// (ff7_continue_menu_scan.py). These addresses serve the IN-FIELD save
+// menu only. The slot PREVIEW data is deliberately NOT read from memory:
+// the mod parses save\saveNN.ff7 directly (layout derived from the
+// player's own file, research doc §5).
+// ⚠ TWO play-reported corrections (2026-07-17, same day as the scans):
+//
+// 1. SAVEMENU_PHASE 0xDC1210 is DISPROVED as a pane flag: in real use it
+//    OSCILLATES (player heard the two pane announcements alternating
+//    endlessly in the save menu). Its clean 0/1 across the scan's three
+//    widely-spaced A/B/A snapshots was luck, not state. Kept only as a
+//    warning label — never read it. The pane signal for BOTH menus is
+//    LOADMENU_LIST_PTR below (nonzero = slot list open), which both
+//    scans observed independently and the shipped Continue menu proved
+//    in play.
+//
+// 2. The "slot cursor" bytes are the VISIBLE-ROW index 0..2, NOT the
+//    absolute slot: the list shows 3 slots and scrolls. Both scans
+//    pressed Down/Up once from the top — inside the window, where row ==
+//    absolute slot, the two are indistinguishable. The SCROLL OFFSET was
+//    found by ff7_slot_scroll_probe.py (log slot_scroll_probe_20260717_
+//    123245): title instance at slot_cursor+0x10 = 0xDD6DE4, stepping
+//    0..12 slot-by-slot down the list and back, while +0x74 runs a
+//    scroll-animation tween (transient 0xFFFFFFxx) and +0x80 flags the
+//    direction (2=down 1=up 0=idle) — read NEITHER of those. Absolute
+//    slot = row + scroll (0..14). The save-menu instance's scroll is
+//    INFERRED at the same +0x10 (0xDC6B2C) from the struct echo that
+//    has held for every other member — pending play confirmation.
+//
+// 3. (v2.29.3/.4) The "grid cursor" bytes are the COLUMN 0..4, not a
+//    0..9 index: the 5×2 grid keeps its row in a SEPARATE byte at
+//    grid+4 — 0 = top row (Save 1-5), 1 = bottom row (Save 6-10).
+//    Grid probe run 2026-07-17 (slot_scroll_probe_20260717_171930):
+//    column counted 0..4 on BOTH rows while +4 flipped per Down/Up.
+//    (The original speak-back "0..9 verified" only ever walked the top
+//    row — the same window-blindness as the slot list. And v2.29.3
+//    first shipped the row INVERTED by misreading the probe's baseline
+//    of 1 as "top": the player was already parked on the BOTTOM row
+//    when the probe started. Their play report — Save 6 spoken on the
+//    top row — settled it, v2.29.4.) File index = rowbyte*5 + column.
+//    Save-menu row byte inferred at the same +4 (0xDC6AE4).
+constexpr uint32_t SAVEMENU_GRID_CURSOR = 0x00DC6AE0; // u8 0..4 COLUMN
+constexpr uint32_t SAVEMENU_GRID_ROW    = 0x00DC6AE4; // u8 0=top 1=bottom, LIVE-CONFIRMED
+                                                      // (field probe 20260717_200802)
+constexpr uint32_t SAVEMENU_SLOT_CURSOR = 0x00DC6B1C; // u8 0..2 visible ROW
+constexpr uint32_t SAVEMENU_SLOT_SCROLL = 0x00DC6B2C; // u8 0..12, LIVE-CONFIRMED
+                                                      // (field probe 20260717_200802;
+                                                      // bonus neighbors: 0xDC6B34
+                                                      // reads 15 = slot count,
+                                                      // 0xDC6B24 reads 3 = visible
+                                                      // rows — list metadata, unused)
+constexpr uint32_t SAVEMENU_PHASE       = 0x00DC1210; // ⚠ DISPROVED — do not read
+
+// The save menu's widget STATE MACHINE and the "Are you sure you want to
+// save?" Yes/No dialog (v2.29.5, ff7_save_confirm_scan.py 2026-07-17,
+// log save_confirm_scan_20260717_201751):
+//   WIDGET_STATE — observed values: 1 = slot list, 7 = confirm dialog
+//   (the scan's SINGLE A/B/A candidate: 1→7 on open, back on Cancel).
+//   This is the same byte that was runner-up in the original phase pass
+//   (grid→slot list 0→1) — it is the menu's mode variable; only the
+//   value 7 is acted on (other values' meanings unsampled).
+//   CONFIRM_CURSOR — 0 = Yes, 1 = No; single intersected Down/Up
+//   candidate, live speak-back verified; resets to Yes on open. The
+//   slot-row byte 0xDC6B1C holds still while the dialog is up (same
+//   log), so dialog handling cleanly short-circuits the slot logic.
+constexpr uint32_t SAVEMENU_WIDGET_STATE   = 0x00DCA028; // u8, 7 = confirm open
+constexpr uint32_t SAVEMENU_CONFIRM_CURSOR = 0x00DC6C6C; // u8 0=Yes 1=No
+constexpr uint8_t  SAVEMENU_STATE_CONFIRM  = 7;
+
+// The title-screen CONTINUE menu's OWN instance of the same state
+// (ff7_continue_menu_scan.py, log continue_menu_scan_20260717_121456):
+// grid cursor LIVE-VERIFIED by the scan's speak-back pass (0→4 and back
+// tracking the player); slot cursor the SINGLE intersected Down/Up
+// candidate — and exactly +0x3C from the grid cursor, the same struct
+// spacing as the save-menu pair (0xDC6AE0→0xDC6B1C), which corroborates
+// both. Addresses sit in the TITLE module block (TITLE_CURSOR 0xDD6F24
+// neighborhood). No 0/1 phase byte was isolated here (79 toggle
+// candidates, mostly churn); instead LOADMENU_LIST_PTR is the pane
+// signal: u32, 0 while the file grid shows, a HEAP POINTER (the selected
+// file's loaded data) while the slot list is open — it behaved exactly
+// the same in BOTH menus' phase passes (save scan: 0→0x237E6008→0;
+// continue scan: 0→0x237D20A8→0, with sidekick byte 0xDD7704 flipping
+// 0→1, kept as the runner-up flag). Read as nonzero-check only — the
+// pointer VALUE is a transient allocation, never dereference it.
+constexpr uint32_t LOADMENU_GRID_CURSOR = 0x00DD6D98; // u8 0..4 COLUMN
+constexpr uint32_t LOADMENU_GRID_ROW    = 0x00DD6D9C; // u8 0=top 1=bottom (play-corrected v2.29.4)
+constexpr uint32_t LOADMENU_SLOT_CURSOR = 0x00DD6DD4; // u8 0..2 visible ROW
+constexpr uint32_t LOADMENU_SLOT_SCROLL = 0x00DD6DE4; // u8 0..12, LIVE-CONFIRMED
+constexpr uint32_t LOADMENU_LIST_PTR    = 0x00DD7700; // u32 != 0 = slot list open
+
+// ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
 //
 // SAVEMAP_BASE (0xDBFD38) is the start of a region that includes both the
@@ -1057,6 +1180,21 @@ constexpr uint32_t FIELD_EVENT_CHARACTER_ID = 0x6C; // s16 — ⚠ NOT a party-m
 constexpr uint32_t FIELD_EVENT_TALK_RADIUS = 0x74; // s16, talk interaction radius
 constexpr uint32_t FIELD_EVENT_TRIANGLE_ID = 0x78; // s16, walkmesh triangle the
                                                    // model stands on (<0 = off-mesh)
+
+// Talk-enabled byte (v2.26): the TLKON opcode (0x7E, handler 0x618A80 —
+// static disasm 2026-07-16) writes its 1-byte arg RAW to +0x61 of the
+// entity's model record: 0 = talkable (the memset default), 1 = talk
+// disabled. LIVE-CONFIRMED same evening: Jessie at the nmkin_2 ladder
+// tutorial read 1 while refusing to talk from 17 units inside her talk
+// radius — the play report that started the hunt. ⚠ 0 does NOT guarantee
+// dialog (the entity may simply have no talk script); only the DISABLED
+// state is definitive, so the mod only ever announces that side.
+constexpr uint32_t FIELD_EVENT_TALK_OFF = 0x61;    // u8, 1 = talk disabled
+
+// Entity id → model slot map (bonus find from the same disasm): u8 per
+// entity, 0xFF = the entity has no model. The TLKON handler resolves its
+// executing entity through this table. Not yet used by the mod.
+constexpr uint32_t FIELD_ENTITY_MODEL_MAP = 0x00CBFB70;
 
 // Digested-input direction bits (current_key_input_status). Confirmed live
 // 2026-07-09: all four values observed individually during the Phase A walk.

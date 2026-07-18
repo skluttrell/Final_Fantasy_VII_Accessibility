@@ -148,6 +148,18 @@ every confirmed address — the clustering itself is a discovery tool.
 | `CONFIG_SPEED_FIELD_MSG` | `0x00DC0E24` | Row 7 Field message speed — raw byte, 0=Fast → 255=Slow |
 | `SOUND_CURSOR` | `0x00DC108C` | 0=Music slider highlighted, 1=FX slider highlighted; inside Sound sub-menu only |
 | `QUIT_CURSOR` | `0x00DC0FA0` | 0=Yes, 1=No inside Quit confirmation dialog |
+| `SAVEMENU_GRID_CURSOR` | `0x00DC6AE0` | Save menu file-grid **COLUMN 0..4** (⚠ v2.29.3: NOT a 0..9 index — the original "0..9 verified" speak-back only walked the top row). Row in the separate byte below; file index = (1−row)×5+column. Single intersected candidate + live speak-back — ff7_save_menu_scan.py 2026-07-17. HOLDS its value while the slot list is open |
+| `SAVEMENU_GRID_ROW` | `0x00DC6AE4` | Save menu file-grid row byte: 0 = top row (Save 1–5), 1 = bottom (Save 6–10). **LIVE-CONFIRMED** (field probe slot_scroll_probe_20260717_200802: 0→1 on Down to the bottom row, 1→0 on Up — v2.29.4 polarity exact) |
+| `SAVEMENU_SLOT_CURSOR` | `0x00DC6B1C` | Save menu slot-list **visible ROW 0..2** (⚠ NOT the absolute slot — the list shows 3 and scrolls; the "only 3 slots" player report, v2.29.2). 0x3C after the grid cursor. Absolute slot = row + SAVEMENU_SLOT_SCROLL |
+| `SAVEMENU_SLOT_SCROLL` | `0x00DC6B2C` | u8 0..12 slot-list scroll offset. **LIVE-CONFIRMED** (field probe 20260717_200802; same tween/direction noise pattern as the title instance at +0x10/+0x1C past it). Bonus metadata found in the same run: `0xDC6B34` reads 15 = slot count, `0xDC6B24` reads 3 = visible rows; `0xDD7700` went nonzero in SAVE mode live, confirming the shared pane pointer end-to-end |
+| `SAVEMENU_PHASE` | `0x00DC1210` | ⚠ **DISPROVED as a pane flag** (2026-07-17, v2.29.2): OSCILLATES in real use — the save menu alternated its two pane announcements endlessly (player report). Its clean 0/1 across three widely-spaced A/B/A snapshots was coincidence. Do not read. Pane signal for both menus = LOADMENU_LIST_PTR |
+| `LOADMENU_GRID_CURSOR` | `0x00DD6D98` | Title-screen CONTINUE menu's OWN file-grid **COLUMN 0..4** (shared-module assumption live-DISPROVED — the SAVEMENU_* bytes freeze at the title; 0..9-index reading corrected v2.29.3). **LIVE-VERIFIED** by speak-back (0→4 and back) — ff7_continue_menu_scan.py 2026-07-17. Title module block. v2.29.1/3 |
+| `LOADMENU_GRID_ROW` | `0x00DD6D9C` | Continue menu file-grid row byte at grid+4: **0 = top row, 1 = bottom** (v2.29.4 play-corrected — v2.29.3 shipped it inverted by misreading the probe's baseline of 1 as "top"; the player had started the probe already parked on the BOTTOM row, and their report of "Save 6" spoken on the top row settled the polarity). Column recounts 0..4 on both rows (probe log slot_scroll_probe_20260717_171930). File index = row×5+column |
+| `LOADMENU_SLOT_CURSOR` | `0x00DD6DD4` | Continue menu slot-list **visible ROW 0..2** (same 3-row-window caveat as the save instance), grid+0x3C — the struct-spacing echo corroborating both instances. v2.29.1/2 |
+| `LOADMENU_SLOT_SCROLL` | `0x00DD6DE4` | u8 0..12 slot-list scroll offset, **LIVE-CONFIRMED** (ff7_slot_scroll_probe.py log 20260717_123245: stepped 0→12 down the full list and 12→0 back while the row byte pinned at 2/0). slot_cursor+0x10. Neighbors are noise: +0x74 u32 scroll-animation tween (transient 0xFFFFFFxx), +0x80 direction flag (2=down 1=up 0=idle) — never read them. Absolute slot = row + scroll (v2.29.2) |
+| `LOADMENU_LIST_PTR` | `0x00DD7700` | u32: 0 while the Continue file grid shows, HEAP POINTER to the selected file's loaded data while the slot list is open. Identical behavior in BOTH menus' phase passes (save scan 0→0x237E6008→0; continue scan 0→0x237D20A8→0). v2.29.1's load-mode pane signal — **nonzero-check only, never dereference** (transient allocation). Sidekick byte 0xDD7704 flips 0→1 with it (runner-up flag) |
+| `SAVEMENU_WIDGET_STATE` | `0x00DCA028` | The save menu's widget state machine: observed 0 = file grid → 1 = slot list (original scan's phase pass) and **7 = "Are you sure you want to save?" dialog open** (SINGLE A/B/A candidate, ff7_save_confirm_scan 2026-07-17, log 20260717_201751: 1→7 on open, reverted on Cancel). v2.29.5 acts only on value 7; other values unsampled |
+| `SAVEMENU_CONFIRM_CURSOR` | `0x00DC6C6C` | Save-confirm dialog Yes/No cursor: **0 = Yes, 1 = No**, resets to Yes on open. Single intersected Down/Up candidate AND live speak-back verified in the same session. Slot-row 0xDC6B1C holds still while the dialog is up, so the dialog cleanly short-circuits slot announcements (v2.29.5) |
 | `FIELD_ID` | `0x00CC15D0` | s16, non-zero on named field maps, 0 on title/world. **Does NOT zero during battle** (live-corrected 2026-07-09; earlier belief wrong) |
 | `G_ACTIVE_ACTOR_ID` | `0x00BE1170` | u8 slot of last-acting battle actor (0–2 party, 4–9 enemy); never resets between battles (v2.5) |
 | `G_BATTLE_MODEL_STATE` | `0x00BE1178` | Per-actor battle array, stride 0x1AEC; commandID u8 at +0x23 (v2.5) |
@@ -189,7 +201,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
 | *(control_direction semantics)* | — | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180, a PURE ROTATION — left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124→174.4°; Up motion 5.6°, Down −174.4°. First guess world − control was 180° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
-| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1) |
+| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled — handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1/v2.26) |
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
@@ -240,6 +252,28 @@ standalone text section.
 (confirmed buf offsets 0xA43–0xC78 for bombers_start dialogs). Before using rawptr, we validate it
 falls within `[field_buf, field_buf + 512KB)`. This prevents reading binary data from outside the
 field buffer when the pointer is stale or corrupt.
+
+### Save file (.ff7) slot-preview layout — DERIVED 2026-07-17
+
+For the save/continue menu TTS: the slot previews the menu displays live in the save FILES
+(`workingdir\save\saveNN.ff7`, one file per "Save N" grid entry, 15 slots each), so the mod parses
+them from disk — no memory addresses needed for the data. Layout derived EMPIRICALLY from the
+player's own save00.ff7 against screenshot ground truth (Cloud / Level 7 / 00:21 / 376 gil /
+"No. 1 Reactor"), ff7_savefile_preview_derive.py, log savefile_preview_derive_20260717_113941:
+
+| Offset | Field |
+|---|---|
+| file+0x00 | 9-byte file header `71 73 27 06 00 01 00 00 00` |
+| slot base | 9 + n×0x10F4 (file size 65,109 = 9 + 15×0x10F4 exactly) |
+| +0x00 | u32 checksum-ish (0x0000893A observed) |
+| +0x04 | u8 lead character LEVEL (read 7 ✓) |
+| +0x05..07 | 3 × u8 party portrait char ids, 0xFF = empty slot in party (read 00 01 FF = Cloud, Barret ✓) |
+| +0x08 | lead character NAME, FF7-encoded, 0xFF-terminated (read "Cloud" ✓ — the SAVED text, renames carry automatically) |
+| +0x18 | u16 curHP (222), +0x1A u16 maxHP (311), +0x1C u16 curMP (54), +0x1E u16 maxMP (57) |
+| +0x20 | u32 GIL (read 376 ✓) |
+| +0x24 | u32 play time in SECONDS (read 1313 → menu displays 00:21 ✓) |
+| +0x28 | location caption, FF7-encoded, 0xFF-terminated (read "No.1 Reactor" ✓ — stored WITHOUT the display space) |
+| empty slot | entire 0x10F4 bytes are zero (slot 1 verified all-zero while menu showed EMPTY ✓) |
 
 ---
 
@@ -1231,12 +1265,285 @@ slot-order ordinals ("To Platform 2"); a name may upgrade mid-session
 identity, never changes.
 
 Deployed to the 2026 install 2026-07-16 20:05; both cfgs updated.
-PENDING PLAY-TEST: exit names in the reactor area, the places file
-growing, world-map exits.
+**PLAY-CONFIRMED same evening ("Yes, that's much better").**
+
+### v2.26 (2026-07-16): ", talk disabled" — the Jessie incident
+
+Play report: the pathfinder led the player to Jessie at the nmkin_2
+ladder tutorial, but she would not talk — the player doubted the
+pathfinder. The live talk diagnostic (ff7_talk_diagnostic.py, new tool:
+speaks nearest-NPC distance / talk-radius verdict / height difference as
+a hot-cold beacon) proved the pathfinder RIGHT: 17 units away, same
+triangle, inside her 80-unit talk radius — the game had script-disabled
+her dialog at that moment. ~~(the tutorial belongs to the ladder
+trigger, not to her)~~ **CORRECTED by play-test 2026-07-17: the ladder
+tutorial DOES come from talking to Jessie herself** — the player
+confirmed it on a fresh pass, with Jessie and the ladder far enough
+apart to rule out the line trigger. So TLKON on her is a temporary
+script state (disabled around the moment of the original incident,
+enabled when she is ready to teach), not a permanent "she never talks"
+flag — which is exactly why the suffix must always be read live from
+the byte, never cached per NPC.
+
+The missing information was the game's own talkability flag. Static hunt
+(TLKON = opcode 0x7E by the proven enum-count rule; scratch disasm of
+handler 0x618A80): TLKON writes its 1-byte arg RAW to field_event_data
+**+0x61** (0 = talkable default, 1 = disabled), resolving its entity
+through a NEW map — **0xCBFB70**, u8 entity→model slot (0xFF = none).
+Live confirm minutes later: Jessie read tlkon=1 through the whole
+diagnostic, including at 120 units as the player re-approached.
+
+**Mod change**: People announcements append ", talk disabled" when the
+byte is set ("Jessie, talk disabled") — the body-language cue sighted
+players read. DELIBERATELY one-sided: a 0 byte does not guarantee a talk
+script exists, so the enabled side stays silent (never promise dialog
+that may not come — the v2.18.2 "safer direction" principle).
+NavDest.name widened 32→48 for the suffix on long labels.
+
+Deployed to the 2026 install 2026-07-16 ~20:55. Play-test progress
+2026-07-17: Jessie confirmed talkable AND the tutorial's source on a
+fresh pass (the correction above) — so her TLKON state genuinely
+toggles over the scene. STILL PENDING: actually HEARING ", talk
+disabled" at a moment an NPC has dialog switched off, and confirming
+ordinary talkable NPCs stay suffix-free.
+
+### v2.27 (2026-07-16): interaction proximity chirp
+
+User request (follow-on from the Jessie incident): "a quick audible tone
+when the user gets near something they can interact with or talk to —
+fire once and reset in case the user walks away and back."
+
+One 1175 Hz / 60 ms chirp on ENTERING an object's interaction range —
+the sighted player's passing glance, as an earcon. Ranges are the
+game's own: a model's talk_radius (the exact circle the OK press
+tests, so chirp = OK will reach), or 35 units to an enabled LINE
+trigger. Eligibility mirrors the v2.26 lesson: talk-disabled people
+(+0x61) never ping; off-mesh models and anything beyond a ±150-unit
+height gate (other walkway layer) are excluded.
+
+EDGE SEMANTICS (per the user's spec): per-object armed flag — chirp on
+entry, re-arm only after leaving range + 25 units of slack (boundary
+jitter cannot stutter), full re-arm on screen change. Suppressed (state
+still tracked, so no deferred spurious ping) during scripted scenes
+(UC lock) and within 500 ms of dialog activity; a global 250 ms minimum
+gap spaces the pings when entering a crowd. Tone family now: 220 Hz
+repeating = wall, 1175 Hz single = usable in reach, 880 Hz post-announce
+= wandering target.
+
+New cfg key proximity_tone (default true). Implemented in
+FieldNavThread's 50 ms poll (all inputs — positions, talk radius,
+talk-off byte, LINE array — were already being read there).
+
+Deployed to the 2026 install 2026-07-16 ~21:05; both cfgs updated.
+Play-test 2026-07-17: chirp on approach CONFIRMED, and the re-arm
+edge semantics CONFIRMED (approach -> walk away -> return chirps
+again, no boundary stutter). STILL PENDING: crowd spacing with
+several clustered interactables, and no pings from the walkway
+overhead in the reactor.
 
 Side effect: walkmesh pathfinding now exists, which unblocks the deferred
 FF4 keys Shift+\ (valid-path-only filter — A* reachability is a byproduct)
 and Ctrl+\ (layer filter — triangle awareness exists). See TODO.txt.
+
+### v2.28 (2026-07-17): dev-name cleanup second pass — "ev"/"dr"/"jp" and friends
+
+User report: the Triggers browser still spoke two/three-letter internal
+names ("ev", "dr", "jp", "sp"...) that the v2.20 word tables never
+covered — the game-wide stem catalog listed them, but a 2-letter stem
+can't be translated from frequency alone.
+
+**New evidence artifact**: investigate/ff7_short_entity_context.py — for
+every short cryptic stem, prints the COMPLETE entity list of each field
+where it occurs (same LGP/section-0 parser as the v2.20 catalog). The
+neighbouring names identify the stem:
+- `dr` = door — blin671b/blin67_1 list dr1..dr6 beside door1..door6,
+  crcin_2 has dr1..dr5 beside 'door'.
+- `jp` = jump (with ujp/mjp/sjp/jpj/jpr) — colne_b1 has jp0 beside the
+  ldu/ldd ladder lines; nmkin_3/mds6_1/elevtr1/games; matches evjp.
+- `ev` = event — used interchangeably with 'event1/event2' (rcktin6
+  names them event*, ealin_1/gldst/mds6_1 say ev).
+- `ldu`/`ldd` = ladu/ladd contractions; `esc` = esca (listed beside
+  'esca' in blin68_1/blin69_1); Shinra-HQ elevator family
+  eleu/eled/elel/eler + eledr/eleldr/elerdr (car doors).
+- `mes`/`meskun`("message-kun")/`bmes` = message lines; matching
+  `checkun`/`chekun` = check lines (ealin_1, gldgate).
+- `ln`/`lin` = 'line' spelled shorter (blin66_1, sandun_1).
+- Party shorthands `cl ti ba ea re rd yuf ket vin` — loslake1 lists the
+  whole roster in slot order ('cl ti cid ba ea re ket vin yuf'); wired
+  into kDevCharWords so live renames carry through.
+- Full-name interceptions (word pass would mistranslate): `dr an`/`tr an`
+  (train-car door/train animation lines, tin_1..4), `op cl` = open-close
+  paired with door1/door2 (blin60_2) — NOT Cloud; `cl a` (fship_22/24)
+  is also not Cloud (both fields have a separate 'cloud' entity) and its
+  meaning is unknown, so it maps to itself.
+
+**Verified by full-catalog dry run before shipping** (v2.20 method,
+scratchpad replica over all 2412 entity names + 557 model labels):
+88 entity names improve, ZERO model labels change, and the dry run is
+what caught the 'op cl' → "op Cloud" collision. **Deliberately left
+untranslated**: `sp` (only jail2 + rcktin6, and jail2 already has
+save/savel0 so it is NOT the save point — meaning unidentified, and a
+wrong translation is worse than a terse one), the `ad`/`dir`/`dic`/
+`drctr`/`produce` film-crew controller family (almost certainly never
+own LINE triggers), `jl`, `se`, `lg`, `mat`, `mate` (evidence
+insufficient). Deployed to the 2026 install 2026-07-17 ~10:46.
+
+### v2.29 (2026-07-17): SAVE / CONTINUE menus speak — files from disk, cursors from one scan
+
+User request with screenshots (Screenshots/Menus/): the save-point SAVE
+menu and title-screen CONTINUE menu were silent. Both are one module:
+a 10-file grid ("Save 1".."Save 10") then a 15-slot list per file.
+
+**Two-source design.** (1) The slot PREVIEW data needs no memory at all:
+the menu renders from `save\saveNN.ff7`, and the layout was derived
+EMPIRICALLY from the player's own save00.ff7 against screenshot ground
+truth in the same session (§5 table: slot = 9+n×0x10F4, +0x04 level,
++0x05 portraits, +0x08 lead name as SAVED text, +0x20 gil, +0x24
+seconds, +0x28 location, empty slot all-zero). The mod re-reads the
+65 KB file per announce — no cache, so a fresh save can never speak
+stale. (2) Cursor/phase state from ONE guided scan
+(ff7_save_menu_scan.py, log save_menu_scan_20260717_114908): press-and-
+revert rounds (wrap-immune, start-position-independent) intersected to a
+SINGLE candidate for each cursor, grid cursor live-verified by the
+scan's own speak-back pass. SAVEMENU_GRID_CURSOR 0xDC6AE0,
+SAVEMENU_SLOT_CURSOR 0xDC6B1C (grid+0x3C), SAVEMENU_PHASE 0xDC1210
+(§4 + §14).
+
+**SaveMenuThread** (proxy.cpp, 150 ms, speak_menus-gated): save mode
+gates on FIELD_ID≠0 ∧ MENU_OPEN=1 ∧ MENU_CURSOR frozen at 9 — the
+Config-submenu frozen-row signature observed through the entire scan;
+load mode on FIELD_ID=0 (world-map/victory overlap defused by
+change-only + range guards: phase>1 ∨ grid>9 ∨ slot>14 = other module's
+bytes, stand down — the TitleCursorThread lesson). Announcements:
+grid move = "Save 3, 1 save"/"Save 3, empty" (used-slot count from
+disk); entering the slot list = "Game 1. Slot 1: Cloud, level 7,
+No.1 Reactor, 21 minutes, 376 gil, with Barret" (grid byte still holds
+the file index there — scan-verified); slot move = the same per-slot
+line; back to grid = the grid line. Offline replica over the real save
+file reproduced the screenshots' preview exactly before shipping.
+
+KNOWN LIMITATION (documented, change-only rule): no "menu just opened"
+flag is known, so the first grid screen is silent until the first
+cursor move — same behavior the main menu has always had.
+
+Deployed to the 2026 install 2026-07-17 ~12:05. PENDING PLAY-TEST:
+save menu grid/slot announces at a save point; the actual SAVE
+confirmation flow; phase byte 0xDC1210 behaving (runners-up
+0xDCA028 / 0xDD7700 ready if not).
+
+**v2.29.1 follow-up (same day): Continue menu is a DIFFERENT module — found and wired.**
+Player report: title-screen Continue silent. Live verify
+(ff7_continue_menu_verify.py, log continue_menu_verify_20260717_120914)
+DISPROVED the shared-module assumption: through 90 s of Continue-grid
+navigation all three SAVEMENU_* bytes sat frozen (grid=0 slot=0,
+phase=16 = title-module data; FIELD_ID=0, MENU_OPEN=1, MENU_CURSOR=0,
+GAME_MODE=0, TITLE_CURSOR=1 throughout — none move either, so nothing
+observable distinguishes the Continue grid from the plain title
+screen; that pane stays change-only).
+
+Second scan at the title (ff7_continue_menu_scan.py, log
+continue_menu_scan_20260717_121456, ranges extended to FFNx's AF3DN.P
+per the SOUND_CURSOR lesson): the Continue menu's OWN state instance in
+the TITLE block — LOADMENU_GRID_CURSOR 0xDD6D98 (live-verified by
+speak-back, the FFNx-range co-candidates were churn), LOADMENU_SLOT_CURSOR
+0xDD6DD4 = grid+0x3C (single candidate; the SAME +0x3C spacing as the
+save-menu pair — the struct echo corroborates both instances), pane from
+LOADMENU_LIST_PTR 0xDD7700 (u32 heap ptr, 0 = grid / nonzero = slot
+list, identical behavior in both menus' phase passes; nonzero-check
+only). SaveMenuThread is now mode-aware: save mode = frozen-row gate
+PLUS SAVEMENU_PHASE ≤ 1 (it reads 16 at the title, so a stale
+MENU_CURSOR=9 after game-over→title falls through to load mode instead
+of muting — and dropping the FIELD_ID≠0 requirement also covers the
+world-map save menu); load mode = FIELD_ID==0 with the LOADMENU_*
+sources. Same disk-preview announcements in both. Deployed 2026-07-17
+~12:20.
+
+**v2.29.2 (same day): two play-reported corrections.**
+(1) Slot lists only counted 3 slots: the scanned "slot cursors" are the
+VISIBLE-ROW index of a 3-row scrolling window, not absolute slots (both
+scans pressed Down/Up once from the top, where the two are
+indistinguishable — scan-design lesson: exercise a list PAST its
+window before trusting a cursor candidate). ff7_slot_scroll_probe.py
+(windowed byte-diff around both structs, log 20260717_123245) found the
+scroll offset at row+0x10 in the title instance (0xDD6DE4: stepped 0→12
+and back exactly per press while the row byte pinned at the window
+edges; +0x74/+0x80 are scroll-animation noise, never read). Absolute
+slot = row + scroll; the save instance's scroll INFERRED at the same
+member offset (0xDC6B2C, the struct echo's third data point).
+(2) The save menu alternated its two pane announcements endlessly:
+SAVEMENU_PHASE 0xDC1210 is DISPROVED — it oscillates in real use and
+passed the A/B/A scan by coincidence. Both menus' pane now reads
+LOADMENU_LIST_PTR != 0 (the loaded-file heap pointer both scans
+observed independently and the shipped Continue menu already proved in
+play); the save-mode gate reverted to the plain v2.29 frozen-row form
+(FIELD_ID≠0 ∧ MENU_OPEN=1 ∧ MENU_CURSOR=9 — the world-map save menu
+stays a TODO until a world-map GAME_MODE value is sampled). Deployed
+2026-07-17 ~12:45. PENDING PLAY-TEST: save menu no longer repeats;
+slot lines correct past slot 3 in BOTH menus (the save-side scroll
+address is the one inference left unconfirmed).
+
+**v2.29.3 (same day): the file grid had the same window-blindness.**
+Play-test of v2.29.2: slot list now counts to 15 correctly, but the
+FILE grid's second row misannounced. Grid probe run (the same
+ff7_slot_scroll_probe.py with grid movements, log slot_scroll_probe_
+20260717_171930): the "grid cursor" is the COLUMN 0..4 — it recounted
+0..4 on the bottom row — and the row lives at grid+4 with INVERTED
+values (1 = top, 0 = bottom; flipped 1→0 on the player's Down press,
+0→1 on Up). The original 0..9 reading came from speak-back passes that
+only ever walked the top row — the second instance of the same lesson
+in one day: a verified cursor is only verified for the RANGE it was
+exercised over. Save-menu row byte inferred at the same +4 (0xDC6AE4).
+Deployed 2026-07-17 ~17:25.
+
+**v2.29.4 (minutes later): row polarity was backwards.** Play report:
+top row spoke Save 6, bottom spoke Save 1. v2.29.3 had read the
+probe's baseline row byte of 1 as "player on top row" — but the player
+had started the probe already PARKED on the bottom row (they had been
+manually reproducing the second-row bug there). Polarity settled by
+the play observation itself: 0 = top, 1 = bottom, file index =
+row×5 + column. Lesson recorded: a probe baseline is only meaningful
+if the starting state was independently known — ask the player to
+re-home the cursor (or have the script speak the assumed start) before
+trusting which absolute state a baseline value maps to. Deployed
+2026-07-17 ~17:40. **PLAY-CONFIRMED the same evening**: both grid rows
+correct in both menus, and a deep-slot round-trip verified end-to-end
+(player put a save in file 6 / slot 15; announcements matched the
+game's own "GAME 15" header). The field probe run (slot_scroll_probe_
+20260717_200802) also LIVE-CONFIRMED the save side's grid-row
+(0xDC6AE4, 0→1 on Down) and slot-scroll (0xDC6B2C) — no inferred
+addresses remain in the save/continue menus. Same run turned up list
+metadata (0xDC6B34 = slot count 15, 0xDC6B24 = visible rows 3) and
+confirmed 0xDD7700 goes nonzero in SAVE mode live.
+
+### v2.29.5 (2026-07-17): the "Are you sure you want to save?" dialog speaks
+
+The last silent piece of the save flow (screenshot save_menu_3.png).
+The windowed probe had shown its state was NOT in the DC6Axx cursor
+window, so a full-BSS scan ran (ff7_save_confirm_scan.py, log
+save_confirm_scan_20260717_201751) — both finds were SINGLE candidates
+and speak-back verified in the same session:
+
+- **SAVEMENU_WIDGET_STATE 0xDCA028 == 7** while the dialog is open
+  (1 = slot list; 1→7 on Confirm, reverted on Cancel). This byte is
+  the save menu's own mode variable — it was the runner-up in the
+  original phase pass (0 = grid → 1 = slot list), now with its dialog
+  state observed too. Only value 7 is acted on.
+- **SAVEMENU_CONFIRM_CURSOR 0xDC6C6C**: 0 = Yes, 1 = No, resets to
+  Yes on open; live speak-back tracked every toggle. The slot-row byte
+  held still throughout — the earlier ambiguity (dialog reusing the
+  slot cursor) is settled: it does not.
+
+SaveMenuThread announces "Are you sure you want to save? Yes" on the
+1→7 transition, then Yes/No on cursor change, and short-circuits the
+pane/slot logic while state == 7 (save mode only — Continue loads
+without a confirm). Deployed 2026-07-17 ~20:30.
+
+**PLAY-CONFIRMED same evening ("Everything works"):** dialog announce
+and Yes/No tracking correct, a real save committed through Yes, and
+the overwrite watch item is CLOSED — the player overwrote an existing
+save and the game shows NO second confirmation; the one dialog already
+handled covers both fresh and overwrite saves. The save/continue menu
+feature (v2.29–v2.29.5) is complete.
 
 ---
 
@@ -1578,6 +1885,7 @@ Proven payoffs of cluster reasoning so far:
 | `0x618E33` | opcode MPNAM handler (table[0x43]) | reads the 1-byte text id from the script, calls the storage callee (ff7_mpnam_static.py, 2026-07-16) |
 | `0x633691` | MPNAM storage callee | decodes field text entry (via FIELD_TEXT_BLOCK_PTR 0xCC08E8) into LOCATION_NAME_BUFFER 0xDC0C44, ≤0x17 bytes; token jump table 0x6338CF handles 0xE2-family expansions; char-name tokens (0xEA+) resolved via CALL 0x6CB9B8 |
 | `0x6CB9B8` | character-name-for-token resolver | returns a pointer to the FF7-encoded live name for dialog char tokens; shared by the MPNAM path (2026-07-16) — candidate anchor if a token ever needs resolving outside dialogs |
+| `0x618A80` | opcode TLKON handler (table[0x7E]) | resolves the executing entity's model via the entity→model map 0xCBFB70 (0xFF = no model) and writes its 1-byte arg raw to field_event_data +0x61 — the talk-disabled byte (scratch disasm + live confirm 2026-07-16, v2.26) |
 | `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |
 | `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
 | `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
@@ -1638,6 +1946,7 @@ and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 | `0xCBF578` | DIALOG_TEXT_PTRS[8] | authoritative dialog text pointers |
 | `0xCBF5E8` | field_script_ptr | section 0 pointer |
 | `0xCBF600` | FIELD_ENTITY_LINE_SLOT | u8 per entity → line index (v2.17); sits right after the script pointer |
+| `0xCBFB70` | FIELD_ENTITY_MODEL_MAP | u8 per entity → model slot (0xFF = no model); read by the TLKON handler (2026-07-16). Unused by the mod so far — the natural anchor whenever an entity-keyed fact needs its model |
 | `0xCBF9D8` | field_global_object_ptr | → modules_global_object |
 | `0xCC0418` | current_dialog_message_speed | from ff7.h comment (unused by us so far) |
 | `0xCC088C` | FIELD_LINE_COUNT | u16, LINE zones on this field (v2.17) |
@@ -1701,7 +2010,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC0C44` | LOCATION_NAME_BUFFER | savemap+0xF0C: the friendly menu caption ("Sector 1 Station"), FF7-encoded, ≤0x17 bytes, 0xFF-terminated, written by MPNAM's callee 0x633691 — live-confirmed 2026-07-16, spoken by v2.24. Persisting in the savemap is WHY save files remember the caption |
 | `0xDC0E10–0xDC0E24` | CONFIG_* value bytes | **these sit INSIDE the savemap range** — FF7 persists config in the save header region, which is why the sliders live here and not with the menu cursors |
 
-### Menu module block: 0xDC0FA0 – 0xDC38F0
+### Menu module block: 0xDC0FA0 – 0xDCA028
 
 | Address | Symbol | Notes |
 |---------|--------|-------|
@@ -1710,16 +2019,23 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC0FC0` | menu_objects | FFNx externals |
 | `0xDC108C` | SOUND_CURSOR | |
 | `0xDC10F0` | CONFIG_ROW | |
-| `0xDC1154` | MENU_CURSOR | |
+| `0xDC1154` | MENU_CURSOR | frozen at 9 (Save row) for the whole save-menu session — v2.29's save-mode gate (the Config frozen-row signature again) |
+| `0xDC1210` | SAVEMENU_PHASE | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. Do not read; pane = LOADMENU_LIST_PTR nonzero |
 | `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen AND the naming screen (v2.8.3) |
+| `0xDC6AE0` | SAVEMENU_GRID_CURSOR | u8 0..4 file-grid COLUMN (not 0..9 — v2.29.3); holds selected file while slot list open (v2.29) |
+| `0xDC6AE4` | SAVEMENU_GRID_ROW | u8 grid row (0=top/1=bottom); LIVE-CONFIRMED by the field probe (v2.29.4) |
+| `0xDC6B1C` | SAVEMENU_SLOT_CURSOR | u8 0..2 visible ROW of the 3-row slot window (NOT absolute slot — v2.29.2), grid+0x3C — same DC6Axx save-menu struct. Holds still while the confirm dialog is up |
+| `0xDC6C6C` | SAVEMENU_CONFIRM_CURSOR | Yes/No cursor of the save-confirm dialog: 0=Yes 1=No, resets to Yes on open; single candidate + speak-back verified (v2.29.5) |
+| `0xDC6B2C` | SAVEMENU_SLOT_SCROLL | u8 0..12 scroll offset, LIVE-CONFIRMED (field probe 20260717_200802); absolute slot = row + scroll. Neighbors: 0xDC6B34 = slot count (15), 0xDC6B24 = visible rows (3), 0xDC6B3C tween + 0xDC6B48 direction flag = scroll-animation noise |
 | `0xDC208C` | kernel2 lookup result ptr | written after every consumer CALL to 0x41963C — but consumer is FFNx-replaced, so **never written in practice**; observed 0 always (2026-07-11) |
 | `0xDC20A0` | BATTLE_WIDGET_BLOCK | per-slot (+slot·0x700) battle menu widget structs — command cursor at +0/+4; see §4 (2026-07-12) |
 | `0xDC35AC` | BATTLE_MENU_BUSY | u32 transition flag; `0xDC35A8` = command-menu-opened SFX-played byte |
 | `0xDC3C54–0xDC3C98` | issued-action staging block | 0xDC3C70 cmd id, 0xDC3C78 action id, 0xDC3C7C ACTIVE SLOT, 0xDC3C84 action idx, 0xDC3C90/94 target type/idx, 0xDC3C98 targeting actor (all = FFNx externals; static 2026-07-12) |
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |
+| `0xDCA028` | SAVEMENU_WIDGET_STATE | save-menu widget state machine: 0=file grid, 1=slot list, 7=save-confirm dialog (v2.29.5; only 7 acted on) |
 
-### Title / name-entry block: 0xDD4400 – 0xDD6F24
+### Title / name-entry block: 0xDD4400 – 0xDD7704
 
 | Address | Symbol | Notes |
 |---------|--------|-------|
@@ -1733,7 +2049,12 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDD46F0` | NAME_ENTRY_CARET | RESOLVED (v2.8.2): caret position, clamped 0–8. Tracked 5→6→7→8 live as letters were appended to 'Cloud', pinned at 8 when full. Explains the 9-char name cap: at cap, Confirm REPLACES the 9th char instead of appending |
 | `0xDD46F8` | NAME_ENTRY_CHAR_INDEX | 0=Cloud, 1=Barret. The Echo mod hext patch called this "cursor column" — wrong label, it's the character being named |
 | `0xDD46FC` | NAME_ENTRY_ACTIVE | 1 while naming screen open (v2.8 gate, with GAME_MODE==6) |
+| `0xDD6D98` | LOADMENU_GRID_CURSOR | Continue menu file grid COLUMN u8 0..4 (v2.29.3); LIVE-VERIFIED speak-back (v2.29.1, 2026-07-17). 0x18C before TITLE_CURSOR — the Continue menu lives in the title module |
+| `0xDD6D9C` | LOADMENU_GRID_ROW | grid row at +4 (0=top/1=bottom, v2.29.4 play-corrected polarity); LIVE-CONFIRMED by the grid probe (v2.29.3) |
+| `0xDD6DD4` | LOADMENU_SLOT_CURSOR | Continue menu slot-list visible ROW 0..2 (3-row window, not absolute); grid+0x3C — same struct spacing as the save-menu instance (v2.29.1/2) |
+| `0xDD6DE4` | LOADMENU_SLOT_SCROLL | u8 0..12 scroll offset, LIVE-CONFIRMED by the scroll probe; absolute slot = row + scroll. +0x74 = scroll-anim tween (0xFFFFFFxx transients), +0x80 = direction flag — noise, never read (v2.29.2) |
 | `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
+| `0xDD7700` | LOADMENU_LIST_PTR | u32, 0 in file grid / heap ptr to the selected file's loaded data in slot list — both menus' phase passes agree; nonzero-check only, never dereference. +0x04 byte flips 0→1 with it (runner-up flag) (v2.29.1) |
 
 ### Discovery techniques ranked by success rate (as of 2026-07-16)
 
