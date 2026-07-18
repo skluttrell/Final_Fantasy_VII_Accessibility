@@ -207,18 +207,31 @@ byte the game wrote), so navigating there and pressing Confirm reveals the
 truth — fix kNameGrid in proxy.cpp when observed.
 
 
-[TTS] Party member KO announcements — SHIPPED v2.30 (2026-07-18), awaiting play-test
+[TTS] Party member KO announcements — v2.30 PLAY-CONFIRMED 2026-07-18
 --------------------------------------------------------------------------------------
-Requested 2026-07-13, deferred until the party had a second member; the
-latest save (portraits 00 01 FF = Cloud + Barret) met the condition, so
-v2.30 shipped it per the original notes: BattleActionThread's liveness
-watcher extended to party slots 0-2 (same actor-vars reads), three-state
-Unseen/Alive/Dead tracking (battle-start KO recorded silently, so a
-later revival still announces), "X is down" / "X is back up" via
-PartySlotLabel, delivery through the shared v2.12.2 quiet-gap buffer.
-Research doc §8 v2.30 has the full design. Deployed to both installs
-2026-07-18. PENDING PLAY-TEST: needs a real KO (and ideally a Phoenix
-Down revival) in battle.
+Requested 2026-07-13, shipped v2.30 once the party had a second member:
+BattleActionThread's liveness watcher extended to party slots 0-2,
+three-state Unseen/Alive/Dead tracking (battle-start KO recorded
+silently, so a later revival still announces), "X is down" / "X is
+back up" via PartySlotLabel, shared v2.12.2 quiet-gap delivery.
+PLAY-CONFIRMED 2026-07-18: "The party member down and back up message
+works." Research doc §8 v2.30.
+
+[NAV] Wall-bump tone looped through the game-over screen — FIXED v2.30.1, awaiting play-test
+---------------------------------------------------------------------------------------------
+Play report 2026-07-18: after a party wipe the 220 Hz tone repeated
+until the New Game/Continue screen. Root cause: game-over is the Gate-2
+stale-input scenario (input status frozen at the direction held when
+the fatal battle triggered, position frozen) but GAME_MODE evidently
+reads as field (0) there, so no gate closes. Fix v2.30.1: tone must be
+ARMED by real observed movement (two differing valid position samples)
+in the current gate-open episode; any gate closing disarms. Frozen
+modules can't fake walking, so no stale-input state can loop the tone.
+Accepted cost: battle ending flush against a wall with direction never
+released waits for one step before the first tone. Debug log line
+"WALL tone suppressed" marks swallowed episodes. Deployed both
+installs 2026-07-18. PENDING PLAY-TEST: (1) normal wall bumps
+unchanged, (2) party wipe now silent through game over.
 
 [NAV] v2.22 turn-by-turn: CONFIRMED in play (2026-07-16); v2.23 additions pending
 ----------------------------------------------------------------------------------

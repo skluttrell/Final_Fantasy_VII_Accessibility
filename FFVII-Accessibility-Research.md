@@ -1574,8 +1574,45 @@ lands in the killing action's announce-burst tick (the v2.12.1
 lesson), so speaking at detection time would be cancelled within the
 millisecond. Names come from PartySlotLabel (v2.19 savemap machinery).
 
-Deployed to both installs 2026-07-18 (hash-verified). **Awaiting
-play-test**: needs a real party KO in battle to confirm.
+Deployed to both installs 2026-07-18 (hash-verified). **PLAY-CONFIRMED
+same day**: "The party member down and back up message works."
+
+### v2.30.1 (2026-07-18): wall-bump tone looped through the game-over screen
+
+Play report (same session that confirmed v2.30): after a full party
+wipe, the 220 Hz wall-bump tone repeated continuously from the wipe
+until the New Game / Continue screen appeared.
+
+Diagnosis: this is exactly the Gate-2 stale-input scenario the
+WallBumpThread comments already describe — the field module freezes
+with `current_key_input_status` stuck at whatever direction was held
+when the fatal battle triggered (random encounters usually trigger
+mid-walk, so a direction is almost always stuck) and the model
+position frozen — except the game-over screen evidently leaves the
+GAME_MODE byte reading as field (0), so the mode gate that closes
+during battles never closes. All six gates pass, `dir_held && !moved`
+holds every poll, tone loops until the title screen finally zeroes
+FIELD_ID.
+
+Fix is behavioral, not another module-state gate (no game-over flag is
+known, and finding one would cost a live scan round for a state the
+player has to die to reach): the tone is now **armed only by real
+observed movement** — two consecutive valid position samples that
+differ — within the current gate-open episode, and re-disarmed
+whenever any gate closes (mode/menu/uc_lock/movie/dialog/config, or
+the event-data array going unreadable). A frozen module can fake
+"direction held" forever but can never fake the player actually
+walking; a live player must take at least one step to reach a wall, so
+the detector arms before any legitimate bump. Known accepted cost: if
+a battle ends with the player flush against a wall AND the direction
+never released, the first bump tone waits until they move once. A
+suppressed episode writes one debug-log line ("WALL tone suppressed")
+at the moment the streak crosses the threshold unarmed, so future
+reports can distinguish "suppressed" from "gate closed".
+
+Deployed to both installs 2026-07-18 (hash-verified). Awaiting
+play-test: normal wall bumps should be unchanged; a party wipe should
+now be silent through the game-over screen.
 
 ---
 

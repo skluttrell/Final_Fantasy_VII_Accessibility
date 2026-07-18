@@ -2610,6 +2610,19 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
     bool     have_last      = false;  // last_* hold a real previous sample
     uint32_t blocked_streak = 0;      // consecutive dir-held+frozen polls
     DWORD    last_beep_tick = 0;
+    // v2.30.1: the tone is DISARMED until real movement is observed in the
+    // current gate-open episode (re-disarmed whenever any gate closes).
+    // Play report 2026-07-18: a party wipe loops the tone through the whole
+    // game-over screen — that state reads as field mode with the input
+    // status frozen at whatever direction was held when the fatal battle
+    // triggered, i.e. exactly the Gate-2 stale-input scenario, but with no
+    // mode change for Gate 2 to catch. No gate on module state can be
+    // trusted to close there, so gate on the one thing a frozen module can
+    // never fake: the player actually walking. Reaching a wall always takes
+    // at least one step first, so the cost is only a missed tone in the
+    // rare "battle ended flush against a wall, direction never released"
+    // case — and that clears the moment the player moves.
+    bool     armed          = false;
     // Packed snapshot of the gate values from the previous poll, logged on
     // change (debug_log only). Live testing is the only way to validate gate
     // behavior across battles/FMVs/cutscenes, and this trail lets a bug
@@ -2624,6 +2637,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
         if (!Config::Get().wall_bump_tone) {
             have_last = false;
             blocked_streak = 0;
+            armed = false;
             continue;
         }
 
@@ -2688,6 +2702,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             menu_open != 0 || uc_lock != 0 || movie_playing) {
             have_last = false;
             blocked_streak = 0;
+            armed = false;
             continue;
         }
 
@@ -2697,6 +2712,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
         if (now - Hooks::LastDialogActivityTick() < kDialogQuietMs) {
             have_last = false;
             blocked_streak = 0;
+            armed = false;
             continue;
         }
 
@@ -2717,6 +2733,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
         if (arr < 0x401000 || pmid >= nmod || pmid > 0x20) {
             have_last = false;
             blocked_streak = 0;
+            armed = false;
             continue;
         }
         const uint8_t* elem = reinterpret_cast<const uint8_t*>(
@@ -2740,6 +2757,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
         if (!readable) {
             have_last = false;
             blocked_streak = 0;
+            armed = false;
             continue;
         }
 
@@ -2750,8 +2768,14 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 
         // "Moved" on the very first valid sample: with no previous position
         // to compare, assume motion so the streak stays at zero rather than
-        // beeping off one stale coordinate.
-        const bool moved = !have_last || x != last_x || y != last_y || z != last_z;
+        // beeping off one stale coordinate. Only a change between two REAL
+        // samples counts as movement for arming (v2.30.1) — the first-sample
+        // "assume motion" must not arm off one stale coordinate either.
+        const bool real_move = have_last &&
+            (x != last_x || y != last_y || z != last_z);
+        const bool moved = !have_last || real_move;
+        if (real_move)
+            armed = true;
         last_x = x; last_y = y; last_z = z;
         have_last = true;
 
@@ -2761,7 +2785,14 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             blocked_streak = 0;
         }
 
-        if (blocked_streak >= kConsecBlocked &&
+        // One line at the moment a would-be tone is swallowed (== not >=,
+        // so a suppressed episode logs once, not 20×/second).
+        if (!armed && blocked_streak == kConsecBlocked) {
+            Log::Write("[FF7Access] WALL tone suppressed: dir held + frozen "
+                       "but no movement seen this episode (frozen module?)");
+        }
+
+        if (armed && blocked_streak >= kConsecBlocked &&
             now - last_beep_tick >= kBeepPeriodMs) {
             last_beep_tick = now;
             // One-time log per contact episode would require more state; log
