@@ -2453,6 +2453,8 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0x9A8E9C` | BATTLE_ENEMY_RECORDS | 3 × 0xB8 scene.bin enemy records (ends 0x9A90C4); name = bytes 0–0x1F, possibly unterminated. Sits between the formation/per-actor block and ENEMY_ATTACK_NAME_TABLE 0x9A9484 — one contiguous loaded-scene cluster 0x9A87xx–0x9A98xx (2026-07-13, v2.10) |
 | `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13). Region 0x9AAD70–0x9AB070 (0x300 bytes) is cleared as one block by the battle-init memset |
 | `0x9AB0A0` | battle_ai_context (FFNx battle_context) | = u32 operand at 0x41CCB2+0x5F (FFNx's own chain; sub_41CCB2 = battle-init memset, clears 0x253 dwords from here). Header 0x3C bytes (10 flag bytes + 23 u16 masks + u32 partyGil), then **actor_vars[10] at 0x9AB0DC = BATTLE_ACTOR_VARS**, stride 0x68: +0x04 stateFlags (the 0x9AB0E0 read from the v2.10 disasm), +0x24 formationID, +0x28/+0x2A cur/max MP u16, +0x2C/+0x30 cur/max HP i32 (+0x30 low word = the 0x9AB10C read). Array ends 0x9AB4EC (v2.11, 2026-07-13) |
+| `0x9AD1E0` / `0x9AD9E0` | SCENE_MSG_BASE / SCENE_MSG_OFFSETS | current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0+(idx−0x100)·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD → 0x41D2E5). v2.36 scene-message reader |
+| `0x9AE12C` | BATTLE_DROPS_COUNT | u32 count for the drops array 0x99E2F0 (battle results, v2.35). Sits just past the actor_vars block |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
 | *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon name sections observed stable for a whole session; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword', 'Attack\|Magic') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists — the only exe-static pointers into the block are font tables (0xCFF3F8 cluster). ⚠ **"resident for process lifetime" was DISPROVED for the COMMAND-name section 2026-07-16** (v2.22.1): it lives in a TRANSIENT battle allocation, freed/reused between battles — a cached pointer decoded reused binary as speech. ALL section pointers are now head-signature revalidated on every use (ValidatedSection, proxy.cpp); treat any kernel2 pointer as potentially stale |
 
@@ -2463,6 +2465,7 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0xBE1170` | G_ACTIVE_ACTOR_ID | u8; never resets between battles |
 | `0xBE1178` | G_BATTLE_MODEL_STATE | stride 0x1AEC × 10 slots ≈ ends 0xBF1EF0 |
 | `0xBF23B8` | G_SMALL_BATTLE_MODEL_STATE | stride 0x74; starts right after the large array |
+| `0xBF1EB8` | BATTLE_TEXT_QUEUE | battle text display queue, battle_text_data[64] stride 6 (s16 buffer_idx@+0, -1=empty, ≥0x100=scene AI dialogue). FFNx-anchored (add_text_to_display_queue+0x25). v2.36's scene-message channel (scorpion tail warning etc.) |
 | `0xBFC3E0–0xBFC5E0` | SFX/audio playback buffer | random churn; noise source in scans |
 
 The battle command-menu CURSOR is confirmed NOT in either known per-actor array
