@@ -19,9 +19,8 @@ Two player reports fixed:
     read. BattleMessageThread reads scene messages (buffer_idx >=0x100)
     from 0x9AD1E0 + offset table, dedups by buffer_idx, speaks queued.
     Shipped speculatively (scorpion one-shot) + debug-logged.
-Research §8 v2.36. Gate: speak_battle. DEPLOY DEFERRED (game was
-running at build time) — copy build/dist/Release/version.dll to both
-installs when closed. VERIFY:
+Research §8 v2.36. Gate: speak_battle. Deployed both installs
+2026-07-19 (hash-verified). VERIFY:
   - full magic list speaks the CORRECT spell per cursor cell (esp.
     rows 2+); Potions announce in the battle Item list;
   - scorpion tail warning + other enemy dialogue speaks (log line

@@ -1968,7 +1968,7 @@ compaction; a message that leaves and returns re-speaks), speaks
 queued (never clobbers action speech). Shipped speculatively (the
 scorpion is a one-shot) with debug logging, like the timer.
 
-Gate: speak_battle. Built clean; deploy deferred (game running).
+Gate: speak_battle. Deployed both installs 2026-07-19 (hash-verified).
 Awaiting play-test: full magic list announces correct spells; Potions
 speak in battle; scorpion tail warning (and other enemy dialogue)
 speaks.
