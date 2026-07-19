@@ -820,6 +820,43 @@ constexpr uint32_t COUNTDOWN_TIMER_SECONDS = SAVEMAP_BASE + 0xB84; // 0xDC08BC u
 constexpr uint32_t COUNTDOWN_TIMER_MS      = SAVEMAP_BASE + 0xB88; // 0xDC08C0 u32
 
 // ---------------------------------------------------------------------------
+// BATTLE VICTORY screens (v2.35, 2026-07-19) — "Gained EXP and AP." /
+// "Gained gil." + drops. All static (ff7_battle_results_static.py +
+// ff7_results_block_refs.py, logs 20260719):
+//
+//   BATTLE_END_MODE 0xDC1300 (u16) = FFNx's menu_battle_end_mode (operand
+//   at menu_battle_end_sub_6C9543+0x2C). FFNx's own achievement hook
+//   brands the values: 0 = battle won/init, 1 = EXP/AP screen (level
+//   achievements fire), 3 = gil/items screen (gil achievement fires).
+//   2 = observed in the OK-press handler as the state whose exit applies
+//   gil (see below); exact on-screen meaning logged at runtime.
+//
+//   Results pools (battle module 0x431541.. accumulates per enemy slot
+//   from actor_vars, stride 0x68): 0x99E2C0 u32 gained EXP, 0x99E2C4 u32
+//   gained AP, 0x99E2C8 u32 gained gil. ⚠ CONSUMED ON APPLY: the menu
+//   does SAVEMAP_GIL += pool; pool = 0 as mode goes 3 (0x6C6B8F), and
+//   EXP/AP drain similarly during the mode-1 count-up — CAPTURE ALL
+//   THREE AT RESULTS ENTRY, never read them at screen time.
+//
+//   Drops: count u32 0x9AE12C; entries at 0x99E2F0, STRIDE 6: u16 item
+//   id at +0 (0-319 namespace, same as inventory), +4 word copied during
+//   list compaction (qty/taken flag — logged, not spoken, until live-
+//   confirmed). Battle fill loop 0x4315E9 (imul 6) is the stride proof.
+//
+//   Level-ups: not announced from these pools — the savemap level bytes
+//   (records +0x01) are watched during the results window instead; the
+//   game writes them when EXP applies, which catches multi-level-ups
+//   and needs no new addresses.
+constexpr uint32_t BATTLE_END_MODE     = 0x00DC1300; // u16 screen phase
+constexpr uint32_t BATTLE_GAINED_EXP   = 0x0099E2C0; // u32, capture at entry
+constexpr uint32_t BATTLE_GAINED_AP    = 0x0099E2C4; // u32, capture at entry
+constexpr uint32_t BATTLE_GAINED_GIL   = 0x0099E2C8; // u32, capture at entry
+constexpr uint32_t BATTLE_DROPS_COUNT  = 0x009AE12C; // u32 entries
+constexpr uint32_t BATTLE_DROPS_ARRAY  = 0x0099E2F0; // stride 6, u16 id @+0
+constexpr uint32_t BATTLE_DROPS_STRIDE = 6;
+constexpr uint32_t BATTLE_DROPS_MAX    = 32;         // sanity cap
+
+// ---------------------------------------------------------------------------
 // FRIENDLY LOCATION NAME — the MPNAM buffer (v2.24, found + confirmed
 // 2026-07-16 in one session):
 //

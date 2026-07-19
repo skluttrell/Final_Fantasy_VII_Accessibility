@@ -1842,6 +1842,44 @@ timer_announcements block and debug_log=true until the escape run
 verifies the static assumptions (tick cadence, menu/battle pause
 behavior — the log will show both).
 
+### v2.35 (2026-07-19): battle VICTORY screens speak — pools, level-ups, drops
+
+User request + screenshots (BattleScreen/victory_screen_1..3.jpg).
+All static, anchored on FFNx's menu_battle_end_sub_6C9543 +
+menu_battle_end_mode externals:
+
+- **BATTLE_END_MODE 0xDC1300** (u16, operand at 0x6C9543+0x2C). FFNx's
+  own achievement hook brands the phases: 0 = won/init, 1 = EXP/AP
+  screen, 3 = gil/items screen (its checks fire per phase). The OK-press
+  handler at 0x6C6B3F shows mode 2's exit applying gil.
+- **Results pools** (battle module 0x431541 accumulates per enemy slot
+  from actor_vars +0x68 stride): **0x99E2C0 gained EXP, 0x99E2C4 gained
+  AP, 0x99E2C8 gained gil** (u32s). ⚠ CONSUMED ON APPLY — the menu does
+  `SAVEMAP_GIL += pool; pool = 0` entering mode 3 (0x6C6B8F), so the
+  announcer captures all three at results entry (mode→1), never at
+  screen time.
+- **Drops**: count u32 0x9AE12C, entries at 0x99E2F0 **stride 6** (the
+  battle fill loop's `imul 6`), u16 item id at +0 (0-319 namespace →
+  InventoryEntryName), +4 word = compaction-copied field (qty/taken?
+  logged, not spoken, until live data names it).
+- Bonus find: 0x6C6AEE = the dispatcher-index setter — it copies
+  current→0xDC12E8 before writing 0xDC12EC, so **0xDC12E8 = PREVIOUS
+  screen index**, refining the v2.31 "transition twin" reading.
+- Search lesson: the victory captions ("Gained EXP and AP.") are NOT
+  findable FF7-encoded in the exe — they live in runtime-loaded kernel
+  text. Caption-string discrimination only works for exe-resident
+  strings ("Arrange" was; these aren't).
+
+**VictoryThread**: mode→1 (inside MENU_OPEN, the v2.8.3 results
+context): "Victory! Gained X experience and Y A P." + pool capture +
+party level snapshot; savemap level bytes watched through the window →
+"<name> grew to level N!" (queued, never clobbers the victory line;
+catches multi-level-ups with no new addresses); mode→3: "Gained X gil,
+total Y. Received Potion, Potion." / "No items." Sanity gates on pools
+and count; every transition and drop entry debug-logged. Gate:
+speak_battle. Deployed both installs 2026-07-19; awaiting play-test
+(next battle victory).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -2236,6 +2274,13 @@ change during list scrolling — classic delta-scan poison).
 (two battles: command names, magic-list rows incl. Ice by name, target cursor,
 and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 
+### Battle results block: 0x99E2C0 – ≈0x99E340
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0x99E2C0/C4/C8` | BATTLE_GAINED_EXP/AP/GIL | u32 pools the battle module (0x431541) accumulates per enemy from actor_vars; ⚠ consumed on apply (gil zeroed entering mode 3) — capture at results entry (v2.35) |
+| `0x99E2F0` | BATTLE_DROPS_ARRAY | stride-6 entries, u16 item id at +0 (0-319 namespace); +4 = compaction-copied word (qty/taken — unconfirmed). Count u32 at `0x9AE12C` (v2.35) |
+
 ### Field module block: 0xCBF578 – 0xCC2270
 
 | Address | Symbol | Notes |
@@ -2332,6 +2377,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC11C4` | ORDERMENU_CURSOR | u8 Order-pane party cursor, scan speak-back verified (v2.32) |
 | `0xDC1259` | (unresolved) | read 9 in the Order pane, 10 with a member selected (scan latch pass); maybe a widget/cursor count — not consumed |
 | `0xDC1288` | CHARSEL_CHOSEN | u32 slot committed by the mode-1 pane (v2.32 disasm; not yet consumed) |
+| `0xDC1300` | BATTLE_END_MODE | u16 victory-screen phase: 0=won/init, 1=EXP/AP screen, 3=gil/items (FFNx menu_battle_end_mode + its achievement hook's own branding; v2.35) |
 | `0xDC1320` | ORDERMENU_LATCH | u32 1 = first member selected (v2.32, scan + disasm) |
 | `0xDC1324` | MENU_FOCUS_MODE | u8 0=menu bar / 1=char-select pane (chimed) / 2=Order pane (silent — the player-noticed missing chime); v2.32's Order gate |
 | `0xDC1210` | (frame parity) | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. CAUSE FOUND (v2.31 dispatcher disasm): the sub-screen dispatcher XOR-toggles it every menu tick. Never read |

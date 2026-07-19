@@ -152,6 +152,7 @@ static HANDLE g_itemmenu_thread   = nullptr;
 static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_timer_thread      = nullptr;
+static HANDLE g_victory_thread    = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
@@ -2323,6 +2324,178 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
                     }
                 }
                 last_charsel = sel;
+            }
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// BATTLE VICTORY screens TTS (v2.35, 2026-07-19). Speaks the two results
+// screens (Screenshots/BattleScreen/victory_screen_1..3.jpg):
+//   mode → 1: "Victory! Gained X experience and Y A P." (pools CAPTURED at
+//             results entry — the game consumes them on apply, see the
+//             BATTLE_END_MODE block in ff7_addresses.h)
+//   level bytes changing during the results window: "<name> grew to
+//             level N!" (savemap watcher — catches multi-level-ups)
+//   mode → 3: "Gained X gil, total Y." + drop item names ("No items"
+//             when the list is empty)
+// All state transitions debug-logged (mode value 2's on-screen meaning is
+// not yet known; the log will name it).
+// ---------------------------------------------------------------------------
+static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
+{
+    uint16_t last_mode   = 0xFFFF;
+    bool     in_results  = false;
+    uint32_t cap_exp = 0, cap_ap = 0, cap_gil = 0;   // pools captured at entry
+    uint8_t  base_levels[3] = {};                    // level bytes at entry
+    bool     spoke_gil   = false;
+
+    const auto slot_level = [](uint8_t slot) -> uint8_t {
+        const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::SAVEMAP_PARTY_IDS + slot);
+        uint8_t rec = char_id;
+        if (char_id == 9)  rec = 6;
+        if (char_id == 10) rec = 7;
+        if (char_id == 0xFF || rec > 8)
+            return 0;
+        return *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::SAVEMAP_CHAR_RECORDS + rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE +
+            FF7Addr::SAVEMAP_CHAR_LEVEL_OFF);
+    };
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_battle) {
+            in_results = false;
+            last_mode = 0xFFFF;
+            continue;
+        }
+
+        // The results screens run under the menu module with MENU_OPEN=1
+        // (the v2.8.3 observation). Outside that window the mode global is
+        // stale — transitions are only trusted inside it.
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        if (menu_open != 1) {
+            in_results = false;
+            last_mode = 0xFFFF;
+            continue;
+        }
+
+        const uint16_t mode =
+            *reinterpret_cast<const volatile uint16_t*>(FF7Addr::BATTLE_END_MODE);
+        const bool mode_changed = (last_mode != 0xFFFF && mode != last_mode);
+        if (last_mode == 0xFFFF)
+            last_mode = mode;   // seed silently on window open (stale value)
+
+        if (mode_changed) {
+            char dbg[96];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] VICTORY mode %u -> %u", last_mode, mode);
+            Log::Write(dbg);
+            last_mode = mode;
+
+            if (mode == 1 && !in_results) {
+                // Results opening: capture the pools NOW (consumed later)
+                // and the party levels for the level-up watcher.
+                in_results = true;
+                spoke_gil = false;
+                cap_exp = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::BATTLE_GAINED_EXP);
+                cap_ap = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::BATTLE_GAINED_AP);
+                cap_gil = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::BATTLE_GAINED_GIL);
+                for (uint8_t s = 0; s <= 2; ++s)
+                    base_levels[s] = slot_level(s);
+                if (cap_exp > 1000000 || cap_ap > 1000000) {
+                    // Implausible — wrong context; stand down quietly.
+                    Log::Write("[FF7Access] VICTORY pools implausible — skip");
+                    in_results = false;
+                } else {
+                    wchar_t msg[96];
+                    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                        L"Victory! Gained %lu experience and %lu A P",
+                        static_cast<unsigned long>(cap_exp),
+                        static_cast<unsigned long>(cap_ap));
+                    TTS::Speak(msg, /*interrupt=*/true);
+                }
+            } else if (mode == 3 && in_results && !spoke_gil) {
+                spoke_gil = true;
+                const uint32_t total_gil =
+                    *reinterpret_cast<const volatile uint32_t*>(
+                        FF7Addr::SAVEMAP_BASE + 0xB7C);
+                std::wstring msg;
+                wchar_t part[96];
+                _snwprintf_s(part, _countof(part), _TRUNCATE,
+                    L"Gained %lu gil, total %lu. ",
+                    static_cast<unsigned long>(cap_gil),
+                    static_cast<unsigned long>(total_gil));
+                msg = part;
+
+                const uint32_t n = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::BATTLE_DROPS_COUNT);
+                if (n == 0 || n > FF7Addr::BATTLE_DROPS_MAX) {
+                    msg += L"No items.";
+                    if (n > FF7Addr::BATTLE_DROPS_MAX) {
+                        char dbg[96];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] VICTORY drops count implausible: %lu",
+                            static_cast<unsigned long>(n));
+                        Log::Write(dbg);
+                    }
+                } else {
+                    msg += L"Received ";
+                    for (uint32_t i = 0; i < n; ++i) {
+                        const uint32_t entry = FF7Addr::BATTLE_DROPS_ARRAY +
+                                               i * FF7Addr::BATTLE_DROPS_STRIDE;
+                        const uint16_t id = *reinterpret_cast<const volatile uint16_t*>(entry);
+                        const uint16_t f4 = *reinterpret_cast<const volatile uint16_t*>(entry + 4);
+                        char dbg[96];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] VICTORY drop[%lu] id=%u f4=%u",
+                            static_cast<unsigned long>(i), id, f4);
+                        Log::Write(dbg);
+                        std::wstring name;
+                        if (!InventoryEntryName(id & 0x1FF, name)) {
+                            wchar_t fb[16];
+                            _snwprintf_s(fb, _countof(fb), _TRUNCATE,
+                                         L"item %u", id & 0x1FF);
+                            name = fb;
+                        }
+                        if (i > 0)
+                            msg += L", ";
+                        msg += name;
+                    }
+                    msg += L".";
+                }
+                TTS::Speak(msg, /*interrupt=*/true);
+            }
+        }
+
+        // Level-up watcher: active through the whole results window.
+        if (in_results) {
+            for (uint8_t s = 0; s <= 2; ++s) {
+                const uint8_t lv = slot_level(s);
+                if (lv > base_levels[s] && base_levels[s] != 0) {
+                    base_levels[s] = lv;
+                    wchar_t label[64];
+                    PartySlotLabel(s, label, _countof(label));
+                    wchar_t msg[96];
+                    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                        L"%ls grew to level %u!", label,
+                        static_cast<unsigned>(lv));
+                    char dbg[96];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] VICTORY level up slot=%u -> %u", s, lv);
+                    Log::Write(dbg);
+                    // Queue behind the victory line, never clobber it.
+                    TTS::Speak(msg, /*interrupt=*/false);
+                }
             }
         }
     }
@@ -6924,6 +7097,16 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start timer thread.");
         }
 
+        // Battle victory screens TTS (v2.35). Mode/pools/drops static-
+        // derived (results-block scripts 2026-07-19); pools captured at
+        // results entry because the game consumes them on apply.
+        g_victory_thread = CreateThread(nullptr, 0, VictoryThread, nullptr, 0, nullptr);
+        if (g_victory_thread) {
+            Log::Write("[FF7Access] Victory screen polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start victory thread.");
+        }
+
         // Battle action TTS (v2.7). Polls g_active_actor_id + commandID for
         // turn detection, then the flash-message struct (battle_actor_data,
         // 0xDC38E0) for the exact action, resolving names from the kernel2
@@ -6991,7 +7174,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
-            !g_statusmenu_thread && !g_timer_thread &&
+            !g_statusmenu_thread && !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
@@ -7145,6 +7328,11 @@ void Shutdown()
         WaitForSingleObject(g_timer_thread, 500);
         CloseHandle(g_timer_thread);
         g_timer_thread = nullptr;
+    }
+    if (g_victory_thread) {
+        WaitForSingleObject(g_victory_thread, 500);
+        CloseHandle(g_victory_thread);
+        g_victory_thread = nullptr;
     }
     if (g_battle_thread) {
         WaitForSingleObject(g_battle_thread, 500);

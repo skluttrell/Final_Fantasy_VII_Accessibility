@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[BATTLE] Victory screens TTS — SHIPPED v2.35 (2026-07-19), awaiting play-test
+------------------------------------------------------------------------
+"Victory! Gained X experience and Y AP." on the results opening (pools
+0x99E2C0/C4/C8 captured at entry — the game consumes them on apply);
+"<name> grew to level N!" from the savemap level watcher; "Gained X
+gil, total Y." + drop item names / "No items" on the gil screen (mode
+byte 0xDC1300, FFNx-branded phases). Research §8 v2.35. Gate:
+speak_battle. VERIFY ON THE NEXT FEW WINS (debug_log still true):
+  - numbers match the visible screens (esp. gained EXP/AP);
+  - level-up line fires when Cloud/Barret levels;
+  - drops speak correct names; log line "VICTORY drop[i] id=N f4=M" —
+    f4's meaning (qty? taken-flag?) gets named from real data;
+  - mode value 2's on-screen meaning (log "VICTORY mode 1 -> 2 -> 3").
+
 [TIMER] Countdown announcements + freeze — SHIPPED v2.34 (2026-07-18), awaiting the escape run
 ------------------------------------------------------------------------
 Shipped BEFORE the first timer is reachable (scorpion one-shot):
