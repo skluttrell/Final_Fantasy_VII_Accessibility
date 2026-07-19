@@ -67,7 +67,19 @@ shows. STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
   - drops speak correct names; log "VICTORY drop[i] id=N f4=M" names
     the f4 field (qty? taken-flag?) from real data.
 
-[TIMER] Countdown announcements + freeze — SHIPPED v2.34 (2026-07-18), awaiting the escape run
+[TIMER] Countdown announce CONFIRMED; freeze fixed v2.34.1 (2026-07-19)
+------------------------------------------------------------------------
+FIRST ESCAPE RESULT: address 0xDC08BC CONFIRMED (plain T reads time
+correctly; announcements work). Shift+T freeze did NOTHING — cause was
+the 250ms poll losing the T edge for the faster-releasing two-key
+combo (Shift+J/L work at FieldNav's 50ms for this user). v2.34.1:
+TimerThread → 50ms poll; freeze now pins the ms counter (0xDC08C0) too
+so the clock truly stops (was creeping); per-T-press debug line added.
+Deployed both installs 2026-07-19. RE-TEST: Shift+T at the NEXT timed
+sequence (No.1 reactor escape is one-shot). Then set debug_log=false
+in both cfgs.
+
+[TIMER] (superseded) Countdown announcements + freeze — SHIPPED v2.34 (2026-07-18)
 ------------------------------------------------------------------------
 Shipped BEFORE the first timer is reachable (scorpion one-shot):
 STTIM handler disasm proved value+units statically (u32 SECONDS at

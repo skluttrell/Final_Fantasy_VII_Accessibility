@@ -2612,7 +2612,14 @@ static void TimerSpeakRemaining(uint32_t secs, const wchar_t* prefix)
 
 static DWORD WINAPI TimerThread(LPVOID /*unused*/)
 {
-    constexpr DWORD     kPollMs        = 250;
+    // v2.34.1: 50ms, matching FieldNavThread. The original 250ms was too
+    // coarse for hotkey EDGE detection — a two-key Shift+T press releases
+    // faster than a plain T tap, so its brief T-down often fell entirely
+    // between two 250ms polls and the edge was lost (player report: T read
+    // the time fine, Shift+T did nothing). Shift+J/L work at FieldNavThread's
+    // 50ms for the same user, which pinned the cause. The finer poll also
+    // makes the freeze rewrite tighter.
+    constexpr DWORD     kPollMs        = 50;
     constexpr ULONGLONG kStaleMs       = 3000;  // no tick this long = not running
     constexpr uint32_t  kMaxSane       = 24 * 3600;
 
@@ -2637,10 +2644,20 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
 
         volatile uint32_t* const timer =
             reinterpret_cast<volatile uint32_t*>(FF7Addr::COUNTDOWN_TIMER_SECONDS);
+        volatile uint32_t* const timer_ms =
+            reinterpret_cast<volatile uint32_t*>(FF7Addr::COUNTDOWN_TIMER_MS);
 
-        // ── Freeze: hold the value every poll while enabled ─────────────
-        if (frozen)
-            *timer = frozen_val;
+        // ── Freeze: hold the clock every poll while enabled ─────────────
+        // v2.34.1: pin BOTH the seconds AND the sub-second accumulator.
+        // The seconds alone isn't enough — the game keeps advancing the ms
+        // counter and decrements seconds when it rolls past 1000, so a
+        // seconds-only freeze would creep. Zeroing ms every 50ms means the
+        // game never accumulates a full second, so the clock truly stops
+        // (and the on-screen clock, which renders from seconds, holds).
+        if (frozen) {
+            *timer    = frozen_val;
+            *timer_ms = 0;
+        }
 
         uint32_t val = *timer;
         const ULONGLONG now = GetTickCount64();
@@ -2740,6 +2757,14 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool timer_live = frozen || running ||
             (val > 0 && val <= kMaxSane && now - last_change < kStaleMs);
+        // v2.34.1: one line per T press — ground truth if anything still
+        // misbehaves (shift read, live-detection, freeze state).
+        char kdbg[112];
+        _snprintf_s(kdbg, sizeof(kdbg), _TRUNCATE,
+            "[FF7Access] TIMER key T shift=%d frozen=%d running=%d live=%d val=%lu",
+            shift ? 1 : 0, frozen ? 1 : 0, running ? 1 : 0,
+            timer_live ? 1 : 0, static_cast<unsigned long>(val));
+        Log::Write(kdbg);
 
         if (!shift) {
             // T: on-demand time readout.

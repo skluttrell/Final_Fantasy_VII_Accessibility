@@ -1844,6 +1844,31 @@ timer_announcements block and debug_log=true until the escape run
 verifies the static assumptions (tick cadence, menu/battle pause
 behavior — the log will show both).
 
+**LIVE RESULT (2026-07-19, first escape): address CONFIRMED** — plain
+T reads the remaining time correctly, so 0xDC08BC is the live ticking
+timer and the announcements work. But **Shift+T (freeze) did nothing**,
+fixed as v2.34.1.
+
+### v2.34.1 (2026-07-19): Shift+T freeze — 50ms poll + pin the ms counter
+
+The freeze silently failed on first use: T read the time, Shift+T
+produced no speech at all. Since both freeze branches speak, the T
+EDGE itself was being lost specifically for Shift+T. Cause: TimerThread
+polled at 250ms while FieldNavThread (whose Shift+J/L category switches
+work fine for the same player) polls at 50ms. A two-key Shift+T
+releases faster than a plain T tap, so its brief T-down often fell
+entirely between two 250ms samples — no edge. Fix: TimerThread now
+polls at 50ms.
+
+Also hardened the freeze: it pinned only the seconds (0xDC08BC), but
+the game keeps advancing the ms accumulator (0xDC08C0) and decrements
+seconds when it rolls past 1000, so a seconds-only freeze would creep.
+v2.34.1 zeroes the ms counter every poll too, so the game never
+completes a second and the clock truly stops. One debug line now logs
+every T press (shift/frozen/running/live/val). Deployed both installs
+2026-07-19; the No.1 reactor escape is a one-shot, so freeze re-tests
+at the next timed sequence.
+
 ### v2.35 (2026-07-19): battle VICTORY screens speak — pools, level-ups, drops
 
 User request + screenshots (BattleScreen/victory_screen_1..3.jpg).
