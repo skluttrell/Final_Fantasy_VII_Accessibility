@@ -1896,6 +1896,41 @@ false-fire the dead-stop wall tone). A throttled "MSG steady win/state/
 text" diagnostic now logs the clock window's signature so the next
 timed sequence confirms the fix. Deployed both installs 2026-07-19.
 
+### v2.30.3 (2026-07-19): long-dialog paging no longer re-reads the message
+
+Player report: long dialogs re-read parts of the message when pressing
+to continue. Cause: FF7's dialog rawptr holds the COMPLETE multi-page
+message (page-break bytes 0xE8/0xE9 included), and FF7Text::Decode
+reads all pages as one string (breaks → spaces) — so the START speak
+already covers every page. The paging state machine (14→2 / 4→8) then
+spoke the whole decoded message AGAIN on each page advance = the
+duplication. Fix: per-window `last_spoken` string; `speak_incremental`
+speaks only text not already covered — a page advance over the same
+text says nothing, and if the message ever grows (streamed load) only
+the new suffix is read. Cleared on new dialog / close. Deployed both
+installs 2026-07-19.
+
+### Battle/choice/trigger issues reported 2026-07-19 (train graveyard)
+
+Three reports, triaged:
+- **Paging duplication** — FIXED v2.30.3 above.
+- **Choice menus read only the first option, no cursor tracking** —
+  needs the ASK current-option address. STATIC (ff7_ask_cursor_static.py):
+  the ASK handler 0x618E83 keeps the live selection in a STACK LOCAL
+  ([ebp-4], &it passed as the 5th arg to update loop 0x6310A1), so no
+  fixed global; the update loop keys off a per-window struct at
+  0xCFF5D3 + window_id·0x30 (state at +0x11 = 0xCFF5E4) where the
+  option byte also lives — offset TBD by a guided scan
+  (ff7_ask_cursor_scan.py: move the choice cursor, watch the struct).
+  Then hook_ask announces the highlighted option line on change.
+  DEFERRED to the scan (needs the game + a 3+ option choice).
+- **Train-graveyard triggers all say "line N"** — NOT a bug: the log
+  shows those trigger entities are literally dev-named 'line'
+  (vs other fields' 'border'/'save point'), so they translate to
+  "line" and get slot ordinals. No descriptive name exists in the
+  field data; the pathfinder's direction/distance is the real
+  distinguisher. Accepted data limitation (noted in TODO).
+
 ### v2.35 (2026-07-19): battle VICTORY screens speak — pools, level-ups, drops
 
 User request + screenshots (BattleScreen/victory_screen_1..3.jpg).

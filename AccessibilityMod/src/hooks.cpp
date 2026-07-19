@@ -236,6 +236,18 @@ struct WindowState {
     //   We set pending_speak=true and defer the read to the NEXT frame, by which time
     //   s_old_message() has already updated the rawptr to the correct dialog text.
     bool pending_speak = false;
+
+    // v2.30.3: the full decoded text spoken so far for THIS dialog. FF7's
+    // rawptr holds the COMPLETE multi-page message (page breaks 0xE8/0xE9
+    // included), and Decode reads all pages as one string — so the START
+    // speak already covers everything. The paging state machine then spoke
+    // the whole message AGAIN on each page advance, so long dialogs
+    // re-read content when the player pressed to continue (player report
+    // 2026-07-19). We now speak only the part not already spoken: on a
+    // page advance whose decoded text equals what we already said, nothing
+    // is spoken; if the text grew (streamed load), only the new suffix is.
+    // Cleared on new dialog and on close.
+    std::wstring last_spoken;
 };
 static WindowState s_window[8];
 
@@ -343,6 +355,28 @@ static bool is_valid_dialog_rawptr(const char* raw_text)
 //
 // Calling convention: __cdecl (confirmed from FFNx's opcode_voice_message).
 // ---------------------------------------------------------------------------
+// v2.30.3: speak only the part of `decoded` not already covered by `already`
+// (the text spoken so far this dialog), then record `already = decoded`.
+// Kills the paging duplication: on a page advance whose text equals what we
+// already said, nothing is spoken; if the message grew (streamed load), only
+// the new suffix is. Diverging text (a genuinely new page that doesn't extend
+// the old) is spoken in full.
+static void speak_incremental(const std::wstring& decoded,
+                              std::wstring& already, bool interrupt)
+{
+    std::wstring to_speak;
+    if (!already.empty() && decoded.size() >= already.size() &&
+        decoded.compare(0, already.size(), already) == 0)
+        to_speak = decoded.substr(already.size());   // grew (or identical -> "")
+    else
+        to_speak = decoded;                           // fresh or diverged
+    already = decoded;
+    const auto first = to_speak.find_first_not_of(L' ');
+    if (first == std::wstring::npos)
+        return;                                       // nothing new to say
+    TTS::Speak(to_speak.substr(first), interrupt);
+}
+
 static int __cdecl hook_message()
 {
     // v2.30.2: dialog-activity is stamped BELOW, only for a REAL text dialog
@@ -483,6 +517,7 @@ static int __cdecl hook_message()
             log_field_header_if_changed();
             s_window[window_id].pending_speak  = true;
             s_window[window_id].last_dialog_id = dialog_id;
+            s_window[window_id].last_spoken.clear();   // v2.30.3: fresh dialog
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] MSG win=%u id=%u [DLGID] pending",
@@ -506,7 +541,8 @@ static int __cdecl hook_message()
                         window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
                     log_raw_bytes("PENDING", raw_text);
-                    TTS::Speak(decoded, /*interrupt=*/true);
+                    speak_incremental(decoded, s_window[window_id].last_spoken,
+                                      /*interrupt=*/true);
                 } else {
                     char dbg[80];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
@@ -519,14 +555,18 @@ static int __cdecl hook_message()
             // else: rawptr not ready; retry next frame
         }
         // ------------------------------------------------------------------
-        // PAGE ADVANCE: speak the next page's text when the player pages.
+        // PAGE ADVANCE: speak only text not already read (v2.30.3). FF7's
+        // rawptr holds the whole message, so START already read every page;
+        // speak_incremental says nothing when the page's text matches what
+        // was spoken, and only the new tail if the message grew — no more
+        // re-reading the message when the player presses to continue.
         // ------------------------------------------------------------------
         else if (paging && Config::Get().speak_dialog) {
             if (is_readable_ptr(raw_text)) {
                 const std::wstring decoded = FF7Text::Decode(raw_text);
-                if (!decoded.empty()) {
-                    TTS::Speak(decoded, /*interrupt=*/true);
-                }
+                if (!decoded.empty())
+                    speak_incremental(decoded, s_window[window_id].last_spoken,
+                                      /*interrupt=*/true);
             }
             s_window[window_id].page_count++;
         }
@@ -543,6 +583,7 @@ static int __cdecl hook_message()
             // a new dialog (different id) to be detected on the very next frame.
             s_window[window_id].pending_speak  = false;
             s_window[window_id].last_dialog_id = dialog_id;
+            s_window[window_id].last_spoken.clear();   // v2.30.3
             TTS::Silence();
         }
 

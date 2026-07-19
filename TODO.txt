@@ -67,6 +67,36 @@ shows. STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
   - drops speak correct names; log "VICTORY drop[i] id=N f4=M" names
     the f4 field (qty? taken-flag?) from real data.
 
+[DIALOG] Long-dialog paging re-read — FIXED v2.30.3 (2026-07-19)
+------------------------------------------------------------------------
+Player report: long dialogs re-read parts when pressing to continue.
+Cause: rawptr holds the whole multi-page message, Decode reads all
+pages at START, and the paging state machine re-spoke it on each
+advance. FIX: per-window last_spoken + speak_incremental (speaks only
+uncovered text; page advance over same text = silent). Deployed both
+installs. VERIFY: long dialogs read once, advancing is silent (or reads
+only genuinely new text).
+
+[DIALOG] Choice menus: only first option read, no cursor tracking — DEFERRED (needs scan)
+------------------------------------------------------------------------
+Player report: choice menus read only the first option and don't
+announce others as you move. Right fix = announce the highlighted
+option on cursor change. STATIC found the ASK live selection is a stack
+local (no global); it lives in the per-window struct 0xCFF5D3+win*0x30
+(state +0x11). RUN investigate/ff7_ask_cursor_scan.py at a 3+ option
+choice to find the option-byte offset, then wire ASKMENU_OPTION and
+have hook_ask announce the option line on change. (hook_ask currently
+speaks "Choose: " + full text once — keep as the intro, add per-option.)
+
+[NAV] Train-graveyard triggers all say "line N" — DATA LIMITATION (not a bug)
+------------------------------------------------------------------------
+The trigger entities there are literally dev-named 'line' (log
+confirmed; other fields use 'border'/'save point'), so they translate
+to "line" + ordinals. No descriptive name exists in the field data.
+The pathfinder's direction/distance per trigger is the distinguisher.
+Possible future nicety: describe generic 'line' triggers by z-level or
+relative position instead of a bare ordinal.
+
 [NAV] Wall + proximity tones dead during timed escape — FIXED v2.30.2 (2026-07-19)
 ------------------------------------------------------------------------
 Player report: neither tone worked during the reactor escape. Log
