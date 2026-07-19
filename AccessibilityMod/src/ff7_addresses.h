@@ -1181,6 +1181,7 @@ constexpr uint16_t BMENU_STATE_COMMAND     = 1;
 constexpr uint16_t BMENU_STATE_ITEM_LIST   = 5;      // static-only so far
 constexpr uint16_t BMENU_STATE_MAGIC_LIST  = 6;      // live-confirmed
 constexpr uint16_t BMENU_STATE_SUMMON_LIST = 7;      // static-only so far
+constexpr uint16_t BMENU_STATE_LIMIT       = 24;     // limit-select widget (v2.9 note)
 constexpr uint16_t BMENU_STATE_CLOSED      = 0xFFFF;
 
 // Per-slot widget block and the widget offsets within it.

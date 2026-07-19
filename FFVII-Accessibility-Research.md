@@ -1973,6 +1973,31 @@ Awaiting play-test: full magic list announces correct spells; Potions
 speak in battle; scorpion tail warning (and other enemy dialogue)
 speaks.
 
+### v2.37 (2026-07-19): "whose turn is it" on battle-menu open
+
+User request: announce the character when their battle menu pops up, to
+pick actions faster. No new addresses — BATTLE_ACTIVE_SLOT (0xDC3C7C)
+already gives the party slot whose menu is open, and PartySlotLabel
+already names it. The only real design work is firing exactly once per
+turn:
+
+- A "turn session" is defined as the command menu plus its submenus
+  (item/magic/summon/limit) plus targeting. When the state leaves all
+  of those — menu closed (0xFFFF) or ATB idle (state 0 with targeting
+  NOT armed, the same 0-is-ambiguous resolver the targeting logic uses)
+  — the announce rearms. So cancelling among submenus back to the
+  command menu does NOT re-announce, but a genuinely new turn (even the
+  same character again) does.
+- The name attaches to the FIRST real command announce of the turn as
+  one utterance: "Cloud's turn. Attack." A separate interrupt=true
+  "turn" line would clobber the command that follows in the same poll;
+  folding them avoids that entirely. Empty transient cursor cells are
+  skipped before the prefix attaches, so it lands on the first real
+  command.
+
+Gate: speak_battle_menu (with the rest of the battle-menu TTS).
+Deployed both installs 2026-07-19; awaiting play-test.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

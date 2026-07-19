@@ -3531,6 +3531,12 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
     bool      targeting     = false;
     uint8_t   last_target   = 0xFF;
     ULONGLONG next_scan_tick = 0;
+    // v2.37: whose-turn-is-it announce. A "turn session" spans the command
+    // menu and its submenus/targeting; turn_announced is cleared between
+    // sessions so cancelling among submenus never re-announces, but a
+    // genuinely new turn (even for the same character) does.
+    bool      turn_announced = false;
+    uint8_t   turn_slot      = 0xFF;
 
     const auto reset_all = [&]() {
         last_state    = FF7Addr::BMENU_STATE_CLOSED;
@@ -3538,6 +3544,8 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
         last_list_key = 0xFFFFFFFF;
         targeting     = false;
         last_target   = 0xFF;
+        turn_announced = false;
+        turn_slot      = 0xFF;
     };
 
     // Label an actor slot for target announcements (see header comment).
@@ -3615,6 +3623,22 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
         if (slot > 2)
             continue;
 
+        // v2.37: a turn session spans the command menu + its submenus +
+        // targeting. Ending it (menu closed, or ATB idle = state 0 with
+        // targeting NOT armed — the same 0-is-ambiguous resolver the
+        // targeting logic uses) rearms the whose-turn announce.
+        const bool in_turn_session =
+            state == FF7Addr::BMENU_STATE_COMMAND     ||
+            state == FF7Addr::BMENU_STATE_ITEM_LIST   ||
+            state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
+            state == FF7Addr::BMENU_STATE_SUMMON_LIST ||
+            state == FF7Addr::BMENU_STATE_LIMIT       ||
+            targeting;
+        if (!in_turn_session) {
+            turn_announced = false;
+            turn_slot      = 0xFF;
+        }
+
         // Lazily locate the kernel2 sections (shared with BattleActionThread;
         // the scan guard makes concurrent triggers harmless). The command
         // section is the one this thread depends on most — without it the
@@ -3661,7 +3685,23 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                     continue;
 
                 std::wstring name;
-                CommandMenuName(cmd_id, name);
+                // v2.37: prefix the character's name on the FIRST real
+                // command announce of a fresh turn ("Cloud's turn. Attack.")
+                // so the player knows who to command; later cursor moves and
+                // submenu cancels speak the command alone. Attaching to the
+                // command announce (one utterance) avoids clobbering — a
+                // separate interrupt=true "turn" line would cut the command.
+                if (!turn_announced || slot != turn_slot) {
+                    wchar_t who[64];
+                    PartySlotLabel(slot, who, _countof(who));
+                    name = who;
+                    name += L"'s turn. ";
+                    turn_announced = true;
+                    turn_slot      = slot;
+                }
+                std::wstring cmd_name;
+                CommandMenuName(cmd_id, cmd_name);
+                name += cmd_name;
                 char dbg[128];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] BMENU cmd slot=%u col=%u row=%u id=0x%02X => %ls",

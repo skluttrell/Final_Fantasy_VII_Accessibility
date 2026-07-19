@@ -5,6 +5,17 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[BATTLE] Whose-turn announce on menu open — SHIPPED v2.37 (2026-07-19), awaiting play-test
+------------------------------------------------------------------------
+User request: name the character when their battle menu opens. No new
+addresses (BATTLE_ACTIVE_SLOT + PartySlotLabel). "Cloud's turn. Attack."
+folded into the first command announce (avoids clobber). Fires once per
+turn session (command + submenus + targeting); cancelling among
+submenus doesn't re-announce; a fresh turn for the same character does.
+Research §8 v2.37. Gate: speak_battle_menu. VERIFY: name spoken once
+when each character's menu opens; NOT repeated when cancelling out of
+magic/item back to the command menu.
+
 [BATTLE] List-select fix + scene-message reader — SHIPPED v2.36 (2026-07-19), awaiting play-test
 ------------------------------------------------------------------------
 Two player reports fixed:
