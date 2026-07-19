@@ -345,10 +345,18 @@ static bool is_valid_dialog_rawptr(const char* raw_text)
 // ---------------------------------------------------------------------------
 static int __cdecl hook_message()
 {
-    // Stamp dialog activity FIRST, unconditionally — even the OOB-window and
-    // config-disabled paths mean a dialog opcode is executing this frame, and
-    // WallBumpThread must stay silent for all of them.
-    s_last_dialog_tick = GetTickCount();
+    // v2.30.2: dialog-activity is stamped BELOW, only for a REAL text dialog
+    // (valid rawptr), NOT on every call. WHY THE CHANGE: this hook is on the
+    // message-window UPDATE LOOP, which runs every frame while ANY field
+    // window is open — including the countdown-clock special window (WSPCL)
+    // shown during a timed escape. The old unconditional stamp therefore
+    // kept s_last_dialog_tick fresh every frame for the whole escape, which
+    // permanently suppressed the wall + proximity tones (player report
+    // 2026-07-19; the log's MSG heartbeat proved this loop ran ~30/sec with
+    // ZERO dialog transitions during the escape — a steady non-text window).
+    // A real MESSAGE dialog has valid rawptr text; the numeric clock does
+    // not, so the stamp is now gated on that (plus OOB banked dialogs, which
+    // the clock is not — its window_id is in-range 0-7).
 
     // Log on the first call ever — confirms the hook is reached and active.
     static bool s_first_call_logged = false;
@@ -394,6 +402,10 @@ static int __cdecl hook_message()
             Log::Write(dbg);
             s_last_bad = window_id;
         }
+        // v2.30.2: a banked/variable window_id is still a REAL dialog opcode
+        // executing (field frozen) — keep the tones silent. The clock is
+        // never OOB (log shows in-range 0-7), so this can't re-admit it.
+        s_last_dialog_tick = GetTickCount();
     } else {
         // Read the current dialog text pointer BEFORE calling the chain.
         // On the FIRST call for a new dialog (when dialog_id just changed),
@@ -421,6 +433,26 @@ static int __cdecl hook_message()
         // ------------------------------------------------------------------
         const uint8_t current_state = FF7Addr::get_dialog_state(window_id);
         const uint8_t last_state    = s_window[window_id].last_opcode;
+
+        // v2.30.2: stamp dialog-activity ONLY when this window actually holds
+        // message text — that is what a walking-suppressing dialog is. The
+        // countdown-clock window fails this (numeric WSPCL, no message text
+        // at its slot), so it no longer freezes the wall/proximity tones.
+        const bool has_dialog_text = is_valid_dialog_rawptr(raw_text);
+        if (has_dialog_text)
+            s_last_dialog_tick = GetTickCount();
+
+        // Diagnostic (throttled): reveals the clock window's signature during
+        // a timed escape — window_id, state, and whether we stamped — so the
+        // next timed sequence confirms the fix (or names a residual).
+        static uint32_t s_diag_count = 0;
+        if ((++s_diag_count % 180) == 0) {
+            char diag[96];
+            _snprintf_s(diag, sizeof(diag), _TRUNCATE,
+                "[FF7Access] MSG steady win=%u state=%u text=%d",
+                window_id, current_state, has_dialog_text ? 1 : 0);
+            Log::Write(diag);
+        }
 
         const bool starting = ((last_state == 0 || last_state == 7) &&
                                current_state != 0 && current_state != 7);

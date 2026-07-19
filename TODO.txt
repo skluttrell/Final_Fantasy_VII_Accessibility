@@ -67,6 +67,21 @@ shows. STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
   - drops speak correct names; log "VICTORY drop[i] id=N f4=M" names
     the f4 field (qty? taken-flag?) from real data.
 
+[NAV] Wall + proximity tones dead during timed escape — FIXED v2.30.2 (2026-07-19)
+------------------------------------------------------------------------
+Player report: neither tone worked during the reactor escape. Log
+(debug_log on) pinned it: both gate on "no dialog activity <250-500ms"
+(LastDialogActivityTick), and hook_message stamped it UNCONDITIONALLY
+every call. That hook is the message-window update loop, which runs
+every frame while the countdown-CLOCK window (WSPCL) is on screen —
+so the dialog tick stayed fresh the whole escape (MSG heartbeat ~30/sec,
+zero dialog transitions). FIX: stamp only when the window holds real
+message text (is_valid_dialog_rawptr) + for OOB banked dialogs; the
+numeric clock fails that. Throttled "MSG steady win/state/text"
+diagnostic added. Deployed both installs. VERIFY at the next timed
+sequence: wall + proximity tones work while the clock counts.
+(Also confirmed in the same log: v2.34.1 Shift+T freeze WORKS.)
+
 [TIMER] Countdown announce CONFIRMED; freeze fixed v2.34.1 (2026-07-19)
 ------------------------------------------------------------------------
 FIRST ESCAPE RESULT: address 0xDC08BC CONFIRMED (plain T reads time

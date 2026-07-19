@@ -1869,6 +1869,33 @@ every T press (shift/frozen/running/live/val). Deployed both installs
 2026-07-19; the No.1 reactor escape is a one-shot, so freeze re-tests
 at the next timed sequence.
 
+### v2.30.2 (2026-07-19): wall + proximity tones dead during a timed escape
+
+Player report: neither the wall-bump tone nor the proximity chirp
+worked during the reactor escape. The escape log (debug_log on from the
+timer work) pinned it precisely: both tones gate on "no dialog activity
+in the last 250-500ms" (`Hooks::LastDialogActivityTick`), and
+`hook_message` stamped that timestamp UNCONDITIONALLY on every call.
+That hook sits on the message-window UPDATE loop, which runs every frame
+while ANY field window is open — including the **countdown-clock special
+window (WSPCL)** the escape puts on screen. The log's `MSG heartbeat`
+proved the loop ran ~30/sec for the whole escape with ZERO dialog state
+transitions (a steady non-text window), so the dialog tick was fresh
+every frame and both tones stayed suppressed the entire time. (Also
+visible in the same log: the v2.34.1 Shift+T freeze now works —
+"frozen=1"/"TIMER frozen at 582".)
+
+Fix: stamp `s_last_dialog_tick` only when the window genuinely holds
+message text — `is_valid_dialog_rawptr(raw_text)`, the same validity
+check the speak path already uses. A real MESSAGE dialog has valid
+rawptr text; the numeric clock does not. OOB banked window_ids still
+stamp (rare real dialogs, field frozen; the clock is never OOB — log
+shows in-range 0-7). Suppression during real dialogs is unchanged
+(needed because the field freezes and a held direction would otherwise
+false-fire the dead-stop wall tone). A throttled "MSG steady win/state/
+text" diagnostic now logs the clock window's signature so the next
+timed sequence confirms the fix. Deployed both installs 2026-07-19.
+
 ### v2.35 (2026-07-19): battle VICTORY screens speak — pools, level-ups, drops
 
 User request + screenshots (BattleScreen/victory_screen_1..3.jpg).
