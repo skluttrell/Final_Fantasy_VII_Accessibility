@@ -1112,13 +1112,22 @@ constexpr uint32_t BATTLE_ACTION_IDX_OFFSET   = 0x3E;   // actionIdx (uint16_t) 
 //   Defend/Change-row pseudo-commands (0x12/0x13) are written by the
 //   handler's Left/Right-at-edge paths, never stored in the table.
 //
-// LIST WIDGETS (magic/item/summon): selected index = w+0 + w+4 + w+0x14
-//   (cursor + scroll summed — verified live against the magic list).
-//   Entries are 6 bytes; u16[+0] = packed id: LOW byte = action index,
-//   HIGH byte = flag bits (live: Ice showed 0x41E = spell 30 + flag 0x04,
-//   and ISSUED_ACTION received exactly 30 on Confirm). 0xFFFF = empty.
-//   Tables: magic = CHAR_BLOCK+slot*0x440+0x108 (state 6, per-actor),
-//   summon = +0x2C8 (state 7), item = global 0x9AC354 (state 5).
+// LIST WIDGETS — the three lists have DIFFERENT layouts (v2.36 CORRECTION,
+//   from the Confirm-path disasm of BATTLE_MENU_FN_TABLE[5]/[6],
+//   ff7_kernel2_text_disasm.py 2026-07-19; the v2.9 single-formula reading
+//   below was right ONLY for the item list and for a magic list of <= 3
+//   spells in one row — which is exactly what the v2.9 test had, hiding
+//   the bug until the player carried a full spell list):
+//     ITEM  (state 5, global table 0x9AC354): SINGLE COLUMN, entry
+//       STRIDE 6, u16 id at +0, empty = 0xFFFF. index = w0+w4+scroll.
+//       ⚠ id 0 = POTION is VALID — the old "skip id 0" silenced Potions.
+//     MAGIC (state 6, CHAR_BLOCK+slot*0x440+0x108) and
+//     SUMMON (state 7, +0x2C8): 3-COLUMN GRID, entry STRIDE 8, u8 id at +0,
+//       empty = 0xFF, disabled flag = u8[+6] bit 0x02. index = horiz +
+//       (vert+scroll)*3  [= w0 + (w4+scroll)*3]. (Summon shares the magic
+//       widget family; grid/stride assumed identical, verify when the
+//       player has summons.)
+//   Widget cursor fields unchanged: +0 horiz, +4 vert, +0x14 scroll.
 //
 // CONFIRM FLOW (what the game writes when the player picks something):
 //   command id  -> 0xDC3C70 (u8,  = FFNx issued_command_id;  live: 1/2/20)
@@ -1130,6 +1139,36 @@ constexpr uint32_t BATTLE_ACTION_IDX_OFFSET   = 0x3E;   // actionIdx (uint16_t) 
 //   suggested. TARGET_INDEX tracks the moving selection (live: 4<->5
 //   across enemies, 0 = party slot 0; actor slots: party 0-2, enemy 4-9).
 // ---------------------------------------------------------------------------
+
+// v2.36 list-layout constants (see the LIST WIDGETS note above).
+constexpr uint32_t BLIST_ITEM_STRIDE   = 6;   // u16 id @+0, empty 0xFFFF
+constexpr uint32_t BLIST_MAGIC_STRIDE  = 8;   // u8  id @+0, empty 0xFF
+constexpr uint32_t BLIST_MAGIC_NCOLS   = 3;   // magic/summon are 3-col grids
+constexpr uint32_t BLIST_MAGIC_DISABLE_OFF = 6; // u8 bit 0x02 = can't use
+
+// ---------------------------------------------------------------------------
+// BATTLE SCENE MESSAGES (v2.36) — enemy AI dialogue like the scorpion's
+// "Attack while it's tail's up!" warning. These reach the screen through
+// the battle text DISPLAY QUEUE, a channel no announcer touched before.
+//
+//   BATTLE_TEXT_QUEUE 0xBF1EB8 = battle_text_data[64] (FFNx ff7.h; base =
+//   operand at add_text_to_display_queue+0x25). Entry STRIDE 6: s16
+//   buffer_idx @+0 (-1 = slot empty), s16 field_2, u8 wait_frames,
+//   u8 n_frames. A buffer_idx >= 0x100 is a SCENE (scene.bin AI) message
+//   — the dialogue class; < 0x100 is kernel battle text whose source
+//   (0x9A13C8 menu scratch) is empty in battle, so only >= 0x100 is read.
+//
+//   Text lookup replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD →
+//   0x41D2E5, disasm 2026-07-19): for idx >= 0x100,
+//     text = SCENE_MSG_BASE + u16[SCENE_MSG_OFFSETS + (idx-0x100)*2]
+//   then FF7-decode at that pointer (0xFF-terminated). The base + offset
+//   table are the current formation's decompressed scene messages.
+constexpr uint32_t BATTLE_TEXT_QUEUE      = 0x00BF1EB8; // 64 x 6, s16 @+0
+constexpr uint32_t BATTLE_TEXT_QUEUE_LEN  = 64;
+constexpr uint32_t BATTLE_TEXT_QUEUE_STRIDE = 6;
+constexpr uint32_t SCENE_MSG_BASE         = 0x009AD1E0;
+constexpr uint32_t SCENE_MSG_OFFSETS      = 0x009AD9E0;
+constexpr int16_t  SCENE_MSG_MIN_IDX      = 0x100;      // >= this = scene dialogue
 
 constexpr uint32_t BATTLE_MENU_STATE       = 0x0091EF9C; // u16 current widget
 constexpr uint32_t BATTLE_MENU_PREV_STATE  = 0x0091EF98; // u16 previous widget

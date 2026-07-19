@@ -84,6 +84,7 @@
 #include <cwctype>   // iswdigit in the dev-label translator (v2.20)
 #include <vector>    // walkmesh snapshot + A* state (v2.22 turn-by-turn)
 #include <cfloat>    // FLT_MAX as the A* "unvisited" cost (v2.22)
+#include <set>       // battle scene-message dedup by buffer_idx (v2.36)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -154,6 +155,7 @@ static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_timer_thread      = nullptr;
 static HANDLE g_victory_thread    = nullptr;
 static HANDLE g_battle_thread     = nullptr;
+static HANDLE g_battlemsg_thread  = nullptr;
 
 // v2.35.1: the post-battle VICTORY screens set MENU_OPEN=1 (the v2.8.3
 // observation), which made MenuCursorThread's open-re-announce speak the
@@ -2963,6 +2965,93 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// BATTLE SCENE-MESSAGE reader (v2.36). The battle text display queue carries
+// enemy AI dialogue — the scorpion's "Attack while it's tail's up!" warning
+// and every other scene.bin message — a channel no other announcer touches
+// (v2.7 speaks ability names from the flash struct; this is separate text).
+// Read them from the scene message block and speak on new appearance.
+//
+// Addresses + the section-8 text lookup are static (ff7_battle_text_static.py
+// / ff7_kernel2_text_disasm.py, 2026-07-19); the reader is shipped
+// speculatively (the scorpion is a one-shot) with debug logging, exactly like
+// the timer. Dedup is by buffer_idx VALUE, not queue slot, so FFNx's queue
+// compaction can't re-trigger a lingering message; a message that fully
+// leaves and returns (tail down then up again) re-speaks by design.
+// ---------------------------------------------------------------------------
+static bool DecodeSceneMessage(int16_t buffer_idx, std::wstring& out)
+{
+    if (buffer_idx < FF7Addr::SCENE_MSG_MIN_IDX)
+        return false;
+    const uint32_t off_addr = FF7Addr::SCENE_MSG_OFFSETS +
+        static_cast<uint32_t>(buffer_idx - FF7Addr::SCENE_MSG_MIN_IDX) * 2u;
+    if (!IsReadableSpan(reinterpret_cast<const void*>(off_addr), 2))
+        return false;
+    const uint16_t off = *reinterpret_cast<const volatile uint16_t*>(off_addr);
+    const uint8_t* text = reinterpret_cast<const uint8_t*>(
+        FF7Addr::SCENE_MSG_BASE + off);
+    if (!IsReadableSpan(text, 1) || text[0] == 0xFF)
+        return false;   // unreadable or empty
+    out = FF7Text::Decode(reinterpret_cast<const char*>(text));
+    for (wchar_t c : out)
+        if (c != L' ' && c != L'\n')
+            return true;
+    return false;   // blank after decode
+}
+
+static DWORD WINAPI BattleMessageThread(LPVOID /*unused*/)
+{
+    std::set<int16_t> prev_present;   // buffer_idx values in the queue last poll
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_battle) {
+            prev_present.clear();
+            continue;
+        }
+        const uint8_t game_mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+        if (game_mode != 2) {
+            prev_present.clear();
+            continue;
+        }
+
+        std::set<int16_t> cur;
+        for (uint32_t i = 0; i < FF7Addr::BATTLE_TEXT_QUEUE_LEN; ++i) {
+            const int16_t bidx = *reinterpret_cast<const volatile int16_t*>(
+                FF7Addr::BATTLE_TEXT_QUEUE +
+                i * FF7Addr::BATTLE_TEXT_QUEUE_STRIDE);
+            if (bidx >= FF7Addr::SCENE_MSG_MIN_IDX)
+                cur.insert(bidx);
+        }
+        for (int16_t bidx : cur) {
+            if (prev_present.count(bidx))
+                continue;   // already present last poll — spoken once
+            std::wstring text;
+            if (DecodeSceneMessage(bidx, text)) {
+                char dbg[128];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BATTLE scene msg idx=0x%X => %ls",
+                    static_cast<unsigned>(bidx), text.c_str());
+                Log::Write(dbg);
+                // Queue behind in-flight action speech, don't clobber it.
+                TTS::Speak(text, /*interrupt=*/false);
+            } else {
+                char dbg[80];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BATTLE scene msg idx=0x%X undecodable",
+                    static_cast<unsigned>(bidx));
+                Log::Write(dbg);
+            }
+        }
+        prev_present.swap(cur);
+    }
+
+    return 0;
+}
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
     uint8_t last_actor_id = 0xFF;   // 0xFF = sentinel; announce on next valid actor change
@@ -3585,30 +3674,42 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                    state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
                    state == FF7Addr::BMENU_STATE_SUMMON_LIST) {
             // ---- list widget cursor (magic / item / summon) -------------
+            // v2.36: the three lists have DIFFERENT layouts (Confirm-path
+            // disasm — see the LIST WIDGETS note in ff7_addresses.h). ITEM
+            // is a single-column stride-6 u16 list; MAGIC/SUMMON are
+            // 3-column stride-8 u8 grids. The v2.9 single formula was right
+            // only for items and for a <=3-spell single row.
+            bool     list_is_item;
             uint32_t woff, table;
             if (state == FF7Addr::BMENU_STATE_MAGIC_LIST) {
+                list_is_item = false;
                 woff  = FF7Addr::BWIDGET_MAGIC_LIST;
                 table = FF7Addr::BATTLE_CHAR_BLOCK
                       + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
                       + FF7Addr::BCHAR_OFF_MAGIC_LIST;
             } else if (state == FF7Addr::BMENU_STATE_SUMMON_LIST) {
+                list_is_item = false;
                 woff  = FF7Addr::BWIDGET_SUMMON_LIST;
                 table = FF7Addr::BATTLE_CHAR_BLOCK
                       + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
                       + FF7Addr::BCHAR_OFF_SUMMON_LIST;
             } else {
+                list_is_item = true;
                 woff  = FF7Addr::BWIDGET_ITEM_LIST;
                 table = FF7Addr::BATTLE_ITEM_LIST_TABLE;
             }
             const uint32_t widget = FF7Addr::BATTLE_WIDGET_BASE
                 + slot * FF7Addr::BATTLE_WIDGET_SLOT_STRIDE + woff;
-            const uint32_t w0 =
+            const uint32_t w0 =     // horizontal cursor (column for grids)
                 *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_HORIZ);
-            const uint32_t w4 =
+            const uint32_t w4 =     // vertical cursor (row within window)
                 *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_VERT);
-            const uint32_t scroll =
+            const uint32_t scroll = // scroll offset (top row)
                 *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_SCROLL);
-            const uint32_t index = w0 + w4 + scroll;
+            // Item = linear; magic/summon = 3-column grid (row*3 + col).
+            const uint32_t index = list_is_item
+                ? (w0 + w4 + scroll)
+                : (w0 + (w4 + scroll) * FF7Addr::BLIST_MAGIC_NCOLS);
             // Battle lists are small (magic <= 96 entries, inventory shows
             // <= 320); a huge sum means the widget is mid-initialization.
             if (index > 0x200)
@@ -3620,10 +3721,22 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
             last_list_key = key;
 
             {
-                const uint16_t id16 = *reinterpret_cast<const volatile uint16_t*>(
-                    table + index * 6);
-                if (id16 == 0xFFFF || id16 == 0)
-                    continue;   // empty/padding row — silent (see cmd 0xFF note)
+                // Read the id with the list's own stride/width/empty-marker.
+                uint32_t entry_id;
+                bool     empty;
+                if (list_is_item) {
+                    const uint16_t id16 = *reinterpret_cast<const volatile uint16_t*>(
+                        table + index * FF7Addr::BLIST_ITEM_STRIDE);
+                    empty = (id16 == 0xFFFF);   // NOT 0 — id 0 = Potion (v2.36)
+                    entry_id = id16;
+                } else {
+                    const uint8_t id8 = *reinterpret_cast<const volatile uint8_t*>(
+                        table + index * FF7Addr::BLIST_MAGIC_STRIDE);
+                    empty = (id8 == 0xFF);      // magic/summon empty marker
+                    entry_id = id8;
+                }
+                if (empty)
+                    continue;   // empty row — silent
 
                 // Pick the name section via the command that OPENED the list
                 // (see header comment). Branches 0/1/2/6/7 are magic-family:
@@ -3636,7 +3749,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                     branch = *reinterpret_cast<const uint8_t*>(
                         FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + open_cmd);
                 const uint32_t idx =
-                    (branch == 3 || branch == 5) ? id16 : (id16 & 0xFFu);
+                    (branch == 3 || branch == 5) ? entry_id : (entry_id & 0xFFu);
 
                 std::wstring name;
                 bool ok = ResolveActionName(open_cmd, idx, name);
@@ -3648,11 +3761,12 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                                  L"row %u", index + 1u);
                     name = rowbuf;
                 }
-                char dbg[144];
+                char dbg[160];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] BMENU list state=%u idx=%u id=0x%04X cmd=0x%02X => %ls",
-                    static_cast<unsigned>(state), index,
-                    static_cast<unsigned>(id16),
+                    "[FF7Access] BMENU list state=%u idx=%u(w0=%u w4=%u sc=%u) "
+                    "id=0x%02X cmd=0x%02X => %ls",
+                    static_cast<unsigned>(state), index, w0, w4, scroll,
+                    static_cast<unsigned>(entry_id),
                     static_cast<unsigned>(open_cmd), name.c_str());
                 Log::Write(dbg);
                 TTS::Speak(name, /*interrupt=*/true);
@@ -7184,6 +7298,15 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start battle action thread.");
         }
 
+        // Battle scene-message reader (v2.36): enemy AI dialogue (the
+        // scorpion tail warning etc.) from the battle text display queue.
+        g_battlemsg_thread = CreateThread(nullptr, 0, BattleMessageThread, nullptr, 0, nullptr);
+        if (g_battlemsg_thread) {
+            Log::Write("[FF7Access] Battle message polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start battle message thread.");
+        }
+
         // Battle command-menu navigation TTS (v2.9). Polls the battle menu
         // widget state machine solved 2026-07-12: BATTLE_MENU_STATE=0x91EF9C,
         // widget block 0xDC20A0+slot*0x700, command table 0xDBA4E4+slot*0x440,
@@ -7237,7 +7360,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
             !g_statusmenu_thread && !g_timer_thread && !g_victory_thread &&
-            !g_battle_thread && !g_battlemenu_thread &&
+            !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
@@ -7400,6 +7523,11 @@ void Shutdown()
         WaitForSingleObject(g_battle_thread, 500);
         CloseHandle(g_battle_thread);
         g_battle_thread = nullptr;
+    }
+    if (g_battlemsg_thread) {
+        WaitForSingleObject(g_battlemsg_thread, 500);
+        CloseHandle(g_battlemsg_thread);
+        g_battlemsg_thread = nullptr;
     }
     if (g_battlemenu_thread) {
         WaitForSingleObject(g_battlemenu_thread, 500);

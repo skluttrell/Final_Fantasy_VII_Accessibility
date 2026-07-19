@@ -199,8 +199,10 @@ every confirmed address — the clustering itself is a discovery tool.
 | `BATTLE_MENU_BUSY` | `0x00DC35AC` | u32, 1 = menu transition/animation in progress; handlers skip input while set (static 2026-07-12) |
 | `BATTLE_WIDGET_BLOCK` | `0x00DC20A0` | **THE BATTLE MENU CURSOR — LIVE-CONFIRMED 2026-07-12** (spoke Attack/Magic/Item correctly through two full battles). Per-slot block at +slot·0x700; 0x38-byte widget structs: +0x00 command widget, +0x38 state-5 (item) list, +0x70 state-6 (magic) list, +0xA8 state-7 (summon) list. Widget fields: +0 horiz cursor (LEFT/RIGHT), +4 vert cursor (UP/DOWN), +0x08 horiz wrap count, +0x0C visible rows, +0x14 scroll offset, +0x1C total entries, +0x28/+0x2C axis modes, +0x30 scroll-busy. Command menu: selected entry index = **row + col·4** (column-major, 4 rows/col, `and 3` wrap); col wraps mod u8[0xDBA4B9+slot·0x440]. List widgets: selected index = w0+w4+scroll (✓ live for magic list) |
 | `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+col·4: u8[+0] command id, u8[+1] action type (Confirm jump-table selector 0–0xB), u8[+2] action id. **Command ids are 1-BASED for basic commands** (✓ live: 1=Attack, 2=Magic, 4=Item; 0xFF=empty cell) **but Limit keeps kernel id 0x14=20** (✓ live: replaces Attack's row-0 entry when the gauge fills; Confirm → state 24). +0x108 (0xDBA5A0) magic list (✓ live via state 6), +0x2C8 (0xDBA760) summon list, both 6-byte entries. **v2.33: NOT battle-only — the menu populates it too**, with EFFECTIVE stats (materia applied): +0x02..+0x07 u8 str/vit/mag/spr/dex/luck, +0x08/+0x0A/+0x0C/+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/maxHP/MP/maxMP (single BSS pattern hit against the status screenshot; hunt + dump logs 2026-07-18). Menu consumers must guard staleness: block HP pair == savemap record HP pair |
-| `BATTLE_LIST5_TABLE` | `0x009AC354` | Global (not per-slot) 6-byte entries for the state-5 list = ITEM list (inventory is party-wide; the magic guess was wrong — magic is the per-actor state-6 table): u16[+0] entry id (0xFFFF=empty), u8[+3] → 0xDC3C84 on Confirm, u8[+4] enable-flag bits |
-| *(list entry format)* | — | List entry u16 = **low byte action index + high byte flags** (✓ live: Ice showed 0x41E = spell 30 + flag 0x04; ISSUED_ACTION received 30 on Confirm — same index v2.7 logged for Ice). id 0 = empty/padding row |
+| `BATTLE_LIST5_TABLE` | `0x009AC354` | Global (not per-slot) ITEM list (state 5): single column, **6-byte** entries, u16 id at +0 (**0xFFFF = empty; id 0 = Potion is VALID**, v2.36 — the old "skip 0" silenced Potions), u8[+4] enable flag. index = w0+w4+scroll |
+| *(magic/summon list format)* | — | **3-COLUMN grid, 8-byte entries** (v2.36 Confirm-path disasm — NOT the item layout): u8 id at +0 (0xFF = empty), u8[+6] bit 0x02 = disabled. Selected index = **w0 + (w4+scroll)·3**. Tables: magic = CHAR_BLOCK+slot·0x440+0x108, summon = +0x2C8. The v2.9 linear formula/6-byte reading was correct only for items + a ≤3-spell single row |
+| `BATTLE_TEXT_QUEUE` | `0x00BF1EB8` | Battle text display queue (v2.36): battle_text_data[64], **stride 6**, s16 buffer_idx at +0 (-1 = empty slot, ≥0x100 = scene AI dialogue). FFNx name-anchored (add_text_to_display_queue+0x25). The channel BattleMessageThread reads for the scorpion tail warning etc. |
+| `SCENE_MSG_BASE / _OFFSETS` | `0x009AD1E0 / 0x009AD9E0` | Current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0 + (idx-0x100)·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD → 0x41D2E5). v2.36 |
 | `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id (✓ live: 1 on Attack confirm, 2 on Magic, 19=0x13 on Right press = Change-row, 20 on Limit) |
 | `BATTLE_ISSUED_ACTION` | `0x00DC3C78` | u16 = FFNx issued_action_id (✓ live: 30 after confirming Ice) |
 | `BATTLE_TARGET_TYPE/INDEX` | `0x00DC3C90/94` | u8 pair = FFNx issued_action_target_type/index. INDEX tracks the moving target selection live (✓: 4↔5 across enemies, 0 = party slot 0) |
@@ -1925,6 +1927,51 @@ the same instant). The gil/items line fires ENTERING mode 2 (fallback:
 pre-apply, which is exactly the number the sighted screen shows. The
 level-up watcher is unchanged (it catches the mode-1 roll-up whenever
 it happens). Deployed both installs same day; awaiting re-test.
+
+### v2.36 (2026-07-19): battle-list layout fix + scene-message (tail-warning) reader
+
+Two player reports: (1) some items/magic mis-announce when selected in
+battle; (2) the scorpion's "tail's up" warning isn't spoken.
+
+**(1) List-widget layout — the v2.9 formula was one case of three.**
+Disassembling the Confirm paths of BATTLE_MENU_FN_TABLE[5]/[6]
+(ff7_kernel2_text_disasm.py) showed the three battle lists differ:
+- ITEM (state 5, global 0x9AC354): single column, entry STRIDE 6, u16
+  id at +0, empty = **0xFFFF**. The v2.9 code also skipped `id == 0` —
+  but **item id 0 is Potion**, so every Potion went silent. Fixed:
+  skip 0xFFFF only.
+- MAGIC/SUMMON (state 6/7, per-slot char block +0x108/+0x2C8):
+  **3-column grid**, entry STRIDE **8**, u8 id at +0, empty = 0xFF.
+  Selected index = `horiz + (vert+scroll)*3`, not the linear
+  `w0+w4+scroll`. The two formulas agree only for a single row of ≤3
+  spells — exactly the v2.9 test's list, which is why it passed then
+  and broke once the player carried a full spell list.
+The list-cursor code now branches on list type for stride, id width,
+empty-marker, and index formula. (Summon shares the magic widget
+family; assumed identical, flagged for verification when summons
+exist.)
+
+**(2) Scene messages — an untapped text channel.** Enemy AI dialogue
+(the tail warning and all scene.bin messages) reaches the screen
+through the battle text DISPLAY QUEUE, which no announcer read (v2.7
+speaks ability names from the flash struct — different text).
+Addresses static (ff7_battle_text_static.py): BATTLE_TEXT_QUEUE
+0xBF1EB8 (battle_text_data[64], s16 buffer_idx at +0, -1 = empty,
+stride 6). Text lookup replicates GET_KERNEL_TEXT section 8 (handler
+0x4199AD → 0x41D2E5): for buffer_idx ≥ 0x100 (the scene-dialogue
+class), text = SCENE_MSG_BASE 0x9AD1E0 + u16[SCENE_MSG_OFFSETS 0x9AD9E0
++ (idx-0x100)*2], FF7-decoded. Section-7 in the same jump table matches
+v2.10's target-name derivation exactly — cross-check that the table
+read is right. BattleMessageThread scans the queue at 150ms while
+GAME_MODE==2, dedups by buffer_idx VALUE (survives FFNx's queue
+compaction; a message that leaves and returns re-speaks), speaks
+queued (never clobbers action speech). Shipped speculatively (the
+scorpion is a one-shot) with debug logging, like the timer.
+
+Gate: speak_battle. Built clean; deploy deferred (game running).
+Awaiting play-test: full magic list announces correct spells; Potions
+speak in battle; scorpion tail warning (and other enemy dialogue)
+speaks.
 
 ---
 
