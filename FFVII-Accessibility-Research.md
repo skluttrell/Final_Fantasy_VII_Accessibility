@@ -1877,8 +1877,32 @@ party level snapshot; savemap level bytes watched through the window →
 catches multi-level-ups with no new addresses); mode→3: "Gained X gil,
 total Y. Received Potion, Potion." / "No items." Sanity gates on pools
 and count; every transition and drop entry debug-logged. Gate:
-speak_battle. Deployed both installs 2026-07-19; awaiting play-test
-(next battle victory).
+speak_battle. Deployed both installs 2026-07-19. **PLAY-CONFIRMED same
+day ("It works")** — with one regression, fixed as v2.35.1 below.
+
+### v2.35.1 (2026-07-19): stale menu-row announce over the victory screens
+
+Player report: the victory screens still triggered the main menu's
+open-re-announce with the STALE cursor row ("Item", "Config") — the
+v2.8.3 "MENU_OPEN is also 1 on post-battle results" observation biting
+a new thread. The results context can't be identified by GAME_MODE
+(its value there has never been sampled, and the mod only trusts
+live-observed values), so two in-process signals gate it instead:
+
+- **g_last_battle_tick**: BattleActionThread stamps GetTickCount()
+  every poll while GAME_MODE==2. A "menu open" within 4s of battle
+  mode can only be the results screens — the real main menu is
+  unreachable that fast through the fade and results. This covers the
+  race before the results mode byte first moves.
+- **g_victory_active**: VictoryThread publishes its in_results state,
+  covering however long the player reads the screens.
+
+MenuCursorThread stands down (seeding its trackers silently) while
+either signal is live; the same guard went into the Item and Status
+menu gates, whose dispatch-index test would false-open over the
+victory screens if the matching screen was the last one visited (a
+latent bug of the same shape, caught by inspection). Deployed both
+installs same day; awaiting re-test on the next victory.
 
 ---
 

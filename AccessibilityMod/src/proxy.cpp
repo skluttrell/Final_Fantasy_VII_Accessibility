@@ -154,6 +154,21 @@ static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_timer_thread      = nullptr;
 static HANDLE g_victory_thread    = nullptr;
 static HANDLE g_battle_thread     = nullptr;
+
+// v2.35.1: the post-battle VICTORY screens set MENU_OPEN=1 (the v2.8.3
+// observation), which made MenuCursorThread's open-re-announce speak the
+// STALE main-menu row ("Item", "Config") over the victory announcements
+// (player report 2026-07-19). Two cross-thread signals suppress it:
+//   g_last_battle_tick  — GetTickCount() stamped every battle poll while
+//     GAME_MODE==2 (BattleActionThread). A "menu open" within seconds of
+//     battle mode can only be the results screens — the real main menu is
+//     unreachable that fast (fade + results + field control in between).
+//     Covers the race where results appear before the mode byte moves.
+//   g_victory_active    — set by VictoryThread while the results window
+//     is live (covers however long the player reads the screens).
+// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity).
+static volatile DWORD g_last_battle_tick = 0;
+static volatile LONG  g_victory_active   = 0;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
 static HANDLE g_fieldnav_thread   = nullptr;
@@ -575,6 +590,21 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             last_cursor = 0xFF;
         }
         last_menu_open = menu_open;
+
+        // v2.35.1: the post-battle VICTORY screens also raise MENU_OPEN,
+        // which made the open-re-announce speak the STALE menu row over
+        // the victory announcements (player report). Stand down while the
+        // results context is live: either VictoryThread says so, or the
+        // "menu" opened within seconds of battle mode — the real main
+        // menu is unreachable that fast. Seed silently so nothing stale
+        // fires when the window ends.
+        if (g_victory_active != 0 ||
+            (GetTickCount() - g_last_battle_tick) < 4000) {
+            last_cursor = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::MENU_CURSOR);
+            last_quit_cursor = 0xFF;
+            continue;
+        }
 
         // ── Quit confirmation cursor (runs in parallel, no priority block) ──
         // QUIT_CURSOR tracks Yes (0) / No (1) while the Quit dialog is visible.
@@ -1947,7 +1977,12 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
         const uint32_t screen =
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
         if (menu_open != 1 || field_id == 0 ||
-            screen != FF7Addr::ITEMMENU_SCREEN_INDEX) {
+            screen != FF7Addr::ITEMMENU_SCREEN_INDEX ||
+            // v2.35.1: victory screens raise MENU_OPEN with a STALE
+            // dispatch index — if the last screen visited was Item, this
+            // gate would false-open over the victory announcements.
+            g_victory_active != 0 ||
+            (GetTickCount() - g_last_battle_tick) < 4000) {
             was_open = false;
             last_mode = last_top = last_row = last_tgt = 0xFF;
             last_word = 0xFFFF;
@@ -2371,6 +2406,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
 
         if (!Config::Get().speak_battle) {
             in_results = false;
+            g_victory_active = 0;
             last_mode = 0xFFFF;
             continue;
         }
@@ -2382,6 +2418,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
         if (menu_open != 1) {
             in_results = false;
+            g_victory_active = 0;
             last_mode = 0xFFFF;
             continue;
         }
@@ -2417,6 +2454,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                     Log::Write("[FF7Access] VICTORY pools implausible — skip");
                     in_results = false;
                 } else {
+                    g_victory_active = 1;   // v2.35.1 suppressor
                     wchar_t msg[96];
                     _snwprintf_s(msg, _countof(msg), _TRUNCATE,
                         L"Victory! Gained %lu experience and %lu A P",
@@ -2762,7 +2800,11 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
         const uint32_t screen =
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
         if (menu_open != 1 || field_id == 0 ||
-            screen != FF7Addr::STATUSMENU_SCREEN_INDEX) {
+            screen != FF7Addr::STATUSMENU_SCREEN_INDEX ||
+            // v2.35.1: stale dispatch index during victory screens — see
+            // the ItemMenuThread gate.
+            g_victory_active != 0 ||
+            (GetTickCount() - g_last_battle_tick) < 4000) {
             was_open = false;
             last_slot = 0xFFFFFFFF;
             continue;
@@ -3014,6 +3056,8 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         {
             const uint8_t game_mode =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+            if (game_mode == 2)
+                g_last_battle_tick = GetTickCount();   // v2.35.1, see decl
             if (game_mode != 2) {
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
                 party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
