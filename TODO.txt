@@ -19,12 +19,19 @@ MENU_OPEN and the main-menu open-re-announce spoke the stale row
 g_last_battle_tick (menu opening within 4s of GAME_MODE==2 = results
 context) + g_victory_active (VictoryThread's live state); same guard
 added to the Item/Status dispatch gates (latent same-shape bug).
-STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
-  - numbers match the visible screens (esp. gained EXP/AP);
-  - level-up line fires when Cloud/Barret levels;
-  - drops speak correct names; log line "VICTORY drop[i] id=N f4=M" —
-    f4's meaning (qty? taken-flag?) gets named from real data;
-  - mode value 2's on-screen meaning (log "VICTORY mode 1 -> 2 -> 3").
+v2.35.2 (same day, play report "announcements trail the flow"): the
+mode byte advances on OK PRESSES, not screen appearances (0=EXP screen
+showing, 1=roll-up/chirps, 2=gil screen showing, 3=after its OK —
+mode 2's meaning now settled by the player's description). Victory
+line re-timed to the RESULTS WINDOW OPENING (battle-recency signal,
+pools captured intact at mode 0); gil/items line to mode-2 entry
+(fallback 3); gil total read there is pre-apply = what the screen
+shows. STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
+  - victory line lands BEFORE the first OK/chirps; gil line when the
+    gil screen appears;
+  - numbers match the visible screens; level-up line fires;
+  - drops speak correct names; log "VICTORY drop[i] id=N f4=M" names
+    the f4 field (qty? taken-flag?) from real data.
 
 [TIMER] Countdown announcements + freeze — SHIPPED v2.34 (2026-07-18), awaiting the escape run
 ------------------------------------------------------------------------

@@ -2423,12 +2423,56 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             continue;
         }
 
+        // v2.35.2 (player report: announcements trailed the button-driven
+        // flow): the mode byte advances on the player's OK presses, not
+        // when screens APPEAR — the EXP/AP screen shows during mode 0
+        // (waiting for OK), mode 1 is the roll-up itself (the chirps), the
+        // gil/items screen shows at mode 2, and 3 only lands after its OK.
+        // So the victory line fires at the RESULTS WINDOW OPENING (the
+        // post-battle MENU_OPEN rise, identified by the v2.35.1 battle-
+        // recency signal), while the pools are provably intact; the
+        // gil/items line fires entering mode 2 (fallback 3, whichever is
+        // seen first — semantics harvested from the transition log).
         const uint16_t mode =
             *reinterpret_cast<const volatile uint16_t*>(FF7Addr::BATTLE_END_MODE);
-        const bool mode_changed = (last_mode != 0xFFFF && mode != last_mode);
-        if (last_mode == 0xFFFF)
-            last_mode = mode;   // seed silently on window open (stale value)
 
+        if (!in_results &&
+            (GetTickCount() - g_last_battle_tick) < 4000) {
+            // The results window just opened. Capture the pools NOW —
+            // the roll-up consumes them — and announce before the
+            // player's first OK starts the chirping count-up.
+            in_results = true;
+            g_victory_active = 1;   // v2.35.1 suppressor, whole window
+            spoke_gil = false;
+            last_mode = mode;
+            cap_exp = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::BATTLE_GAINED_EXP);
+            cap_ap = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::BATTLE_GAINED_AP);
+            cap_gil = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::BATTLE_GAINED_GIL);
+            for (uint8_t s = 0; s <= 2; ++s)
+                base_levels[s] = slot_level(s);
+            char dbg[128];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] VICTORY window open: mode=%u exp=%lu ap=%lu gil=%lu",
+                mode, static_cast<unsigned long>(cap_exp),
+                static_cast<unsigned long>(cap_ap),
+                static_cast<unsigned long>(cap_gil));
+            Log::Write(dbg);
+            if (cap_exp <= 1000000 && cap_ap <= 1000000) {
+                wchar_t msg[96];
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                    L"Victory! Gained %lu experience and %lu A P",
+                    static_cast<unsigned long>(cap_exp),
+                    static_cast<unsigned long>(cap_ap));
+                TTS::Speak(msg, /*interrupt=*/true);
+            } else {
+                Log::Write("[FF7Access] VICTORY pools implausible — silent");
+            }
+        }
+
+        const bool mode_changed = in_results && mode != last_mode;
         if (mode_changed) {
             char dbg[96];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
@@ -2436,33 +2480,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             Log::Write(dbg);
             last_mode = mode;
 
-            if (mode == 1 && !in_results) {
-                // Results opening: capture the pools NOW (consumed later)
-                // and the party levels for the level-up watcher.
-                in_results = true;
-                spoke_gil = false;
-                cap_exp = *reinterpret_cast<const volatile uint32_t*>(
-                    FF7Addr::BATTLE_GAINED_EXP);
-                cap_ap = *reinterpret_cast<const volatile uint32_t*>(
-                    FF7Addr::BATTLE_GAINED_AP);
-                cap_gil = *reinterpret_cast<const volatile uint32_t*>(
-                    FF7Addr::BATTLE_GAINED_GIL);
-                for (uint8_t s = 0; s <= 2; ++s)
-                    base_levels[s] = slot_level(s);
-                if (cap_exp > 1000000 || cap_ap > 1000000) {
-                    // Implausible — wrong context; stand down quietly.
-                    Log::Write("[FF7Access] VICTORY pools implausible — skip");
-                    in_results = false;
-                } else {
-                    g_victory_active = 1;   // v2.35.1 suppressor
-                    wchar_t msg[96];
-                    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                        L"Victory! Gained %lu experience and %lu A P",
-                        static_cast<unsigned long>(cap_exp),
-                        static_cast<unsigned long>(cap_ap));
-                    TTS::Speak(msg, /*interrupt=*/true);
-                }
-            } else if (mode == 3 && in_results && !spoke_gil) {
+            if ((mode == 2 || mode == 3) && !spoke_gil) {
                 spoke_gil = true;
                 const uint32_t total_gil =
                     *reinterpret_cast<const volatile uint32_t*>(

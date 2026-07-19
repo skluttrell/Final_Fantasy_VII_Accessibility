@@ -1902,7 +1902,29 @@ either signal is live; the same guard went into the Item and Status
 menu gates, whose dispatch-index test would false-open over the
 victory screens if the matching screen was the last one visited (a
 latent bug of the same shape, caught by inspection). Deployed both
-installs same day; awaiting re-test on the next victory.
+installs same day. **v2.35.1 PLAY-CONFIRMED same day ("That worked")**.
+
+### v2.35.2 (2026-07-19): victory announces re-timed to the SCREENS, not the presses
+
+Player report: "you hear the game chirp as the exp gained goes up,
+THEN it says victory and numbers" — the announcements trailed the
+flow. Root cause: **BATTLE_END_MODE advances on the player's OK
+presses, not when screens appear.** Corrected phase map (the player's
+description is the source): mode 0 = EXP/AP screen SHOWING (waiting
+for OK), mode 1 = the roll-up itself (chirps, EXP draining into
+characters, levels applying — consistent with FFNx's level
+achievements firing at 1), mode 2 = gil/items screen SHOWING, mode 3 =
+after its OK (gil applied — consistent with the disasm's apply-on-
+mode-2-exit and FFNx's gil achievement at 3).
+
+Fix: the victory line now fires at the RESULTS WINDOW OPENING — the
+post-battle MENU_OPEN rise, identified by the v2.35.1 battle-recency
+signal, while mode is still 0 and the pools are untouched (captured at
+the same instant). The gil/items line fires ENTERING mode 2 (fallback:
+3, whichever appears first); the savemap gil total read there is
+pre-apply, which is exactly the number the sighted screen shows. The
+level-up watcher is unchanged (it catches the mode-1 roll-up whenever
+it happens). Deployed both installs same day; awaiting re-test.
 
 ---
 
@@ -2401,7 +2423,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDC11C4` | ORDERMENU_CURSOR | u8 Order-pane party cursor, scan speak-back verified (v2.32) |
 | `0xDC1259` | (unresolved) | read 9 in the Order pane, 10 with a member selected (scan latch pass); maybe a widget/cursor count — not consumed |
 | `0xDC1288` | CHARSEL_CHOSEN | u32 slot committed by the mode-1 pane (v2.32 disasm; not yet consumed) |
-| `0xDC1300` | BATTLE_END_MODE | u16 victory-screen phase: 0=won/init, 1=EXP/AP screen, 3=gil/items (FFNx menu_battle_end_mode + its achievement hook's own branding; v2.35) |
+| `0xDC1300` | BATTLE_END_MODE | u16 victory-screen phase, advancing on the player's OK PRESSES not screen appearances (v2.35.2 play-corrected): 0=EXP/AP screen showing, 1=roll-up running (chirps/levels apply), 2=gil/items screen showing, 3=after its OK (gil applied). FFNx menu_battle_end_mode |
 | `0xDC1320` | ORDERMENU_LATCH | u32 1 = first member selected (v2.32, scan + disasm) |
 | `0xDC1324` | MENU_FOCUS_MODE | u8 0=menu bar / 1=char-select pane (chimed) / 2=Order pane (silent — the player-noticed missing chime); v2.32's Order gate |
 | `0xDC1210` | (frame parity) | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. CAUSE FOUND (v2.31 dispatcher disasm): the sub-screen dispatcher XOR-toggles it every menu tick. Never read |
