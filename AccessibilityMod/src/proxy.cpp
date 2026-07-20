@@ -173,6 +173,7 @@ static volatile DWORD g_last_battle_tick = 0;
 static volatile LONG  g_victory_active   = 0;
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
+static HANDLE g_dialogtone_thread = nullptr;
 static HANDLE g_fieldnav_thread   = nullptr;
 static HANDLE g_nameentry_thread  = nullptr;
 
@@ -4152,6 +4153,52 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
+// DialogToneThread (v2.30.5): plays the two story-dialog audio cues.
+//
+// hook_message/hook_ask (hooks.cpp) run on the GAME's main thread every
+// frame and can only SET edge-triggered flags — Beep() blocks for its whole
+// duration, so calling it directly from an opcode hook would stall the game
+// itself every time it fires (the same reasoning behind every other tone in
+// this file: WallBumpThread above, and the proximity/wander chirps further
+// down, all poll a background thread instead of beeping inline from a
+// hook). This thread just polls Hooks::ConsumeDialogWaitTone/
+// ConsumeDialogChoiceTone and does the actual (blocking, but only THIS
+// thread blocks) Beep() calls.
+//
+// Both cues use the SAME pitch (1568 Hz, distinct from every other tone in
+// this mod: 220 Hz wall thud, 880 Hz wandering cue, 1175 Hz proximity
+// chirp) and differ only in COUNT — one beep for "waiting for the confirm
+// button", two quick beeps for "a choice was just presented" — matching
+// the player's request verbatim (a plain high tone vs. a high double-tone).
+// ---------------------------------------------------------------------------
+static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
+{
+    constexpr DWORD kPollMs      = 50;   // matches WallBumpThread/TimerThread's
+                                          // cadence -- fast enough the tone
+                                          // feels immediate, cheap enough to
+                                          // be free (two flag reads per poll)
+    constexpr WORD  kToneHz      = 1568; // G6
+    constexpr WORD  kToneMs      = 50;   // "short" per the request
+    constexpr DWORD kDoubleGapMs = 60;   // gap between the choice tone's two beeps
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, kPollMs) == WAIT_OBJECT_0)
+            break;
+
+        if (Hooks::ConsumeDialogWaitTone())
+            Beep(kToneHz, kToneMs);
+
+        if (Hooks::ConsumeDialogChoiceTone()) {
+            Beep(kToneHz, kToneMs);
+            Sleep(kDoubleGapMs);
+            Beep(kToneHz, kToneMs);
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Field navigation — PATHFINDER BROWSER thread (v2.14, reworked to the
 // FF1-6 accessibility key scheme the same day). First interactable-tracking
 // feature of the navigation system.
@@ -7395,6 +7442,16 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start wall-bump thread.");
         }
 
+        // Story-dialog wait/choice tones (v2.30.5). See DialogToneThread's
+        // header comment; the producer side lives in hooks.cpp's
+        // hook_message/hook_ask.
+        g_dialogtone_thread = CreateThread(nullptr, 0, DialogToneThread, nullptr, 0, nullptr);
+        if (g_dialogtone_thread) {
+            Log::Write("[FF7Access] Dialog tone polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start dialog tone thread.");
+        }
+
         // Field exit scan (v2.14). Triggers header resolved statically via
         // FFNx's chain with three name-embedded cross-checks
         // (ff7_field_triggers_static.py, 2026-07-13) — see the FieldNavThread
@@ -7426,7 +7483,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
             !g_statusmenu_thread && !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
-            !g_wallbump_thread && !g_fieldnav_thread && !g_nameentry_thread) {
+            !g_wallbump_thread && !g_dialogtone_thread && !g_fieldnav_thread &&
+            !g_nameentry_thread) {
             CloseHandle(g_cursor_stop_event);
             g_cursor_stop_event = nullptr;
         }
@@ -7608,6 +7666,11 @@ void Shutdown()
         WaitForSingleObject(g_wallbump_thread, 500);
         CloseHandle(g_wallbump_thread);
         g_wallbump_thread = nullptr;
+    }
+    if (g_dialogtone_thread) {
+        WaitForSingleObject(g_dialogtone_thread, 500);
+        CloseHandle(g_dialogtone_thread);
+        g_dialogtone_thread = nullptr;
     }
     if (g_nameentry_thread) {
         WaitForSingleObject(g_nameentry_thread, 500);

@@ -79,4 +79,35 @@ void Uninstall();
  */
 unsigned long LastDialogActivityTick();
 
+/*
+ * ConsumeDialogWaitTone / ConsumeDialogChoiceTone: edge-triggered signals
+ * for the two optional dialog audio cues (v2.30.5):
+ *
+ *   WAIT tone   — a short high tone the instant a MESSAGE dialog's on-screen
+ *                 text finishes displaying and the game is sitting there
+ *                 waiting for the player to press the confirm button
+ *                 (whether that press pages forward, closes the window, or
+ *                 advances to the next line). Gated by
+ *                 Config::Settings::dialog_wait_tone.
+ *   CHOICE tone — a short high DOUBLE tone the instant an ASK choice menu is
+ *                 presented. Gated by Config::Settings::dialog_choice_tone.
+ *
+ * WHY "CONSUME" (test-and-clear) INSTEAD OF A PLAIN GETTER:
+ *   hook_message/hook_ask run on the GAME's main thread and can only SET
+ *   these flags — Beep() blocks for its whole duration, so calling it
+ *   directly from an opcode hook would stall the game itself every time
+ *   (same reasoning as WallBumpThread and the proximity/wander chirps in
+ *   proxy.cpp: all of this mod's tones are played from a background polling
+ *   thread, never from inside a hook). A background thread calls these once
+ *   per poll; each call atomically reads AND clears the flag
+ *   (InterlockedExchange), so a fresh set from the hook between the
+ *   thread's read and its clear is never silently dropped, and the same
+ *   event can never fire the tone twice.
+ *
+ * Returns true (once) if that cue's flag was set since the last call;
+ * false otherwise.
+ */
+bool ConsumeDialogWaitTone();
+bool ConsumeDialogChoiceTone();
+
 } // namespace Hooks

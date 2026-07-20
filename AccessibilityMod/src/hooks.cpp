@@ -257,6 +257,14 @@ struct WindowState {
     // pages[] above.
     std::vector<std::wstring> ask_lines;
     int ask_last_option = -1;
+
+    // v2.30.5: MESSAGE-only. True while this window's dialog state byte has
+    // already been observed holding steady (see the WAIT TONE block in
+    // hook_message for why "steady" means "waiting for the confirm button").
+    // Armed once per hold so the tone fires only on the edge into waiting,
+    // not every frame the hold continues; disarmed the moment the state
+    // changes again (next typewriter tick, page turn, or a fresh dialog).
+    bool wait_tone_armed = false;
 };
 static WindowState s_window[8];
 
@@ -271,6 +279,19 @@ static bool s_installed = false;
 // volatile stops the compiler caching it across the two threads involved
 // (game main thread writes, WallBumpThread reads).
 static volatile DWORD s_last_dialog_tick = 0;
+
+// v2.30.5: edge-triggered "please beep" signals for the two dialog audio
+// cues. hook_message/hook_ask run on the GAME's main thread every frame —
+// Beep() blocks for its whole duration, so calling it directly from here
+// would stall the game itself (same reasoning as every other tone in this
+// mod: WallBumpThread and the proximity/wander chirps in proxy.cpp all poll
+// a background thread instead of beeping inline). These are LONGs (not
+// bool) because InterlockedExchange requires a 32-bit operand; set with a
+// plain volatile write (0/1 is atomic on x86), consumed with
+// InterlockedExchange(&flag, 0) so the polling thread's read-and-clear can't
+// race a fresh set from the hook and drop it.
+static volatile LONG s_dialog_wait_pending   = 0; // "waiting for the confirm button"
+static volatile LONG s_dialog_choice_pending = 0; // "a choice was just presented"
 
 // ---------------------------------------------------------------------------
 // is_readable_ptr: Return true if ptr is a valid, readable memory address.
@@ -468,6 +489,13 @@ static int __cdecl hook_message()
         const uint8_t current_state = FF7Addr::get_dialog_state(window_id);
         const uint8_t last_state    = s_window[window_id].last_opcode;
 
+        // v2.30.5: captured BEFORE the DLGID/PENDING/PAGE/CLOSE chain below
+        // (which may clear pending_speak on THIS frame) — the WAIT TONE
+        // block needs to know whether the intro was still pending at the
+        // START of this hook call, not after, so it never fires on the
+        // very same frame text starts being announced (see that block).
+        const bool was_pending = s_window[window_id].pending_speak;
+
         // v2.30.2: stamp dialog-activity ONLY when this window actually holds
         // message text — that is what a walking-suppressing dialog is. The
         // countdown-clock window fails this (numeric WSPCL, no message text
@@ -519,6 +547,13 @@ static int __cdecl hook_message()
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].pages.clear();          // v2.30.4: fresh dialog
             s_window[window_id].next_page = 0;
+            // v2.30.5: some windows' state byte never reaches CLOSE (win=2/3
+            // — see the STATE MACHINE comment above), so DLGID is the only
+            // reliable "this is a fresh dialog" edge for them; reset here too
+            // or a window that never closes would only ever get ONE wait
+            // tone for its very first dialog, then none for the rest of the
+            // session (wait_tone_armed would stay stuck true).
+            s_window[window_id].wait_tone_armed = false;
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] MSG win=%u id=%u [DLGID] pending",
@@ -579,7 +614,48 @@ static int __cdecl hook_message()
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].pages.clear();          // v2.30.4
             s_window[window_id].next_page = 0;
+            s_window[window_id].wait_tone_armed = false; // v2.30.5
             TTS::Silence();
+        }
+
+        // ------------------------------------------------------------------
+        // WAIT TONE (v2.30.5): a short high tone the moment this window's
+        // dialog state stops changing while it holds real text — i.e. the
+        // game itself is now sitting there waiting for the player to press
+        // the confirm button, whatever that press will do next (page turn,
+        // close, or advance to the next line/dialog_id). We don't special-
+        // case the specific "about to page" values (14/4, see `paging`
+        // above) because the "about to close" hold uses OTHER values that
+        // vary by window (observed: win=0 held at 6 before its 6→7 close) --
+        // "stopped changing" is the one signal common to every hold, and
+        // it's exactly the state this mod's own comments already describe
+        // the typewriter as driving every frame while text is still being
+        // revealed (see the STATE MACHINE comment above).
+        //
+        // was_pending (captured before the chain ran) keeps this from firing
+        // on the very frame the intro just started being announced: for
+        // windows whose state byte never moves at all (win=2/3, "stuck at 0
+        // permanently" — see §6 of the research doc), current_state ==
+        // last_state is true from the first frame, so without this guard
+        // the tone would coincide with (rather than follow) the TTS intro.
+        //
+        // Edge-triggered via wait_tone_armed: fires once per hold, not every
+        // frame it continues; disarmed the instant the state changes again.
+        // Independent of speak_dialog (voice-acting-mod players who disable
+        // our TTS narration still get no other cue that the game is ready
+        // for input, so this doesn't depend on it).
+        // ------------------------------------------------------------------
+        if (Config::Get().dialog_wait_tone && has_dialog_text && !was_pending) {
+            if (current_state == last_state) {
+                if (!s_window[window_id].wait_tone_armed) {
+                    s_window[window_id].wait_tone_armed = true;
+                    InterlockedExchange(&s_dialog_wait_pending, 1);
+                }
+            } else {
+                s_window[window_id].wait_tone_armed = false;
+            }
+        } else {
+            s_window[window_id].wait_tone_armed = false;
         }
 
         s_window[window_id].last_opcode = current_state;
@@ -657,9 +733,19 @@ static int __cdecl hook_ask(int unk)
             Log::Write(state_log);
         }
 
+        // v2.30.5: a new dialog_id on the ASK opcode IS "a choice was just
+        // presented" — fire the double tone off this directly, independent
+        // of speak_choices, same reasoning as the wait tone's independence
+        // from speak_dialog: a player who has voice-over covering choice
+        // TEXT still gets no other cue that a choice screen just opened.
+        const bool is_new_ask_dialog = (dialog_id != s_window[window_id].last_dialog_id);
+        if (is_new_ask_dialog && Config::Get().dialog_choice_tone) {
+            InterlockedExchange(&s_dialog_choice_pending, 1);
+        }
+
         // NEW DIALOG: set pending flag. Same one-frame delay as hook_message —
         // rawptr is stale until s_old_ask() runs at the bottom of this hook.
-        if (dialog_id != s_window[window_id].last_dialog_id &&
+        if (is_new_ask_dialog &&
             Config::Get().speak_choices) {
             s_window[window_id].pending_speak  = true;
             s_window[window_id].last_dialog_id = dialog_id;
@@ -816,6 +902,19 @@ void Uninstall()
 unsigned long LastDialogActivityTick()
 {
     return s_last_dialog_tick;
+}
+
+// See hooks.h for full rationale. InterlockedExchange atomically reads the
+// flag and clears it in one step, so a fresh set from the game thread
+// between this thread's read and its clear can never be silently dropped.
+bool ConsumeDialogWaitTone()
+{
+    return InterlockedExchange(&s_dialog_wait_pending, 0) != 0;
+}
+
+bool ConsumeDialogChoiceTone()
+{
+    return InterlockedExchange(&s_dialog_choice_pending, 0) != 0;
 }
 
 } // namespace Hooks

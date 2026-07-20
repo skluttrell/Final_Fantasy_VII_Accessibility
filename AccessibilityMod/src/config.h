@@ -131,6 +131,26 @@ struct Settings {
     // controls the AUTOMATIC announcements. Default: true.
     bool timer_announcements = true;
 
+    // dialog_wait_tone: If true, a short high tone (1568 Hz) plays the
+    // moment a story dialog finishes displaying its current text and is
+    // sitting there waiting for you to press the confirm button — whether
+    // that press will turn a page, close the box, or advance to the next
+    // line. Distinct from every other tone in this mod (220 Hz wall thud,
+    // 880 Hz wandering cue, 1175 Hz proximity chirp). Independent of
+    // speak_dialog, so it still fires for players who rely on a voice
+    // acting mod instead of our TTS narration.
+    // Default: true.
+    bool dialog_wait_tone = true;
+
+    // dialog_choice_tone: If true, a short high DOUBLE tone (two quick
+    // 1568 Hz beeps) plays the instant a choice menu (ASK opcode) is
+    // presented — a separate cue from dialog_wait_tone's single tone, so
+    // the two are distinguishable by ear alone. Independent of
+    // speak_choices for the same reason dialog_wait_tone is independent of
+    // speak_dialog.
+    // Default: true.
+    bool dialog_choice_tone = true;
+
     // wall_bump_tone: If true, a short low tone plays while the player pushes
     // against a wall or obstacle on a field map (direction held but the
     // character is not moving). Vanilla FF7 has no footstep sounds, so without

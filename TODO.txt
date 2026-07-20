@@ -5,6 +5,23 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[DIALOG] Wait/choice audio cues — SHIPPED v2.30.5 (2026-07-20), awaiting play-test
+------------------------------------------------------------------------
+User request: a short high tone when a story dialog is waiting for the
+confirm button, a short high double-tone when a choice menu appears.
+Both are 1568 Hz (distinct from wall/wander/proximity tones); WAIT is
+one beep, CHOICE is two 60ms-apart. WAIT fires when a MESSAGE window's
+state byte stops changing while holding real text (not hardcoded to
+the paging transition's 14/4 values, since the "about to close" hold
+uses other values that vary by window); CHOICE fires directly off a
+new ASK dialog_id. Both independent of speak_dialog/speak_choices (so
+voice-acting-mod players who mute our TTS still get the cues). New
+config dialog_wait_tone / dialog_choice_tone (both default true).
+Research §8 v2.30.5. Deployed both installs. VERIFY: wait tone once
+per hold (not spammed, not missing) across both single-page and
+multi-page dialogs; choice tone once per ASK menu, audibly distinct
+from the wait tone.
+
 [BATTLE] Whose-turn announce on menu open — SHIPPED v2.37 (2026-07-19), PLAY-CONFIRMED 2026-07-20
 ------------------------------------------------------------------------
 User request: name the character when their battle menu opens. No new

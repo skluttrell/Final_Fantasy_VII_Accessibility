@@ -2182,6 +2182,64 @@ option %d->%d`) for the next multi-option choice to confirm or name
 the offset. No crash risk either way: the option read is bounds-
 checked against the decoded line count, so a wrong index just no-ops.
 
+### v2.30.5 (2026-07-20): two dialog audio cues — "waiting for you" and "a choice appeared"
+
+User request: a short high tone when a story dialog is waiting for the
+player to press the confirm button, and a short high DOUBLE tone when a
+choice menu is presented. No new addresses; both are logic layered on
+the existing MESSAGE/ASK hooks plus one new background thread.
+
+**Threading**: `hook_message`/`hook_ask` run on the GAME's main thread —
+`Beep()` blocks for its whole duration, so beeping directly from a hook
+would stall the game itself every time it fires. Same pattern as every
+other tone in this mod (`WallBumpThread`, the proximity/wander chirps):
+the hooks only SET edge-triggered flags (`s_dialog_wait_pending`,
+`s_dialog_choice_pending`, both `volatile LONG` in hooks.cpp), and a new
+`DialogToneThread` (proxy.cpp, 50ms poll, same cadence as
+WallBumpThread) consumes them via `Hooks::ConsumeDialogWaitTone()` /
+`ConsumeDialogChoiceTone()` — `InterlockedExchange(&flag, 0)`, so the
+read-and-clear can't race a fresh set from the hook and drop it. Both
+cues use the same pitch (1568 Hz, distinct from this mod's other three
+tones: 220/880/1175 Hz) and differ only in count — one beep vs. two
+60ms-apart — matching the request verbatim.
+
+**WAIT tone (MESSAGE)**: fires the instant a window's dialog state byte
+STOPS CHANGING while it holds real text — not by hardcoding the
+`paging` transition's specific "about to page" values (14/4), because
+the "about to close" hold uses OTHER values that vary by window
+(observed: win=0 held at 6 for ~1.2s before its 6→7 close in the
+2026-07-19 log). "Stopped changing" is the one signal common to every
+hold, since this mod's own state-machine comments already establish
+that the byte visibly advances every frame while the typewriter is
+still revealing text. Edge-triggered per window
+(`WindowState::wait_tone_armed`): fires once per hold, disarmed the
+moment state changes again OR a fresh dialog_id arrives (needed
+because win=2/3's state byte "never transitions" — research §6 — so
+CLOSE never fires there to reset it; without the DLGID-branch reset
+too, those windows would get exactly ONE wait tone ever, for their
+first dialog, then silence for the rest of the session). Independent
+of `speak_dialog` (voice-acting-mod players still get no other cue for
+when the game is actually ready for their button press). Guarded by
+`was_pending` (captured BEFORE the DLGID/PENDING/PAGE/CLOSE chain runs
+each frame) so it can't fire on the very frame the intro just started
+being announced — win=2/3's state is stuck at a single value forever,
+so without this guard the tone would coincide with, rather than
+follow, the TTS intro on those windows.
+
+**CHOICE tone (ASK)**: fires directly off "a new dialog_id was detected
+on the ASK opcode" — simpler, since a choice menu's presentation IS
+that event, no state-hold heuristic needed. Independent of
+`speak_choices` for the same reason the wait tone is independent of
+`speak_dialog`.
+
+New config: `dialog_wait_tone` / `dialog_choice_tone`, both default
+true, both documented in the shipped `ffvii_accessibility.cfg`
+template. Built clean, deployed both installs 2026-07-20 (hash-
+verified). VERIFY next play session: the wait tone lands once per hold
+across ordinary multi-page AND single-page dialogs (not per frame,
+not missing); the choice tone fires once per ASK menu, distinguishable
+by ear from the single wait tone.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
