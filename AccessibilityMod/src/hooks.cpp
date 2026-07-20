@@ -95,6 +95,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace Hooks {
 
@@ -215,8 +216,18 @@ struct WindowState {
     // (starting, paging, closing) by comparing last vs. current each frame.
     uint8_t last_opcode    = 0;
 
-    // Pages spoken so far on the current dialog (reserved for v2 multi-page TTS).
-    uint8_t page_count     = 0;
+    // v2.30.4: the decoded PAGES of the current dialog (one entry per
+    // on-screen page — see FF7Text::DecodePages), and the index of the next
+    // one to speak. START speaks pages[0] and sets next_page=1; each PAGE
+    // transition speaks pages[next_page++]. This is the field this struct's
+    // page_count field was originally reserved for (see the v1 header
+    // comment at the top of this file) — the whole message is decoded once
+    // at START either way (FF7's rawptr holds it all), but now only ONE
+    // page's worth is spoken per screen instead of the entire message at
+    // once (player report 2026-07-20: speaking everything at window-open
+    // sounds like repeating, because the display is still catching up).
+    std::vector<std::wstring> pages;
+    size_t next_page = 0;
 
     // The dialog_id we most recently spoke for this window slot (0xFF = none spoken yet).
     // When dialog_id changes from what we last spoke, a new dialog is starting.
@@ -237,17 +248,15 @@ struct WindowState {
     //   s_old_message() has already updated the rawptr to the correct dialog text.
     bool pending_speak = false;
 
-    // v2.30.3: the full decoded text spoken so far for THIS dialog. FF7's
-    // rawptr holds the COMPLETE multi-page message (page breaks 0xE8/0xE9
-    // included), and Decode reads all pages as one string — so the START
-    // speak already covers everything. The paging state machine then spoke
-    // the whole message AGAIN on each page advance, so long dialogs
-    // re-read content when the player pressed to continue (player report
-    // 2026-07-19). We now speak only the part not already spoken: on a
-    // page advance whose decoded text equals what we already said, nothing
-    // is spoken; if the text grew (streamed load), only the new suffix is.
-    // Cleared on new dialog and on close.
-    std::wstring last_spoken;
+    // v2.30.4: ASK-only. One entry per choice LINE (FF7Text::DecodeLines --
+    // splits on every newline, unlike pages[] above which only splits on
+    // page breaks; ASK's answers are conventionally one line each), and the
+    // option index we most recently announced (-1 = none yet, so the first
+    // poll after PENDING speak doesn't immediately re-announce option 0).
+    // Unused by hook_message. Cleared on new dialog and on close, same as
+    // pages[] above.
+    std::vector<std::wstring> ask_lines;
+    int ask_last_option = -1;
 };
 static WindowState s_window[8];
 
@@ -355,26 +364,17 @@ static bool is_valid_dialog_rawptr(const char* raw_text)
 //
 // Calling convention: __cdecl (confirmed from FFNx's opcode_voice_message).
 // ---------------------------------------------------------------------------
-// v2.30.3: speak only the part of `decoded` not already covered by `already`
-// (the text spoken so far this dialog), then record `already = decoded`.
-// Kills the paging duplication: on a page advance whose text equals what we
-// already said, nothing is spoken; if the message grew (streamed load), only
-// the new suffix is. Diverging text (a genuinely new page that doesn't extend
-// the old) is spoken in full.
-static void speak_incremental(const std::wstring& decoded,
-                              std::wstring& already, bool interrupt)
+// speak_page: speak s_window[window_id].pages[next_page] (if in range and
+// non-empty) via Tolk, then advance next_page. Shared by the PENDING (START)
+// and PAGE-advance paths below — both just say "speak whatever page comes
+// next", they differ only in WHEN they fire.
+static void speak_page(WindowState& win, bool interrupt)
 {
-    std::wstring to_speak;
-    if (!already.empty() && decoded.size() >= already.size() &&
-        decoded.compare(0, already.size(), already) == 0)
-        to_speak = decoded.substr(already.size());   // grew (or identical -> "")
-    else
-        to_speak = decoded;                           // fresh or diverged
-    already = decoded;
-    const auto first = to_speak.find_first_not_of(L' ');
-    if (first == std::wstring::npos)
-        return;                                       // nothing new to say
-    TTS::Speak(to_speak.substr(first), interrupt);
+    if (win.next_page >= win.pages.size())
+        return;                                   // no more pages decoded than shown
+    const std::wstring& text = win.pages[win.next_page++];
+    if (!text.empty())
+        TTS::Speak(text, interrupt);
 }
 
 static int __cdecl hook_message()
@@ -517,7 +517,8 @@ static int __cdecl hook_message()
             log_field_header_if_changed();
             s_window[window_id].pending_speak  = true;
             s_window[window_id].last_dialog_id = dialog_id;
-            s_window[window_id].last_spoken.clear();   // v2.30.3: fresh dialog
+            s_window[window_id].pages.clear();          // v2.30.4: fresh dialog
+            s_window[window_id].next_page = 0;
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] MSG win=%u id=%u [DLGID] pending",
@@ -530,45 +531,38 @@ static int __cdecl hook_message()
         // raw_text was captured at the top of this hook call, AFTER last frame's
         // s_old_message() already updated DIALOG_TEXT_PTRS[window_id] to the
         // new dialog's text. Read it now. If still invalid, retry next frame.
+        //
+        // v2.30.4: FF7's rawptr holds the WHOLE multi-page message the
+        // instant the window opens (there's no "page 2 doesn't exist yet"
+        // state), so we decode all of it right here — but only SPEAK the
+        // first page. The rest sit cached in s_window[].pages, one page
+        // spoken per later PAGE-advance event, so TTS stays paced to what's
+        // actually on screen instead of reading the whole message up front
+        // (player report 2026-07-20).
         // ------------------------------------------------------------------
         else if (s_window[window_id].pending_speak && Config::Get().speak_dialog) {
             if (is_valid_dialog_rawptr(raw_text)) {
-                const std::wstring decoded = FF7Text::Decode(raw_text);
-                if (!decoded.empty()) {
-                    char dbg[80];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u id=%u [PENDING] speaking",
-                        window_id, s_window[window_id].last_dialog_id);
-                    Log::Write(dbg);
-                    log_raw_bytes("PENDING", raw_text);
-                    speak_incremental(decoded, s_window[window_id].last_spoken,
-                                      /*interrupt=*/true);
-                } else {
-                    char dbg[80];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u id=%u [PENDING] decoded empty",
-                        window_id, s_window[window_id].last_dialog_id);
-                    Log::Write(dbg);
-                }
+                s_window[window_id].pages = FF7Text::DecodePages(raw_text);
+                char dbg[80];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)",
+                    window_id, s_window[window_id].last_dialog_id,
+                    s_window[window_id].pages.size());
+                Log::Write(dbg);
+                log_raw_bytes("PENDING", raw_text);
+                speak_page(s_window[window_id], /*interrupt=*/true);
                 s_window[window_id].pending_speak = false;
             }
             // else: rawptr not ready; retry next frame
         }
         // ------------------------------------------------------------------
-        // PAGE ADVANCE: speak only text not already read (v2.30.3). FF7's
-        // rawptr holds the whole message, so START already read every page;
-        // speak_incremental says nothing when the page's text matches what
-        // was spoken, and only the new tail if the message grew — no more
-        // re-reading the message when the player presses to continue.
+        // PAGE ADVANCE: speak the next cached page (v2.30.4). The message was
+        // already fully decoded at START (see above) -- this just paces one
+        // more page of it out to TTS per advance, instead of re-decoding (and
+        // previously, re-speaking) the whole rawptr again.
         // ------------------------------------------------------------------
         else if (paging && Config::Get().speak_dialog) {
-            if (is_readable_ptr(raw_text)) {
-                const std::wstring decoded = FF7Text::Decode(raw_text);
-                if (!decoded.empty())
-                    speak_incremental(decoded, s_window[window_id].last_spoken,
-                                      /*interrupt=*/true);
-            }
-            s_window[window_id].page_count++;
+            speak_page(s_window[window_id], /*interrupt=*/true);
         }
         // ------------------------------------------------------------------
         // DIALOG CLOSE: silence TTS and reset tracking for next dialog.
@@ -583,7 +577,8 @@ static int __cdecl hook_message()
             // a new dialog (different id) to be detected on the very next frame.
             s_window[window_id].pending_speak  = false;
             s_window[window_id].last_dialog_id = dialog_id;
-            s_window[window_id].last_spoken.clear();   // v2.30.3
+            s_window[window_id].pages.clear();          // v2.30.4
+            s_window[window_id].next_page = 0;
             TTS::Silence();
         }
 
@@ -601,7 +596,19 @@ static int __cdecl hook_message()
 //
 // v1 behavior: speak the full ASK dialog text (question + all options) once
 // when the menu first appears. Uses the same dialog_id tracking as hook_message.
-// Per-option TTS on cursor movement is deferred to v2.
+//
+// v2.30.4: also announce the highlighted OPTION line as the player moves the
+// cursor, via the scan-confirmed ASKMENU_OPTION global (see its doc comment
+// in ff7_addresses.h — live-scan-confirmed, not statically verified). The
+// intro ("Choose: " + full text) is unchanged and still speaks first.
+// SPECULATIVE: FF7Text::DecodeLines() splits the text on every newline,
+// assuming each choice renders as one line with the option lines coming
+// right after any question line(s) — untested against a real multi-option
+// choice in play (the scan session that found ASKMENU_OPTION didn't have
+// speak_choices instrumented for it). If a play report shows the WRONG
+// line announced (e.g. the question text instead of the option, suggesting
+// a leading question line shifts the index), the fix is an option-index
+// offset, not a new address. Debug-logged for that verification.
 //
 // ASK WINDOW_ID IS AT PARAMETER INDEX 1 (not 0):
 //   FFNx voice.cpp opcode_voice_ask (line 462): get_field_parameter<byte>(1).
@@ -656,6 +663,8 @@ static int __cdecl hook_ask(int unk)
             Config::Get().speak_choices) {
             s_window[window_id].pending_speak  = true;
             s_window[window_id].last_dialog_id = dialog_id;
+            s_window[window_id].ask_lines.clear();      // v2.30.4: fresh choice
+            s_window[window_id].ask_last_option = -1;
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] ASK win=%u id=%u [DLGID] pending", window_id, dialog_id);
@@ -682,6 +691,17 @@ static int __cdecl hook_ask(int unk)
                         window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
                 }
+                // v2.30.4: also split into per-line text for option-cursor
+                // announces below. Assume the cursor starts on option 0 (the
+                // intro just spoken already covers it), so the FIRST cursor
+                // MOVE — not the initial position — triggers the next speak.
+                s_window[window_id].ask_lines = FF7Text::DecodeLines(raw_text);
+                s_window[window_id].ask_last_option = 0;
+                char lines_dbg[80];
+                _snprintf_s(lines_dbg, sizeof(lines_dbg), _TRUNCATE,
+                    "[FF7Access] ASK win=%u lines=%zu",
+                    window_id, s_window[window_id].ask_lines.size());
+                Log::Write(lines_dbg);
                 s_window[window_id].pending_speak = false;
             }
             // else: rawptr not ready; retry next frame
@@ -691,7 +711,37 @@ static int __cdecl hook_ask(int unk)
             // one-frame re-fire of the just-closed ASK on the state=7 frame.
             s_window[window_id].pending_speak  = false;
             s_window[window_id].last_dialog_id = dialog_id;
+            s_window[window_id].ask_lines.clear();      // v2.30.4
+            s_window[window_id].ask_last_option = -1;
             TTS::Silence();
+        }
+
+        // ------------------------------------------------------------------
+        // OPTION CURSOR (v2.30.4): announce the highlighted line on change.
+        // Runs every frame once the intro has spoken (pending_speak cleared)
+        // — the cursor can move on any frame, not just on a state
+        // transition, so this is independent of the branches above.
+        // ASKMENU_OPTION is scan-confirmed but not statically verified (see
+        // its ff7_addresses.h comment); bounding the read to ask_lines'
+        // size means a wrong/stale value can silently no-op, not crash or
+        // speak garbage.
+        // ------------------------------------------------------------------
+        if (!s_window[window_id].pending_speak && !closing &&
+            Config::Get().speak_choices && !s_window[window_id].ask_lines.empty()) {
+            const int option =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::ASKMENU_OPTION);
+            if (option != s_window[window_id].ask_last_option &&
+                static_cast<size_t>(option) < s_window[window_id].ask_lines.size()) {
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] ASK win=%u option %d->%d",
+                    window_id, s_window[window_id].ask_last_option, option);
+                Log::Write(dbg);
+                const std::wstring& line = s_window[window_id].ask_lines[option];
+                if (!line.empty())
+                    TTS::Speak(line, /*interrupt=*/true);
+                s_window[window_id].ask_last_option = option;
+            }
         }
 
         s_window[window_id].last_opcode = current_state;

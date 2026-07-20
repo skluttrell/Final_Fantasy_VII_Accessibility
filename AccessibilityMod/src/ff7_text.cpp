@@ -8,6 +8,27 @@
 
 namespace FF7Text {
 
+namespace {
+
+// v2.30.4: word-boundary guard shared by every content-insertion point in
+// decode_walk() below. A byte that inserts substitute text (dynamic token,
+// inline character name) or vanishes silently (unrecognized control byte)
+// must not fuse the words on either side of it. The game's own renderer
+// doesn't need an explicit space byte around these -- the icon/substitution
+// (or simply the absence of a printed glyph) IS the separator on screen --
+// but the flattened TTS string has nothing else to mark the gap.
+//
+// Player report 2026-07-20 (Wedge line): "Uhnothin'.sorry." (an unhandled
+// control byte between "Uh" and "nothin'" vanished with no compensating
+// space) and "Hey[item name]What about our money?" (the item-name token
+// spliced directly into the surrounding words). Both are this same bug.
+void guard_space(std::wstring& out)
+{
+    if (!out.empty() && out.back() != L' ') out += L' ';
+}
+
+} // namespace
+
 // Default English character names, indexed as [byte - 0xEA].
 // Token 0xEA=Cloud, 0xEB=Barret, ..., 0xF2=Cid.
 // Used only when no name provider is registered or it has no live name yet
@@ -159,12 +180,23 @@ wchar_t DecodeChar(unsigned char byte)
     return L'\0';
 }
 
-std::wstring Decode(const char* encoded_text)
-{
-    if (!encoded_text) return {};
+namespace {
 
-    std::wstring result;
-    result.reserve(128);
+// decode_walk: the shared byte-stream walk behind Decode(), DecodePages(),
+// and DecodeLines(). Returns one RAW (un-canonicalized, untrimmed) wstring
+// per segment. A page break (0xE8/0xE9) always ends the current segment.
+// When split_lines is true, a newline (0xE0/0xE7) ends it too (DecodeLines'
+// one-entry-per-screen-line splitting); when false, a newline is just a
+// guarded space within the current segment (Decode()/DecodePages() --
+// prose word-wraps across newlines within one page). Callers that don't
+// care about segment boundaries (Decode()) just join the entries back
+// together. Always returns at least one (possibly empty) entry.
+std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines)
+{
+    std::vector<std::wstring> pages;
+    pages.emplace_back();
+    pages.back().reserve(128);
+    if (!encoded_text) return pages;
 
     const uint8_t* p   = reinterpret_cast<const uint8_t*>(encoded_text);
     bool at_start       = true; // true until the first visible content byte is consumed
@@ -175,6 +207,7 @@ std::wstring Decode(const char* encoded_text)
 
     while (p < p_end && *p != 0xFF) {
         const uint8_t byte = *p;
+        std::wstring& result = pages.back();
 
         // ── Speaker indicator (MUST come before mid-string token check) ────────
         // Bytes 0xEA-0xF2 at the very first position of a dialog string mark the
@@ -195,8 +228,13 @@ std::wstring Decode(const char* encoded_text)
         // WHY CHECK at_start ABOVE FIRST: without the at_start guard, 0xEB
         // (Barret) at position 0 would be consumed here as a dynamic token,
         // emitting "[item name]" instead of "Barret: ".
+        // v2.30.4: guard both sides -- the placeholder text is much longer
+        // than the icon/number FF7 renders inline, and the original bytes
+        // often have no explicit space around the substitution point.
         else if (byte >= 0xEB && byte <= 0xF0) {
+            guard_space(result);
             result += token_placeholder(byte);
+            result += L' ';
             p += 4;
             at_start = false;
         }
@@ -204,13 +242,17 @@ std::wstring Decode(const char* encoded_text)
         else if (byte == 0xEA) {
             // 0xEA mid-string = Cloud's name (character record 0) — the live
             // savemap name via char_name(), so renames are respected (v2.19).
+            guard_space(result);
             result += char_name(0);
+            result += L' ';
             ++p;
             at_start = false;
         }
         // ── Mid-string Vincent / Cid reference ────────────────────────────────
         else if (byte == 0xF1 || byte == 0xF2) {
+            guard_space(result);
             result += char_name(byte - 0xEA);
+            result += L' ';
             ++p;
             at_start = false;
         }
@@ -222,13 +264,25 @@ std::wstring Decode(const char* encoded_text)
             ++p;
             // Do not clear at_start -- button icons precede text, not content.
         }
-        // ── Newline / page break ───────────────────────────────────────────────
+        // ── Newline ──────────────────────────────────────────────────────────
         // 0xE0: confirmed newline in the PC dialog rawptr data (tested v1.2-v1.7).
         // 0xE7: newline as documented in ff7tk eng[] table.
-        // 0xE8, 0xE9: new-page separators -- treated as whitespace for TTS;
-        //             actual page-advance TTS is driven by state machine transitions.
-        else if (byte == 0xE0 || byte == 0xE7 || byte == 0xE8 || byte == 0xE9) {
-            if (!result.empty() && result.back() != L' ') result += L' ';
+        // split_lines (DecodeLines() only): a newline ends the segment, same
+        // as a page break -- see the doc comment above decode_walk().
+        else if (byte == 0xE0 || byte == 0xE7) {
+            if (split_lines) pages.emplace_back();
+            else guard_space(result);
+            ++p;
+            at_start = false;
+        }
+        // ── Page break ───────────────────────────────────────────────────────
+        // 0xE8, 0xE9: new-page separators. FF7's rawptr holds the COMPLETE
+        // multi-page message from window-open, so these mark where the
+        // DISPLAY actually breaks to a fresh screen (v2.30.4: split into a
+        // new page entry here instead of flattening to a space -- see
+        // DecodePages() doc comment in ff7_text.h for why).
+        else if (byte == 0xE8 || byte == 0xE9) {
+            pages.emplace_back();
             ++p;
             at_start = false;
         }
@@ -252,24 +306,37 @@ std::wstring Decode(const char* encoded_text)
             at_start = false;
         }
         // ── Unknown / unhandled control byte ─────────────────────────────────
+        // v2.30.4: this byte previously vanished with NO output and no
+        // compensating space -- if it sits between two words with no
+        // explicit space byte around it (which the original renderer never
+        // needed, since a non-printing control code isn't a visible glyph),
+        // the words fuse ("Uh" + <dropped byte> + "nothin'" -> "Uhnothin'",
+        // player report 2026-07-20). Guard the boundary like every other
+        // content-affecting byte above.
         else {
+            guard_space(result);
             ++p;
         }
     }
 
-    // ── Character canonicalization filter ─────────────────────────────────────
-    // Maps Unicode characters to their best speakable ASCII form, keeping
-    // accented Latin as-is (TTS handles it), and discarding everything that has
-    // no speech value (mathematical symbols, box-drawing, etc.).
-    //
-    // WHY NOT STRIP-ONLY: discarding a non-ASCII character without replacing
-    // it would concatenate adjacent words ("job's" -> "jobs"). We emit one
-    // replacement space per run of discarded characters to preserve word
-    // boundaries, then trim leading/trailing spaces.
+    return pages;
+}
+
+// ── Character canonicalization filter ─────────────────────────────────────
+// Maps Unicode characters to their best speakable ASCII form, keeping
+// accented Latin as-is (TTS handles it), and discarding everything that has
+// no speech value (mathematical symbols, box-drawing, etc.).
+//
+// WHY NOT STRIP-ONLY: discarding a non-ASCII character without replacing
+// it would concatenate adjacent words ("job's" -> "jobs"). We emit one
+// replacement space per run of discarded characters to preserve word
+// boundaries, then trim leading/trailing spaces.
+std::wstring filter_and_trim(const std::wstring& raw)
+{
     std::wstring filtered;
-    filtered.reserve(result.size());
+    filtered.reserve(raw.size());
     bool prev_was_replacement = true; // start-of-string acts like a space
-    for (wchar_t ch : result) {
+    for (wchar_t ch : raw) {
         const wchar_t out = canonical_ch(ch);
         if (out != L'\0') {
             filtered += out;
@@ -284,6 +351,42 @@ std::wstring Decode(const char* encoded_text)
     if (first == std::wstring::npos) return {};
     const std::wstring::size_type last  = filtered.find_last_not_of(L' ');
     return filtered.substr(first, last - first + 1);
+}
+
+} // namespace
+
+std::wstring Decode(const char* encoded_text)
+{
+    if (!encoded_text) return {};
+
+    // Flatten pages back into one string (page breaks read the same as a
+    // newline here) -- callers that don't page-pace speech just want the
+    // full text, same behavior as before v2.30.4.
+    const std::vector<std::wstring> pages = decode_walk(encoded_text, /*split_lines=*/false);
+    std::wstring joined;
+    for (size_t i = 0; i < pages.size(); ++i) {
+        if (i != 0) guard_space(joined);
+        joined += pages[i];
+    }
+    return filter_and_trim(joined);
+}
+
+std::vector<std::wstring> DecodePages(const char* encoded_text)
+{
+    std::vector<std::wstring> out;
+    if (!encoded_text) return out;
+    for (const std::wstring& raw : decode_walk(encoded_text, /*split_lines=*/false))
+        out.push_back(filter_and_trim(raw));
+    return out;
+}
+
+std::vector<std::wstring> DecodeLines(const char* encoded_text)
+{
+    std::vector<std::wstring> out;
+    if (!encoded_text) return out;
+    for (const std::wstring& raw : decode_walk(encoded_text, /*split_lines=*/true))
+        out.push_back(filter_and_trim(raw));
+    return out;
 }
 
 } // namespace FF7Text

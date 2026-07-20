@@ -95,6 +95,23 @@ constexpr uint32_t BUILD_DIALOG_WINDOW = 0x6E97E0;
 // Source: ff7_externals.current_dialog_string_pointer // 0xCBF578 in ff7.h
 constexpr uint32_t DIALOG_TEXT_PTRS = 0xCBF578;
 
+// ASK (choice-menu) currently-highlighted option index (0-based).
+//
+// PROVENANCE: STATIC (ff7_ask_cursor_static.py, 2026-07-19) found the ASK
+// handler (0x618E83) keeps the live selection in a STACK LOCAL passed by
+// address into the cursor-move update loop (0x6310A1) -- there is no fixed
+// global for it, and it is NOT part of the per-window struct at
+// 0xCFF5D3 + window_id*0x30 that holds the ASK window's state byte
+// (that struct's region was scanned too; this address fell outside it).
+// LIVE-SCAN-CONFIRMED (ff7_ask_cursor_scan.py, log
+// ask_cursor_scan_20260720_102217.log): two press-and-revert rounds
+// (Down then Up) intersected to this ONE candidate -- goes +1 on Down,
+// reverts exactly on Up, both rounds.
+//
+// NOT YET WIRED: no code reads this yet (TODO.txt DIALOG "Choice menus").
+// hook_ask should track it and announce the option line on change.
+constexpr uint32_t ASKMENU_OPTION = 0x00CC14D1;  // u8, 0-based selected option
+
 // Pointer to the decompressed field file buffer.
 // The 4-byte value AT this address IS the buffer base address (single dereference).
 // buf = *(char**)FIELD_FILE_BUFFER

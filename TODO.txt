@@ -5,18 +5,17 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[BATTLE] Whose-turn announce on menu open — SHIPPED v2.37 (2026-07-19), awaiting play-test
+[BATTLE] Whose-turn announce on menu open — SHIPPED v2.37 (2026-07-19), PLAY-CONFIRMED 2026-07-20
 ------------------------------------------------------------------------
 User request: name the character when their battle menu opens. No new
 addresses (BATTLE_ACTIVE_SLOT + PartySlotLabel). "Cloud's turn. Attack."
 folded into the first command announce (avoids clobber). Fires once per
 turn session (command + submenus + targeting); cancelling among
 submenus doesn't re-announce; a fresh turn for the same character does.
-Research §8 v2.37. Gate: speak_battle_menu. VERIFY: name spoken once
-when each character's menu opens; NOT repeated when cancelling out of
-magic/item back to the command menu.
+Research §8 v2.37. Gate: speak_battle_menu. PLAY-CONFIRMED 2026-07-20
+("the character turn announcement has been play tested and works").
 
-[BATTLE] List-select fix + scene-message reader — SHIPPED v2.36 (2026-07-19), awaiting play-test
+[BATTLE] List-select fix + scene-message reader — SHIPPED v2.36 (2026-07-19), PLAY-CONFIRMED 2026-07-20
 ------------------------------------------------------------------------
 Two player reports fixed:
 (1) items/magic mis-announce in battle. Confirm-path disasm proved the
@@ -31,13 +30,10 @@ Two player reports fixed:
     from 0x9AD1E0 + offset table, dedups by buffer_idx, speaks queued.
     Shipped speculatively (scorpion one-shot) + debug-logged.
 Research §8 v2.36. Gate: speak_battle. Deployed both installs
-2026-07-19 (hash-verified). VERIFY:
-  - full magic list speaks the CORRECT spell per cursor cell (esp.
-    rows 2+); Potions announce in the battle Item list;
-  - scorpion tail warning + other enemy dialogue speaks (log line
-    "BATTLE scene msg idx=0xN => ...");
-  - no garbage/dup scene messages (log "undecodable" = tune the guard).
-  - summon list layout still ASSUMED = magic; verify when summons exist.
+2026-07-19 (hash-verified). PLAY-CONFIRMED 2026-07-20 ("the battle
+item/magic list has been play tested and appears to work" — fix (1)
+confirmed; (2) not separately reported on, no missing-warning report
+either).
 
 [BATTLE] Victory screens TTS — v2.35 CONFIRMED + v2.35.1 stale-row fix (2026-07-19)
 ------------------------------------------------------------------------
@@ -67,26 +63,49 @@ shows. STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
   - drops speak correct names; log "VICTORY drop[i] id=N f4=M" names
     the f4 field (qty? taken-flag?) from real data.
 
-[DIALOG] Long-dialog paging re-read — FIXED v2.30.3 (2026-07-19)
+[DIALOG] Long-dialog paging re-read — SUPERSEDED by v2.30.4 (2026-07-20)
 ------------------------------------------------------------------------
 Player report: long dialogs re-read parts when pressing to continue.
-Cause: rawptr holds the whole multi-page message, Decode reads all
-pages at START, and the paging state machine re-spoke it on each
-advance. FIX: per-window last_spoken + speak_incremental (speaks only
-uncovered text; page advance over same text = silent). Deployed both
-installs. VERIFY: long dialogs read once, advancing is silent (or reads
-only genuinely new text).
+v2.30.3's fix (per-window last_spoken + speak_incremental) correctly
+stopped literal re-speaking, but play-testing showed the actual bug was
+PACING: the rawptr holds the whole multi-page message at window-open,
+so START spoke every page before the player advanced past page 1 —
+right words, TTS running ahead of the screen. v2.30.4: FF7Text::
+DecodePages() splits on page-break bytes instead of flattening them;
+hook_message speaks one cached page per START/PAGE event. last_spoken/
+speak_incremental removed (DecodePages supersedes them). Research §8
+v2.30.4. Deployed both installs. VERIFY: dialogs speak one page per
+screen, no reading ahead.
 
-[DIALOG] Choice menus: only first option read, no cursor tracking — DEFERRED (needs scan)
+[DIALOG] Word-boundary gluing around tokens/control bytes — FIXED v2.30.4 (2026-07-20)
+------------------------------------------------------------------------
+Player report (Wedge line, train graveyard): "Hey[item name]What about
+our money?" and "Uhnothin'.sorry." — words fused with no space. Cause:
+dynamic-token/inline-name substitutions spliced text in with no
+compensating space, and unhandled control bytes vanished with NONE at
+all (unlike discarded wide chars, which already got one from the tail
+filter). Fix: guard_space() called at every content-affecting branch in
+decode_walk (ff7_text.cpp), guarding leading space before insertions/
+skips and trailing space after token/name substitutions. Research §8
+v2.30.4. Deployed both installs. VERIFY: item/number substitutions and
+ellipsis/control-code gaps read as separate words, not glued.
+
+[DIALOG] Choice menus: cursor tracking — SHIPPED v2.30.4 (2026-07-20), SPECULATIVE/unverified
 ------------------------------------------------------------------------
 Player report: choice menus read only the first option and don't
-announce others as you move. Right fix = announce the highlighted
-option on cursor change. STATIC found the ASK live selection is a stack
-local (no global); it lives in the per-window struct 0xCFF5D3+win*0x30
-(state +0x11). RUN investigate/ff7_ask_cursor_scan.py at a 3+ option
-choice to find the option-byte offset, then wire ASKMENU_OPTION and
-have hook_ask announce the option line on change. (hook_ask currently
-speaks "Choose: " + full text once — keep as the intro, add per-option.)
+announce others as you move. Scan run 2026-07-20
+(ask_cursor_scan_20260720_102217.log): ONE candidate, ASKMENU_OPTION
+0xCC14D1 (a plain global, NOT the per-window struct STATIC had
+flagged). Wired into hook_ask: FF7Text::DecodeLines() splits the ASK
+text on every newline (one entry per on-screen choice line), and the
+hook announces lines[option] when ASKMENU_OPTION changes. Cursor
+assumed to start on option 0 (covered by the existing "Choose: " +
+full-text intro). Research §8 v2.30.4. Deployed both installs.
+SPECULATIVE — UNVERIFIED whether decoded line[i] actually lines up
+with cursor option i (a leading question line could shift the index).
+Debug-logged ("ASK win=%u option %d->%d") for the next 3+ option
+choice to confirm or name the offset. Bounds-checked either way: a
+wrong index just no-ops, no crash/garbage speech.
 
 [NAV] Train-graveyard triggers all say "line N" — DATA LIMITATION (not a bug)
 ------------------------------------------------------------------------

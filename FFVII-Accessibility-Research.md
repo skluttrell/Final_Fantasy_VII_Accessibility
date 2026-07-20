@@ -116,6 +116,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | Symbol | Address | Source |
 |--------|---------|--------|
 | `current_dialog_string_pointer` (DIALOG_TEXT_PTRS) | `0xCBF578` | `ff7.h` |
+| `ASKMENU_OPTION` | `0x00CC14D1` | u8, 0-based ASK choice-menu highlighted option. LIVE-SCAN-CONFIRMED ONLY (ask_cursor_scan_20260720_102217.log, single intersected press-and-revert candidate, +1 Down / revert Up); falls OUTSIDE the per-window struct region 0xCFF5D3+win·0x30 that STATIC (ff7_ask_cursor_static.py) found the ASK update loop's state byte in — this is a separate global, not (yet) statically explained. v2.30.4 wires it into hook_ask; line-index alignment unverified (see §8 v2.30.4) |
 | `field_file_buffer` | `0xCFF594` | `externals_102_us.h` |
 | `field_script_ptr` | `0xCBF5E8` | `externals_102_us.h` |
 | `field_curr_script_position` | `0xCC0CF8` | `ff7_data.h` |
@@ -1867,7 +1868,8 @@ v2.34.1 zeroes the ms counter every poll too, so the game never
 completes a second and the clock truly stops. One debug line now logs
 every T press (shift/frozen/running/live/val). Deployed both installs
 2026-07-19; the No.1 reactor escape is a one-shot, so freeze re-tests
-at the next timed sequence.
+at the next timed sequence. **PLAY-CONFIRMED 2026-07-20** ("the timer
+pause has been play tested and works").
 
 ### v2.30.2 (2026-07-19): wall + proximity tones dead during a timed escape
 
@@ -1895,6 +1897,8 @@ shows in-range 0-7). Suppression during real dialogs is unchanged
 false-fire the dead-stop wall tone). A throttled "MSG steady win/state/
 text" diagnostic now logs the clock window's signature so the next
 timed sequence confirms the fix. Deployed both installs 2026-07-19.
+**PLAY-CONFIRMED 2026-07-20** ("wall and interaction tones now work
+during the escape scene").
 
 ### v2.30.3 (2026-07-19): long-dialog paging no longer re-reads the message
 
@@ -1910,6 +1914,10 @@ text says nothing, and if the message ever grows (streamed load) only
 the new suffix is read. Cleared on new dialog / close. Deployed both
 installs 2026-07-19.
 
+**SUPERSEDED by v2.30.4** (below): this fix correctly stopped the
+literal re-speak, but play-testing showed the real symptom was
+different from what it looked like — see v2.30.4.
+
 ### Battle/choice/trigger issues reported 2026-07-19 (train graveyard)
 
 Three reports, triaged:
@@ -1924,6 +1932,11 @@ Three reports, triaged:
   (ff7_ask_cursor_scan.py: move the choice cursor, watch the struct).
   Then hook_ask announces the highlighted option line on change.
   DEFERRED to the scan (needs the game + a 3+ option choice).
+  **Scan run 2026-07-20** (ask_cursor_scan_20260720_102217.log, two
+  press-and-revert rounds intersected): ONE candidate, **0xCC14D1**.
+  NEXT: wire as ASKMENU_OPTION in ff7_addresses.h, have hook_ask track
+  it and announce the option line on change (still keep "Choose: " +
+  full text as the intro on open).
 - **Train-graveyard triggers all say "line N"** — NOT a bug: the log
   shows those trigger entities are literally dev-named 'line'
   (vs other fields' 'border'/'save point'), so they translate to
@@ -2056,9 +2069,10 @@ queued (never clobbers action speech). Shipped speculatively (the
 scorpion is a one-shot) with debug logging, like the timer.
 
 Gate: speak_battle. Deployed both installs 2026-07-19 (hash-verified).
-Awaiting play-test: full magic list announces correct spells; Potions
-speak in battle; scorpion tail warning (and other enemy dialogue)
-speaks.
+**PLAY-CONFIRMED 2026-07-20** ("the battle item/magic list has been
+play tested and appears to work" — list-layout fix (1) confirmed; the
+scene-message reader (2) wasn't separately called out, no report of a
+missing scorpion warning either).
 
 ### v2.37 (2026-07-19): "whose turn is it" on battle-menu open
 
@@ -2083,7 +2097,90 @@ turn:
   command.
 
 Gate: speak_battle_menu (with the rest of the battle-menu TTS).
-Deployed both installs 2026-07-19; awaiting play-test.
+Deployed both installs 2026-07-19. **PLAY-CONFIRMED 2026-07-20** ("the
+character turn announcement has been play tested and works").
+
+### v2.30.4 (2026-07-20): dialog reads pace to the SCREEN, and stop gluing words
+
+Two player reports from the train-graveyard session, both traced to
+`ff7_text.cpp`.
+
+**(1) "Duplicate" speech was actually a PACING bug, not a re-read.**
+Player's own diagnosis, confirmed by re-reading the v2.30.3 code: FF7's
+dialog rawptr holds the COMPLETE multi-page message the instant the
+window opens — there's no "page 2 doesn't exist yet" state to wait
+for. v2.30.3's fix (speak only text not already covered) correctly
+stopped literal re-speaking, but the START speak still decoded and
+read the ENTIRE message — every page — before the player had advanced
+past page 1. The words were right; the pacing wasn't: TTS ran ahead of
+the screen, so page 2 "sounded like" a repeat of what had already been
+read once the display caught up to it. Fix: `FF7Text::DecodePages()`
+splits the decode on page-break bytes (0xE8/0xE9) instead of
+flattening them to a space, returning one string per on-screen page.
+`hook_message` now decodes the whole rawptr once at START (into
+`WindowState::pages`) but speaks only `pages[0]`; each later PAGE
+transition (14→2 / 4→8) speaks the next cached page
+(`WindowState::next_page`, the index the struct's `page_count` field
+was reserved for since v1). No more re-decoding — or re-speaking — on
+each advance; TTS says exactly one page per screen, in step with what
+the player is looking at. `speak_incremental` and `last_spoken` are
+gone; `DecodePages` supersedes them entirely, so v2.30.3's mechanism
+is retired rather than layered under this.
+
+**(2) Word-boundary gluing: "Hey[item name]What about our money?" /
+"Uhnothin'.sorry."** Both are the same root cause in `decode_walk`
+(nee the loop inside `Decode`): several branches inserted or consumed
+content with NO compensating space, unlike the newline/page-break
+branch which always guarded one. Concretely:
+- Dynamic tokens (0xEB-0xF0 mid-string: item name, number, target,
+  attack, special, target-letter) spliced their `[placeholder]` text
+  directly between whatever bytes sat on either side — the placeholder
+  is much longer than the icon/number FF7 actually renders inline, and
+  the original bytes often have no explicit space around the
+  substitution point (the icon itself is the visual separator).
+- Inline character-name references (0xEA/0xF1/0xF2 mid-string) had the
+  same gap.
+- **The unknown/unhandled control byte branch appended NOTHING at all
+  — not even a placeholder space** — unlike the tail canonicalization
+  filter, which already does this for discarded *wide characters* (see
+  its own "WHY NOT STRIP-ONLY" comment) but never sees bytes that were
+  dropped before reaching it. A stray control byte (something outside
+  every other case: 0xE1-0xE6, 0xF3-0xF5, 0xFA-0xFE) sitting between
+  two words with no explicit space byte around it — because the
+  original renderer never needed one for a non-printing code — glues
+  them: "Uh" + ⟨dropped byte⟩ + "nothin'" → "Uhnothin'", matching the
+  Wedge-line report exactly.
+
+Fix: a shared `guard_space()` helper (ensure the output ends in a
+space before inserting/skipping) is now called at every one of these
+points, both before inserted text and (for tokens/names) after it too.
+Newline/page-break already had equivalent guarding; this just extends
+the same discipline to every other content-affecting branch. Refactor
+note: `Decode()`'s inner loop was pulled out into `decode_walk()` (used
+by both `Decode()` and the new `DecodePages()`) plus a `filter_and_trim()`
+helper for the tail canonicalization pass, so the two entry points
+share one walk instead of duplicating the byte-decode logic.
+
+No new addresses; pure text-decode logic. Built clean, deployed both
+installs 2026-07-20 (hash-verified). VERIFY next play session: long
+dialogs speak one page per screen (no reading ahead); no more glued
+words around item/number substitutions or stray control bytes.
+
+**(3) ASK choice-menu option cursor wired** (closes the DEFERRED item
+above). ASKMENU_OPTION 0xCC14D1 (the scan candidate, see above) is now
+read every frame after the choice's intro speaks; on change it
+announces `FF7Text::DecodeLines(raw_text)[option]` — a new decode
+entry point that splits on EVERY newline (not just page breaks like
+DecodePages), since ASK answers are conventionally one line each
+where MESSAGE prose is not. `hook_ask` assumes the cursor starts on
+option 0 (already covered by the intro) so only a cursor MOVE
+re-announces. **SPECULATIVE**: whether decoded line[i] actually lines
+up with cursor option i (a leading question line could shift the
+index by 1+) is unverified — the scan session didn't have
+speak_choices instrumented to check live. Debug-logged (`ASK win=%u
+option %d->%d`) for the next multi-option choice to confirm or name
+the offset. No crash risk either way: the option read is bounds-
+checked against the decoded line count, so a wrong index just no-ops.
 
 ---
 
@@ -2506,6 +2603,7 @@ and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 | `0xCC0B60` | field_event_data_ptr | → 0xCC1670 (observed) |
 | `0xCC0CF8` | field_curr_script_position | WORD per entity |
 | `0xCC0D88` | **modules_global_object struct** | spans ≈0x138 bytes → 0xCC0EC0; see sub-map below |
+| `0xCC14D1` | ASKMENU_OPTION | u8, ASK choice-menu highlighted option (0-based). Live-scan-confirmed only, not statically explained (v2.30.4) |
 | `0xCC15D0` | FIELD_ID | does NOT zero in battle |
 | `0xCC162C` | FIELD_PLAYER_MODEL_ID | |
 | `0xCC1638` | FIELD_MOVIE_PLAYING word | |
