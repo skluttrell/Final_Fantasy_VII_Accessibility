@@ -5,22 +5,23 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[DIALOG] Wait/choice audio cues — SHIPPED v2.30.5 (2026-07-20), awaiting play-test
+[DIALOG] Wait/choice audio cues — SHIPPED v2.30.5, RETUNED v2.30.6 (2026-07-20), awaiting play-test
 ------------------------------------------------------------------------
 User request: a short high tone when a story dialog is waiting for the
 confirm button, a short high double-tone when a choice menu appears.
-Both are 1568 Hz (distinct from wall/wander/proximity tones); WAIT is
-one beep, CHOICE is two 60ms-apart. WAIT fires when a MESSAGE window's
-state byte stops changing while holding real text (not hardcoded to
-the paging transition's 14/4 values, since the "about to close" hold
-uses other values that vary by window); CHOICE fires directly off a
-new ASK dialog_id. Both independent of speak_dialog/speak_choices (so
-voice-acting-mod players who mute our TTS still get the cues). New
-config dialog_wait_tone / dialog_choice_tone (both default true).
-Research §8 v2.30.5. Deployed both installs. VERIFY: wait tone once
-per hold (not spammed, not missing) across both single-page and
-multi-page dialogs; choice tone once per ASK menu, audibly distinct
-from the wait tone.
+v2.30.5's "state unchanged this frame" rule false-fired: win=0's state
+byte PARKS at value 2 for the whole typing duration (~900ms observed)
+before jumping straight to a terminal value, so v2.30.5 fired almost
+immediately (mid-typing, before the game would accept the button
+press) and sometimes AGAIN when the real wait arrived — matching the
+player reports "beeps multiple times" and "press 2-3 times before it
+advances". v2.30.6: three-tier fix — confirmed terminal values {4,6,14}
+fire after a short 80ms hold-confirm (long enough to reject win=1's
+transient pass-through of 14); confirmed non-terminal {1,2} never fire
+regardless of hold length; everything else falls to a 300ms debounce.
+Research §8 v2.30.6. Deployed both installs. VERIFY: wait tone fires
+once per hold, not early, not doubled, across both single-page and
+multi-page dialogs; choice tone once per ASK menu, audibly distinct.
 
 [BATTLE] Whose-turn announce on menu open — SHIPPED v2.37 (2026-07-19), PLAY-CONFIRMED 2026-07-20
 ------------------------------------------------------------------------
@@ -94,7 +95,7 @@ speak_incremental removed (DecodePages supersedes them). Research §8
 v2.30.4. Deployed both installs. VERIFY: dialogs speak one page per
 screen, no reading ahead.
 
-[DIALOG] Word-boundary gluing around tokens/control bytes — FIXED v2.30.4 (2026-07-20)
+[DIALOG] Word-boundary gluing around tokens/control bytes — FIXED v2.30.4, comma decoded v2.30.6 (2026-07-20)
 ------------------------------------------------------------------------
 Player report (Wedge line, train graveyard): "Hey[item name]What about
 our money?" and "Uhnothin'.sorry." — words fused with no space. Cause:
@@ -104,10 +105,39 @@ all (unlike discarded wide chars, which already got one from the tail
 filter). Fix: guard_space() called at every content-affecting branch in
 decode_walk (ff7_text.cpp), guarding leading space before insertions/
 skips and trailing space after token/name substitutions. Research §8
-v2.30.4. Deployed both installs. VERIFY: item/number substitutions and
-ellipsis/control-code gaps read as separate words, not glued.
+v2.30.4. Player follow-up 2026-07-20 confirmed spacing fixed ("Hey
+[item name] What about our money?" — now has spaces) but flagged the
+CONTENT as still wrong ("confusing '[item name]' with someone else's
+name"). v2.30.6: cross-checked ~20 raw dumps from the session log and
+found 0xE2 decodes as a COMMA in every one (no source table names it —
+live-corpus finding) — it was falling into the generic unknown-byte
+gap. The Wedge line reads correctly as "Hey, [???], what about our
+money?" once restored. `decode_walk` now emits ',' for 0xE2 directly.
+STILL UNRESOLVED (deferred, see next item): the "[item name]"
+placeholder itself is very likely the WRONG type (almost certainly
+Barret's name, not an item — "Hey, Barret, what about our money?" is
+the well-known scene).
 
-[DIALOG] Choice menus: cursor tracking — SHIPPED v2.30.4 (2026-07-20), SPECULATIVE/unverified
+[DIALOG] Dynamic-token type resolution (item/number/name placeholders) — DEFERRED, needs investigation
+------------------------------------------------------------------------
+The 0xEB-0xF0 mid-string dynamic tokens (4 bytes: header + 3 data) are
+generic placeholders ("[item name]", "[number]", etc.) per ff7_text.h's
+own v1 header comment: "the game resolves them at render time from
+script memory banks that are not trivially accessible from our hook
+context." 2026-07-20 evidence (Wedge line) strongly suggests the LABEL
+is frequently wrong — the same header byte can apparently represent an
+item, a number, OR a character name depending on what value the game's
+own variable bank holds at render time, which the static byte decoder
+can't see. A second sample from the same log (`08 0A 3E 05 01` before
+a page break) decoded as pure garbage under the "bytes <=0x5E are
+always ASCII" assumption, hinting there may be MORE undocumented
+control-code structure in this range too. Properly fixing either needs
+a dedicated investigation into FF7's live variable-bank system (find
+the bank/address the 3 data bytes reference, read its current value,
+resolve by type) — a bigger task than a decode-table tweak. Research
+§8 v2.30.6 residual note.
+
+[DIALOG] Choice menus: cursor tracking — SHIPPED v2.30.4, index bug FIXED v2.30.6 (2026-07-20)
 ------------------------------------------------------------------------
 Player report: choice menus read only the first option and don't
 announce others as you move. Scan run 2026-07-20
@@ -115,14 +145,21 @@ announce others as you move. Scan run 2026-07-20
 0xCC14D1 (a plain global, NOT the per-window struct STATIC had
 flagged). Wired into hook_ask: FF7Text::DecodeLines() splits the ASK
 text on every newline (one entry per on-screen choice line), and the
-hook announces lines[option] when ASKMENU_OPTION changes. Cursor
-assumed to start on option 0 (covered by the existing "Choose: " +
-full-text intro). Research §8 v2.30.4. Deployed both installs.
-SPECULATIVE — UNVERIFIED whether decoded line[i] actually lines up
-with cursor option i (a leading question line could shift the index).
-Debug-logged ("ASK win=%u option %d->%d") for the next 3+ option
-choice to confirm or name the offset. Bounds-checked either way: a
-wrong index just no-ops, no crash/garbage speech.
+hook announces lines[option] when ASKMENU_OPTION changes. v2.30.4
+ASSUMED the cursor starts at option 0 — WRONG, per player follow-up
+2026-07-20 ("only one will speak and it is the first choice but... at
+the end of the choice set instead of the beginning"). v2.30.6: disasm
+of field_opcode_ask_update_loop_6310A1 (ff7_ask_lines_static.py,
+dumped much further than the original scan) proved the ASK opcode
+carries FIRST_LINE/LAST_LINE parameters (indices 3/4, right after
+dialog_id) that the game's own cursor-clamp logic uses — choice text
+routinely has leading QUESTION line(s) before the real options, so the
+starting option is FIRST_LINE, not 0. Fix: read it via
+get_opcode_param_byte(3) and seed ask_last_option from it instead of
+hardcoding 0. No longer speculative — derived from the game's own
+clamp logic, not a guess. Research §8 v2.30.6. Deployed both installs.
+VERIFY: the announced option matches the actual highlighted choice
+while arrowing through, including choice-leads-to-choice trees.
 
 [NAV] Train-graveyard triggers all say "line N" — DATA LIMITATION (not a bug)
 ------------------------------------------------------------------------

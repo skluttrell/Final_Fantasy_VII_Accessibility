@@ -258,13 +258,22 @@ struct WindowState {
     std::vector<std::wstring> ask_lines;
     int ask_last_option = -1;
 
-    // v2.30.5: MESSAGE-only. True while this window's dialog state byte has
-    // already been observed holding steady (see the WAIT TONE block in
-    // hook_message for why "steady" means "waiting for the confirm button").
-    // Armed once per hold so the tone fires only on the edge into waiting,
-    // not every frame the hold continues; disarmed the moment the state
-    // changes again (next typewriter tick, page turn, or a fresh dialog).
+    // v2.30.5/6: MESSAGE-only. True while this window's dialog state byte
+    // has already been observed holding steady long enough to count as
+    // "waiting for the confirm button" (see the WAIT TONE block in
+    // hook_message). Armed once per hold so the tone fires only on the
+    // edge into waiting, not every frame the hold continues; disarmed the
+    // moment the state changes again (next typewriter tick, page turn, or
+    // a fresh dialog).
     bool wait_tone_armed = false;
+
+    // v2.30.6: GetTickCount() of this window's last dialog-state CHANGE.
+    // The wait tone needs to know how long the CURRENT value has been held,
+    // not just whether it moved since last frame — see the WAIT TONE
+    // block's comment for why a single-frame "unchanged" check false-fired
+    // (player report 2026-07-20: multiple/early beeps, presses not
+    // registering for 2-3 tries).
+    DWORD state_change_tick = 0;
 };
 static WindowState s_window[8];
 
@@ -554,6 +563,13 @@ static int __cdecl hook_message()
             // tone for its very first dialog, then none for the rest of the
             // session (wait_tone_armed would stay stuck true).
             s_window[window_id].wait_tone_armed = false;
+            // v2.30.6: also restart the hold timer here for the same
+            // windows — their state byte never changes at all (always 0),
+            // so state_change_tick would otherwise stay stuck at session
+            // start and the fallback debounce (see the WAIT TONE block)
+            // would trivially already be "held" long enough on dialog 2+,
+            // skipping its intended delay.
+            s_window[window_id].state_change_tick = GetTickCount();
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] MSG win=%u id=%u [DLGID] pending",
@@ -618,35 +634,78 @@ static int __cdecl hook_message()
             TTS::Silence();
         }
 
+        // v2.30.6: track how long the CURRENT state value has been held —
+        // the wait tone below needs this, not just "did it change since
+        // last frame" (see that block for why).
+        if (current_state != last_state)
+            s_window[window_id].state_change_tick = GetTickCount();
+
         // ------------------------------------------------------------------
-        // WAIT TONE (v2.30.5): a short high tone the moment this window's
-        // dialog state stops changing while it holds real text — i.e. the
-        // game itself is now sitting there waiting for the player to press
-        // the confirm button, whatever that press will do next (page turn,
-        // close, or advance to the next line/dialog_id). We don't special-
-        // case the specific "about to page" values (14/4, see `paging`
-        // above) because the "about to close" hold uses OTHER values that
-        // vary by window (observed: win=0 held at 6 before its 6→7 close) --
-        // "stopped changing" is the one signal common to every hold, and
-        // it's exactly the state this mod's own comments already describe
-        // the typewriter as driving every frame while text is still being
-        // revealed (see the STATE MACHINE comment above).
+        // WAIT TONE (v2.30.5, retuned v2.30.6): a short high tone once the
+        // game is genuinely sitting there waiting for the player to press
+        // the confirm button.
         //
-        // was_pending (captured before the chain ran) keeps this from firing
-        // on the very frame the intro just started being announced: for
-        // windows whose state byte never moves at all (win=2/3, "stuck at 0
-        // permanently" — see §6 of the research doc), current_state ==
-        // last_state is true from the first frame, so without this guard
-        // the tone would coincide with (rather than follow) the TTS intro.
+        // v2.30.5 fired on ANY state value that had merely "stopped
+        // changing this frame" — WRONG, confirmed by play report
+        // 2026-07-20 (multiple/early beeps, presses not registering for
+        // 2-3 tries). The actual session log explained why: win=0's state
+        // byte parks at value 2 for the ENTIRE typing duration (~900ms
+        // observed) — it is NOT a fine per-character counter for this
+        // window, so "unchanged for one frame" was true almost from the
+        // first frame of typing, long before the real wait. The genuine
+        // wait only begins when state jumps to one of a small set of
+        // TERMINAL values — 14 or 4 (the exact values `paging` above
+        // already treats as "about to page") or 6 (observed: win=0 holds
+        // at 6 before its 6→7 close, i.e. the "about to close" wait uses a
+        // DIFFERENT terminal value than the page-wait). Other windows
+        // (win=1 in the 2026-07-19 log) instead count states up densely,
+        // changing almost every frame while typing, and settle on some
+        // arbitrary DATA-DEPENDENT value once done (17, 34, 60 — never a
+        // fixed constant) — those can't be whitelisted by value, so they
+        // fall through to a longer debounce instead. This is genuinely two
+        // different window behaviors (small discrete state machine vs.
+        // dense per-tick counter), not one bug with one number to tune.
         //
-        // Edge-triggered via wait_tone_armed: fires once per hold, not every
-        // frame it continues; disarmed the instant the state changes again.
-        // Independent of speak_dialog (voice-acting-mod players who disable
-        // our TTS narration still get no other cue that the game is ready
-        // for input, so this doesn't depend on it).
+        // So: three tiers, keyed off how long current_state has been held
+        // (state_change_tick, updated above) and what value it currently is:
+        //   - kWaitStates {4,6,14}: confirmed terminal values -- fire after
+        //     a SHORT hold (~2-3 polls). Not zero-delay, because win=1's
+        //     climb passes THROUGH 14 transiently (one poll) on its way up;
+        //     requiring it to still be held on the next poll is what tells
+        //     "genuinely parked here" apart from "just passing through".
+        //   - kNeverWaitStates {1,2}: confirmed NON-terminal (opening
+        //     animation / actively typing, per win=0's own evidence) —
+        //     never fire here no matter how long held; time alone can't
+        //     tell "still typing a long message" from "done waiting", only
+        //     the value can.
+        //   - anything else (0, 3, 5, 7-handled-elsewhere, 8, and win=1's
+        //     climbing values, and win=2/3's permanent 0): fall through to
+        //     a LONG debounce, long enough that win=1's ~33ms-per-poll
+        //     climb never sits still that long while still counting, short
+        //     enough to feel responsive once a window truly has settled.
+        //
+        // was_pending (captured before the chain ran) still guards against
+        // firing on the very frame the intro just started being announced.
+        // Edge-triggered via wait_tone_armed. Independent of speak_dialog
+        // (voice-acting-mod players get no other "ready for input" cue).
         // ------------------------------------------------------------------
         if (Config::Get().dialog_wait_tone && has_dialog_text && !was_pending) {
-            if (current_state == last_state) {
+            constexpr DWORD kWaitConfirmMs     = 80;   // ~2-3 polls
+            constexpr DWORD kFallbackDebounceMs = 300; // longer than any
+                                                        // observed per-poll
+                                                        // climb step (~33ms)
+            const DWORD held_ms = GetTickCount() - s_window[window_id].state_change_tick;
+            const bool is_wait_state =
+                (current_state == 4 || current_state == 6 || current_state == 14);
+            const bool is_never_wait_state =
+                (current_state == 1 || current_state == 2);
+
+            const bool should_fire =
+                is_never_wait_state ? false :
+                is_wait_state       ? (held_ms >= kWaitConfirmMs) :
+                                       (held_ms >= kFallbackDebounceMs);
+
+            if (should_fire) {
                 if (!s_window[window_id].wait_tone_armed) {
                     s_window[window_id].wait_tone_armed = true;
                     InterlockedExchange(&s_dialog_wait_pending, 1);
@@ -677,21 +736,26 @@ static int __cdecl hook_message()
 // cursor, via the scan-confirmed ASKMENU_OPTION global (see its doc comment
 // in ff7_addresses.h — live-scan-confirmed, not statically verified). The
 // intro ("Choose: " + full text) is unchanged and still speaks first.
-// SPECULATIVE: FF7Text::DecodeLines() splits the text on every newline,
-// assuming each choice renders as one line with the option lines coming
-// right after any question line(s) — untested against a real multi-option
-// choice in play (the scan session that found ASKMENU_OPTION didn't have
-// speak_choices instrumented for it). If a play report shows the WRONG
-// line announced (e.g. the question text instead of the option, suggesting
-// a leading question line shifts the index), the fix is an option-index
-// offset, not a new address. Debug-logged for that verification.
 //
-// ASK WINDOW_ID IS AT PARAMETER INDEX 1 (not 0):
-//   FFNx voice.cpp opcode_voice_ask (line 462): get_field_parameter<byte>(1).
-//   ASK param layout: param[0]=bank, param[1]=window_id, param[2]=dialog_id.
+// v2.30.4 shipped this ASSUMING the cursor starts at option 0 (line[0] of
+// FF7Text::DecodeLines' split) -- WRONG, confirmed by play report
+// 2026-07-20 ("only one will speak and it is the first choice but... at
+// the end of the choice set instead of the beginning"). Root cause found
+// by disassembling field_opcode_ask_update_loop_6310A1 further
+// (ff7_ask_lines_static.py): the ASK opcode carries FIRST_LINE/LAST_LINE
+// parameters (indices 3/4, right after dialog_id) that the game's own
+// cursor-move handlers clamp the option to -- the choice text routinely
+// has leading QUESTION line(s) before the selectable options begin, so
+// the true starting/minimum option is FIRST_LINE, not 0. v2.30.6 reads it
+// from the opcode instead of assuming.
 //
-// ASK DIALOG_ID IS AT PARAMETER INDEX 2:
-//   FFNx voice.cpp opcode_voice_ask (line 463): get_field_parameter<byte>(2).
+// ASK PARAMETER LAYOUT (byte offsets from the opcode, confirmed by
+// disassembling the ASK handler 0x618E83 -- ff7_ask_cursor_static.py and
+// ff7_ask_lines_static.py, both 2026-07-19/20):
+//   +2 window_id   (param index 1 -- FFNx voice.cpp opcode_voice_ask line 462)
+//   +3 dialog_id   (param index 2 -- FFNx voice.cpp opcode_voice_ask line 463)
+//   +4 first_line  (param index 3 -- lower clamp bound for the option cursor)
+//   +5 last_line   (param index 4 -- upper clamp bound for the option cursor)
 // ---------------------------------------------------------------------------
 static int __cdecl hook_ask(int unk)
 {
@@ -777,16 +841,41 @@ static int __cdecl hook_ask(int unk)
                         window_id, s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
                 }
-                // v2.30.4: also split into per-line text for option-cursor
-                // announces below. Assume the cursor starts on option 0 (the
-                // intro just spoken already covers it), so the FIRST cursor
-                // MOVE — not the initial position — triggers the next speak.
+                // v2.30.6: split into per-line text for the option-cursor
+                // announces below, AND read the ASK opcode's own FIRST_LINE
+                // parameter (index 3, the byte right after dialog_id) to
+                // know where the cursor actually starts.
+                //
+                // WHY NOT ASSUME 0 (v2.30.4's bug): disassembling
+                // field_opcode_ask_update_loop_6310A1 (ff7_ask_lines_static.py,
+                // 2026-07-20) proved the opcode carries FOUR script bytes, not
+                // two — window_id(+2)/dialog_id(+3) as already known, PLUS
+                // FIRST_LINE(+4)/LAST_LINE(+5): the cursor-move handlers
+                // explicitly clamp the current option to
+                // [FIRST_LINE, LAST_LINE] (0x631311-0x63136F). The game's
+                // choice text routinely has one or more leading QUESTION
+                // lines before the selectable options begin, so the cursor's
+                // starting (and minimum) value is FIRST_LINE, not 0 — v2.30.4
+                // assumed 0, which fired the wrong line and only on the
+                // first Down/Up press instead of tracking every move (player
+                // report 2026-07-20: "only one will speak and it is the
+                // first choice but... at the end of the choice set instead
+                // of the beginning").
+                //
+                // ask_lines[N] should already line up with the game's own
+                // line N (FF7Text::DecodeLines splits on the identical
+                // newline bytes the game itself renders as line breaks), so
+                // no other index transform is needed — just the correct
+                // starting baseline.
                 s_window[window_id].ask_lines = FF7Text::DecodeLines(raw_text);
-                s_window[window_id].ask_last_option = 0;
-                char lines_dbg[80];
+                const uint8_t first_line = FF7Addr::get_opcode_param_byte(3);
+                const uint8_t last_line  = FF7Addr::get_opcode_param_byte(4);
+                s_window[window_id].ask_last_option = first_line;
+                char lines_dbg[96];
                 _snprintf_s(lines_dbg, sizeof(lines_dbg), _TRUNCATE,
-                    "[FF7Access] ASK win=%u lines=%zu",
-                    window_id, s_window[window_id].ask_lines.size());
+                    "[FF7Access] ASK win=%u lines=%zu first_line=%u last_line=%u",
+                    window_id, s_window[window_id].ask_lines.size(),
+                    first_line, last_line);
                 Log::Write(lines_dbg);
                 s_window[window_id].pending_speak = false;
             }

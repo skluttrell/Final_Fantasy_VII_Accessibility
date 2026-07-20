@@ -286,6 +286,23 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
             ++p;
             at_start = false;
         }
+        // ── Comma ────────────────────────────────────────────────────────────
+        // 0xE2: not in any previously-documented range (not a name/token
+        // byte, not newline/page-break, above the kExtendedChars table's
+        // 0xDF ceiling) -- fell into the "unknown, guard a space" branch
+        // below, which just left a GAP where the comma should be ("Say do
+        // you" instead of "Say, do you"). v2.30.6: cross-checked ~20
+        // independent raw dumps from a single play session (2026-07-20) --
+        // 0xE2 appears exactly where a comma reads naturally in every one
+        // ("Fine, I'll do it", "What's wrong, Cloud?", "Come on, let's go",
+        // "Heads up, here it comes", "Say, do you...") with zero
+        // counterexamples. No FFNx/ff7tk table entry names it; this is a
+        // live-corpus finding, not a documented source.
+        else if (byte == 0xE2) {
+            result += L',';
+            ++p;
+            at_start = false;
+        }
         // ── Standard ASCII range ───────────────────────────────────────────────
         else if (byte <= 0x5E) {
             // byte + 0x20 maps 0x00->'space', 0x01->'!', ..., 0x5E->'~'.

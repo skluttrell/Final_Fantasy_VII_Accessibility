@@ -2240,6 +2240,126 @@ across ordinary multi-page AND single-page dialogs (not per frame,
 not missing); the choice tone fires once per ASK menu, distinguishable
 by ear from the single wait tone.
 
+### v2.30.6 (2026-07-20): wait tone retuned, ASK cursor's real starting line found, comma decoded
+
+Same-day play report on the v2.30.4/v2.30.5 build surfaced three
+findings, all resolved from the SAME session's debug log
+(`ffvii_accessibility.log`, debug_log=true) — no new live scan needed.
+
+**(1) Wait tone fired early and sometimes twice per box.** The log
+explained it precisely: win=0's dialog state byte does NOT advance
+every frame like win=1's does — it PARKS at value 2 for the entire
+typing duration (~900ms observed: `1->2` then nothing until `2->14`
+933ms later) before jumping, in ONE atomic transition, straight to 14
+(the real "waiting to page" hold) or similarly to 6 (observed holding
+~1.2-3.4s before `6->7` close). v2.30.5's "state unchanged this frame"
+heuristic could not tell "parked at 2 because still typing" from
+"parked at 14 because done" — both are just holds — so it fired almost
+immediately after typing started (a false EARLY tone), then fired a
+SECOND time when state legitimately reached 14/6 (a true but redundant
+tone): exactly the player's "beeps multiple times... for every dialog
+box" and "have to press 2-3 times" reports (the first press landed
+while the game was still mid-typewriter and did nothing).
+
+Fix: three-tier evidence-based classification instead of one generic
+"unchanged" rule (`WindowState::state_change_tick`, updated whenever
+`current_state != last_state`):
+- **{4, 6, 14}** — confirmed terminal "waiting" values (14/4 already
+  known from the `paging` transition; 6 newly confirmed from this
+  log's `6→7` close pattern) — fire after a SHORT hold (80ms, ~2-3
+  polls). Not zero-delay: win=1's climb passes THROUGH 14 transiently
+  (one poll) en route to its own higher resting value, so requiring it
+  to still be there on the NEXT poll is what separates "genuinely
+  parked" from "just passing through".
+- **{1, 2}** — confirmed NON-terminal (opening animation / actively
+  typing, direct evidence from win=0's ~900ms hold) — NEVER fire here
+  regardless of hold duration; time alone cannot distinguish "still
+  typing a long message" from "done", only the value can.
+- **anything else** (0, 3, 5, 8, win=1's arbitrary data-dependent
+  resting values, win=2/3's permanent 0) — fall through to a 300ms
+  debounce, comfortably longer than any observed per-poll climb step
+  (~33ms) so it never fires mid-climb, short enough to stay responsive
+  for windows that settle quickly.
+
+This is genuinely two different window behaviors (win=0-style small
+discrete state machine vs. win=1-style dense per-tick counter), not
+one number to retune — a value-based whitelist is required for the
+first, a debounce for the second, and neither alone covers both.
+
+**(2) ASK choice cursor spoke the right text at the wrong position** —
+closes the SPECULATIVE flag from v2.30.4. Player report: "only one
+will speak and it is the first choice but... at the end of the choice
+set instead of the beginning." Root cause found by extending
+ff7_ask_cursor_static.py's disassembly of
+`field_opcode_ask_update_loop_6310A1` much further
+(`ff7_ask_lines_static.py`, dumped 0x800 bytes instead of 0x140): the
+ASK opcode carries **FOUR** script-byte parameters, not two —
+window_id(+2)/dialog_id(+3) as already known, PLUS **first_line(+4)**
+and **last_line(+5)**. The cursor-move case bodies explicitly clamp
+the live option value to `[first_line, last_line]`
+(0x631311-0x63136F: compare/clamp against `[ebp+0x14]`=last_line and
+`[ebp+0x10]`=first_line). Choice text routinely has one or more
+leading QUESTION lines before the selectable options begin (log
+evidence: win=0 id=6's 4-line text was `["", "Buy one", "",
+"Forget it..."]` from `FF7Text::DecodeLines`, and the FIRST live
+ASKMENU_OPTION read was 1, not 0 — pointing straight at "Buy one",
+skipping the leading blank). v2.30.4 assumed the cursor always starts
+at option 0 (`ask_lines[0]`), which is only true when there is no
+leading line at all — otherwise it silently pointed at the WRONG
+`ask_lines` entry from the very first cursor move onward.
+
+Fix: read `first_line` via `FF7Addr::get_opcode_param_byte(3)` (and
+`last_line` via index 4, for debug visibility) when the choice's intro
+speaks, and seed `ask_last_option = first_line` instead of hardcoding
+0. `ask_lines[N]` already lines up with the game's own line N (both
+split on the identical newline bytes), so no other index transform
+was needed — just the correct starting baseline. This is no longer
+speculative: the fix is derived directly from the game's own clamp
+logic, not a guess.
+
+**(3) `0xE2` decodes as a comma, not a gap.** Cross-checked ~20
+independent raw dumps from the same session's log — 0xE2 appears
+exactly where a comma belongs in every one ("Fine, I'll do it",
+"What's wrong, Cloud?", "Come on, let's go", "Heads up, here it
+comes", "Say, do you...", zero counterexamples). Previously it fell
+into the generic "unknown control byte" branch (v2.30.4: guard a
+space, no character) — technically non-gluing but silently dropped
+real punctuation, and was almost certainly the deeper truth behind the
+Wedge "Hey [item name] What about our money?" line's second half:
+`Wedge: "Hey` + [0xE2] + `[0xEB dynamic token]` + `What about...` reads
+correctly as `"Hey, [something], what about our money?"` once the
+comma is restored. `decode_walk` now emits `,` for this byte directly
+(no source table names it — this is a live-corpus finding).
+
+**Residual, NOT fixed this pass — scoped for a dedicated
+investigation**: the `[item name]`/`[number]`/`[target]`/etc.
+placeholders for 0xEB-0xF0 mid-string dynamic tokens are STILL
+generic stand-ins, and are very likely often WRONG (the Wedge line's
+token is almost certainly Barret's name, not an item, given "Hey,
+[???], what about our money?" — Wedge addressing the party leader
+about their pay is the well-known scene). This is a PRE-EXISTING v1
+limitation, documented in ff7_text.h's own header comment since day
+one: "the game resolves them at render time from script memory banks
+that are not trivially accessible from our hook context" — i.e. the
+same 4-byte token header may represent an item, a number, OR a name
+depending on what value the game's own variable bank currently holds,
+which our static byte decoder cannot see. A live sample
+(`08 0A 3E 05 01` before a page break, from the same log) also
+decoded as pure garbage under the "always ASCII" assumption for
+bytes ≤0x5E, suggesting there may be YET MORE control-code structure
+in this range that isn't captured by ff7tk's table either. Properly
+resolving either needs a dedicated investigation into FF7's live
+variable-bank system (bank/address resolution, likely reading the
+same bank memory the field script VM itself uses) — out of scope for
+this pass; noted in TODO.txt.
+
+No new addresses beyond ASKMENU_OPTION's already-documented first_line
+sibling (a param index, not an address). Built clean, deployed both
+installs 2026-07-20 (hash-verified). VERIFY next play session: wait
+tone fires once per hold, not early, not doubled; ASK choice cursor
+announces the CORRECT highlighted line as you arrow through, including
+nested choice-leads-to-choice trees; commas read naturally.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
