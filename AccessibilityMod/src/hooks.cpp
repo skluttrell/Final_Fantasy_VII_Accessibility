@@ -299,8 +299,21 @@ struct WindowState {
     // v2.30.4: ASK-only. One entry per choice LINE (FF7Text::DecodeLines --
     // splits on every newline, unlike pages[] above which only splits on
     // page breaks; ASK's answers are conventionally one line each), and the
-    // option index we most recently announced (-1 = none yet, so the first
-    // poll after PENDING speak doesn't immediately re-announce option 0).
+    // option index we most recently announced (-1 = none yet).
+    //
+    // v2.30.4/6 both DELIBERATELY seeded this to the starting option (0,
+    // then FIRST_LINE) so the OPTION CURSOR block wouldn't "re-announce"
+    // the option already folded into the "Choose: ..." intro speech. v2.30.9:
+    // that suppression is the bug, not a feature -- the intro reads the
+    // whole window (name + lead-in + every option) as one run-on sentence,
+    // so the DEFAULT-highlighted option never gets a clean, isolated
+    // announcement, only a mid-sentence mention. Player report 2026-07-20
+    // ("first choice spoken at the bottom... arrow back up to it, not
+    // spoken at all") is exactly this: with only 2 options and the cursor
+    // starting at the top (no legal "up" move), the player never heard
+    // anything but that one buried mention. Leaving this at -1 lets the
+    // OPTION CURSOR block fire once immediately after the intro, the same
+    // way every subsequent cursor move already does -- see hook_ask.
     // Unused by hook_message. Cleared on new dialog and on close, same as
     // pages[] above.
     std::vector<std::wstring> ask_lines;
@@ -925,7 +938,13 @@ static int __cdecl hook_ask(int unk)
                 s_window[window_id].ask_lines = FF7Text::DecodeLines(raw_text);
                 const uint8_t first_line = FF7Addr::get_opcode_param_byte(3);
                 const uint8_t last_line  = FF7Addr::get_opcode_param_byte(4);
-                s_window[window_id].ask_last_option = first_line;
+                // v2.30.9: do NOT seed ask_last_option from first_line here --
+                // that suppressed the very first OPTION CURSOR announce (see
+                // the WindowState::ask_last_option doc comment). Leave it at
+                // the -1 the is_new_ask_dialog branch already set, so the
+                // OPTION CURSOR block below fires once for the starting
+                // option this same frame, exactly like every later cursor
+                // move.
                 char lines_dbg[96];
                 _snprintf_s(lines_dbg, sizeof(lines_dbg), _TRUNCATE,
                     "[FF7Access] ASK win=%u lines=%zu first_line=%u last_line=%u",

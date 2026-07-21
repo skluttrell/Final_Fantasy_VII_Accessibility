@@ -165,7 +165,7 @@ the bank/address the 3 data bytes reference, read its current value,
 resolve by type) — a bigger task than a decode-table tweak. Research
 §8 v2.30.6 residual note.
 
-[DIALOG] Choice menus: cursor tracking — STILL BROKEN after two fix attempts (2026-07-20), needs a full raw-text log to diagnose
+[DIALOG] Choice menus: cursor tracking — ROOT CAUSE FOUND + FIXED v2.30.9 (2026-07-21), awaiting play-test
 ------------------------------------------------------------------------
 Player report chain: (1) only first option read, no cursor tracking
 [v1]; (2) v2.30.4 wired ASKMENU_OPTION + DecodeLines but ASSUMED cursor
@@ -178,23 +178,75 @@ ask_last_option from FIRST_LINE instead of 0 — player follow-up
 choice spoken at the bottom... arrow back up to it, not spoken at
 all"), even though the session log proves first_line/last_line read
 correctly (2/3 for a 2-option choice) AND the cursor-change detection
-fires for both directions (2->3, 3->2 both logged). Something is still
-misaligning ask_lines[N] against the game's own line N, but WITHOUT
-the actual TEXT of ask_lines[2]/ask_lines[3] (the log only had counts)
-this can't be pinned down further — a third blind index guess isn't
-warranted after two misses.
-v2.30.7: added log_lines() — dumps every ASK line's FULL decoded text
-(not just the count) to the log, and log_raw_bytes' cap raised 18->256
-bytes so the complete choice text is captured too. NEXT: reproduce
-(ideally the same Aeris scene) with debug_log=true, send the log — the
-`ASK win=%u lines=N first_line=X last_line=Y` line plus the `ASK[i]:
-'...'` dumps that follow it should make the exact mismatch obvious.
+fires for both directions (2->3, 3->2 both logged).
+2026-07-21: player supplied screen-by-screen CAPTURES of the exact Aeris
+scene (Screenshots/Dialogs/flower_girl/) instead of a log — ground truth
+for what each ASK window actually contains. fg_2_t1/fg_3_t2 confirm the
+4-line layout (name / lead-in quote / option A [cursor here by default] /
+option B) matching first_line=2,last_line=3 exactly — ask_lines[2]/[3] DO
+hold the right text, so the index math was correct all along. fg_5_t3
+(a later choice in the same scene) shows a window with NO name/quote
+lines at all, just the 2 options — proof first_line/last_line legitimately
+varies per window and isn't a fixed offset bug.
+ACTUAL ROOT CAUSE (hooks.cpp WindowState::ask_last_option + hook_ask):
+v2.30.4 and v2.30.6 both deliberately seeded ask_last_option to the
+starting option (0, then FIRST_LINE) specifically to SUPPRESS the OPTION
+CURSOR block from "re-announcing" the option already mentioned inside
+the "Choose: ..." intro sentence. That suppression was the bug: the
+intro reads the WHOLE window as one run-on sentence (name + lead-in +
+every option), so the default-highlighted option only ever gets a
+buried, mid-sentence mention — never a clean, isolated announcement.
+With a 2-option choice and the cursor starting at the topmost option
+(nowhere to arrow "up" to), the player would hear nothing but that one
+buried mention, matching "spoken at the bottom [of the run-on intro]...
+arrow back up to it [a no-op, already at top], not spoken at all" with
+no misalignment required at all.
+FIX v2.30.9: stopped seeding ask_last_option from FIRST_LINE — left at
+the -1 the new-dialog branch already sets, so the OPTION CURSOR block
+fires once immediately after the intro for the starting option too,
+exactly like every subsequent cursor move already does. first_line is
+still read and logged for diagnostics, just no longer forced into
+ask_last_option.
 ALSO UNEXPLAINED, no log evidence yet: nested "choice leads to another
 choice tree" is SILENT INCLUDING THE INTRO (not just wrong-line) —
 more severe than the index bug, needs its own log capture through a
 nested tree specifically.
-Research §8 v2.30.6 (first attempt) + v2.30.7 (diagnostics). Deployed
-both installs.
+Research §8 v2.30.6/.7/.9. Deployed both installs. VERIFY: the Aeris
+2-option choice (and others) now speak the starting/default option once,
+right after the "Choose:" intro, with no further code changes needed if
+that's confirmed.
+
+[DIALOG] Some short "flash text" screens still speak as one block, not one per page — CONFIRMED by screenshots 2026-07-21, root cause NOT YET FOUND
+------------------------------------------------------------------------
+Player supplied Screenshots/Dialogs/reactor_scene/ (rs_1..rs_12, each one
+button press). rs_6 ("Watch out!") and rs_7 ("This isn't just a
+reactor!!") are two SEPARATE on-screen pages (confirmed: distinct
+screenshots, no border/name tag, centered — a different window style
+than the named dialogue boxes in rs_1-4/rs_9-12) but the mod spoke both
+lines together as one utterance on rs_6, going silent on rs_7.
+DecodeMessagePages (v2.30.7, ff7_text.cpp) groups decoded lines into
+pages of up to kLinesPerPage=4, closing early only on an explicit
+page-break byte (0xE8/0xE9) or when the 4-line cap is hit. Two 1-line
+pages (2 lines total) never reach that cap, so if there's no explicit
+break byte between them, they get merged into one page — exactly this
+symptom. kLinesPerPage=4 was always flagged as "FF7's DOCUMENTED
+capacity, an ASSUMPTION not read live" (see DecodeMessagePages' own doc
+comment) — this screenshot pair is the first concrete proof it's wrong
+for at least this window style, which appears to page after a single
+line, not four.
+NOT FIXED YET — two competing explanations, can't tell which without a
+raw-byte log: (a) there IS an explicit 0xE8/0xE9 between the two lines
+and something is failing to detect/honor it for this specific window, or
+(b) there's no explicit break at all and this window's true on-screen
+capacity is smaller than 4 lines (varies by window, not a global
+constant). Guessing at a new global kLinesPerPage risks regressing the
+dialogues that already work correctly at 4. NEXT: reproduce this exact
+reactor-intro moment with debug_log=true — the `MSG raw(...)` hex dump
+(log_raw_bytes, already logs the full text) will show whether 0xE8/0xE9
+sits between "Watch out!" and "This isn't just a reactor!!"; if it does,
+the bug is in how DecodeMessagePages/hook_message reads it; if it
+doesn't, the fix needs to read this window's real capacity live rather
+than assume 4 for every window.
 
 [NAV] Train-graveyard triggers all say "line N" — DATA LIMITATION (not a bug)
 ------------------------------------------------------------------------

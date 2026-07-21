@@ -2502,6 +2502,71 @@ new timed sequence (whenever next reachable) still announces normally
 (confirms the STTIM hook itself fires correctly, not just that it's
 suppressing things).
 
+### v2.30.9 (2026-07-21): ASK choice cursor — actual root cause found (suppression, not misalignment)
+
+Two prior attempts (v2.30.4, v2.30.6) both left the SAME symptom alive:
+"first choice spoken at the bottom... arrow back up to it, not spoken
+at all" for the Aeris flower-girl choice. Instead of another debug log,
+the player supplied screen-by-screen CAPTURES of the exact scene
+(`Screenshots/Dialogs/flower_girl/`, one image per button press) —
+ground truth for what each ASK window actually displays.
+
+**What the captures prove**: `fg_2_t1`/`fg_3_t2` show a 4-line window —
+`Flower girl` (name) / `"What happened?"` (lead-in quote) / `You'd
+better get out of here` (option A, cursor here by default) / `Nothing…
+hey…` (option B) — matching the disasm-confirmed `first_line=2,
+last_line=3` for a 2-option choice exactly. `fg_5_t3` (a later choice in
+the SAME scene, "Buy one" / "Forget it") has NO name or quote line at
+all, just the two options. Together these confirm `first_line`/
+`last_line` are read correctly and vary legitimately per window — the
+index math (`ask_lines[first_line]` through `ask_lines[last_line]`) was
+right all along. There was no misalignment bug to find.
+
+**Actual root cause** (`hooks.cpp`, `WindowState::ask_last_option` +
+`hook_ask`): both v2.30.4 (seeded to `0`) and v2.30.6 (seeded to
+`FIRST_LINE`) deliberately initialized `ask_last_option` to the
+STARTING option, specifically so the OPTION CURSOR block wouldn't
+"re-announce" an option already mentioned inside the `"Choose: ..."`
+intro sentence. That suppression was the bug. The intro speaks the
+ENTIRE window as one run-on sentence — name, lead-in, then every
+option, in order — so the default-highlighted option only ever gets a
+buried, mid-sentence mention, never a clean, isolated announcement the
+way every subsequent cursor move gets one. With exactly 2 options and
+the cursor starting at the TOPMOST option (no legal "up" move from
+there), a player hears nothing but that one buried mention and then
+silence on Up — exactly "spoken at the bottom [of the run-on intro]...
+arrow back up to it [a no-op, already at the top], not spoken at all."
+No index misalignment is required to produce that report.
+
+**Fix**: stop seeding `ask_last_option` from `first_line`. Leave it at
+the `-1` sentinel the new-dialog branch already sets, so the OPTION
+CURSOR block fires once, immediately after the intro finishes, for the
+starting option too — identically to how it already fires on every
+later cursor move. `first_line`/`last_line` are still read and logged
+for diagnostics; they're just no longer forced into the change-detector.
+
+No new addresses; pure logic fix in `hooks.cpp`. Built clean, deployed
+both installs (hash-verified). VERIFY next play session: the Aeris
+2-option choice (and others) now speak the starting/default option once
+right after the `"Choose:"` intro, with no other regressions to the
+cursor-move announces that already worked.
+
+**Also confirmed by the SAME screenshot set, a SEPARATE unfixed bug**:
+`Screenshots/Dialogs/reactor_scene/` (rs_1..rs_12) shows `rs_6` ("Watch
+out!") and `rs_7` ("This isn't just a reactor!!") are two distinct
+on-screen pages — a borderless, centered, no-name window style, unlike
+the framed name/quote boxes elsewhere in the same sequence — but the mod
+spoke both as one utterance on `rs_6` then went silent on `rs_7`.
+`DecodeMessagePages`' `kLinesPerPage=4` heuristic (v2.30.7) never forces
+an early page break for a 2-line total, so absent an explicit
+0xE8/0xE9 page-break byte between the two lines, they merge into one
+page. This is the first concrete proof that the `kLinesPerPage=4`
+assumption (always flagged as unverified) is wrong for at least this
+window style. NOT fixed this pass — two competing explanations (a
+missed explicit break byte vs. a genuinely smaller per-window capacity)
+that only a raw-byte log through this exact moment can distinguish; see
+TODO.txt for the full writeup and what to capture next.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
