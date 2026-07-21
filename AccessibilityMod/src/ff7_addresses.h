@@ -108,8 +108,10 @@ constexpr uint32_t DIALOG_TEXT_PTRS = 0xCBF578;
 // (Down then Up) intersected to this ONE candidate -- goes +1 on Down,
 // reverts exactly on Up, both rounds.
 //
-// NOT YET WIRED: no code reads this yet (TODO.txt DIALOG "Choice menus").
-// hook_ask should track it and announce the option line on change.
+// WIRED since v2.30.4 (hooks.cpp hook_ask, the OPTION CURSOR block) --
+// announces the option line on change. See TODO.txt DIALOG "Choice
+// menus" and research §8 v2.30.4/.6/.9/.10 for the alignment bugs found
+// and fixed since it was first wired.
 constexpr uint32_t ASKMENU_OPTION = 0x00CC14D1;  // u8, 0-based selected option
 
 // Pointer to the decompressed field file buffer.
@@ -842,11 +844,19 @@ constexpr uint32_t COUNTDOWN_TIMER_MS      = SAVEMAP_BASE + 0xB88; // 0xDC08C0 u
 // ff7_results_block_refs.py, logs 20260719):
 //
 //   BATTLE_END_MODE 0xDC1300 (u16) = FFNx's menu_battle_end_mode (operand
-//   at menu_battle_end_sub_6C9543+0x2C). FFNx's own achievement hook
-//   brands the values: 0 = battle won/init, 1 = EXP/AP screen (level
-//   achievements fire), 3 = gil/items screen (gil achievement fires).
-//   2 = observed in the OK-press handler as the state whose exit applies
-//   gil (see below); exact on-screen meaning logged at runtime.
+//   at menu_battle_end_sub_6C9543+0x2C). v2.35's static-only phase read
+//   below (FFNx's achievement-hook framing) was PLAY-CORRECTED v2.35.2
+//   (2026-07-19, player report: announcements trailed the button-driven
+//   flow) -- it advances on the player's OK PRESSES, not screen
+//   appearances: mode 0 = EXP/AP screen SHOWING (waiting for OK), mode 1
+//   = the roll-up itself (chirps/levels applying), mode 2 = gil/items
+//   screen SHOWING, mode 3 = after ITS OK (gil applied). proxy.cpp's
+//   VictoryThread uses this corrected map, not the raw disasm one below.
+//   FFNx's own achievement hook brands the values: 0 = battle won/init,
+//   1 = EXP/AP screen (level achievements fire), 3 = gil/items screen
+//   (gil achievement fires). 2 = observed in the OK-press handler as the
+//   state whose exit applies gil (see below); exact on-screen meaning
+//   logged at runtime.
 //
 //   Results pools (battle module 0x431541.. accumulates per enemy slot
 //   from actor_vars, stride 0x68): 0x99E2C0 u32 gained EXP, 0x99E2C4 u32

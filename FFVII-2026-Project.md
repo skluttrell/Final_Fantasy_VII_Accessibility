@@ -5,7 +5,7 @@ the 2026 rerelease.** This document originally planned for an uncertain "the eng
 scenario; it's kept below (renumbered, trimmed) for the reasoning trail, but the short version is: this
 turned out not to be a porting project. It's the same mod, installed in a different folder.
 
-For the fresh 2026-specific facts this is built on, see section 9 of `FFVII-Modding-Resources.md`. For
+For the fresh 2026-specific facts this is built on, see section 10 of `FFVII-Modding-Resources.md`. For
 the full 2013 implementation history, see `FFVII-Accessibility-Research.md` and the
 `project_ffvii_access` / `project_ffvii_2026_access` Claude memory entries.
 
@@ -82,8 +82,6 @@ rewrite. That clue turned out to be correct.
 
 ## 4. Remaining open items
 
-- **Battle action TTS / battle-menu-cursor**: not yet tested on the 2026 install. Expected to behave
-  identically to 2013 given everything else has matched exactly, but not directly confirmed.
 - **Anti-debug crash parity**: whether the 2013 hardware-breakpoint-crashes-the-game behavior reproduces
   on the 2026 Steam wrapper — untested, and only relevant if the battle-menu-cursor problem is revisited
   with that specific technique. If so, use the same disposable-test-target validation discipline as
@@ -97,6 +95,6 @@ rewrite. That clue turned out to be correct.
 
 - `AccessibilityMod/` — the one and only mod source, works for both releases unmodified.
 - `FFVII-2026-Project.md` — this document.
-- `FFVII-Modding-Resources.md` §9 — full 2026 research and install steps.
+- `FFVII-Modding-Resources.md` §10 — full 2026 research and install steps.
 - `README.md` — update needed: currently claims the mod "will not work with the 2026 remake or any
   other version," which is now confirmed false. Should document both install locations.

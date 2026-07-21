@@ -446,22 +446,33 @@ previews. Deployed ~12:05. Residuals:
     If a flag is ever wanted: scan main-menu -> save-menu entry.
 
 
-[TTS] Controller-button Unicode glyphs in dialog text
+[TTS] Controller-button glyph bytes in dialog text — PARTIALLY HANDLED, byte-value claim below is STALE
 ------------------------------------------------------
-Some field dialogs contain characters like 0xD6 (Û) and 0xD9 (Ù) in FF7's
-custom encoding. These map to controller button icons (e.g., Cancel button,
-Direction pad) rather than alphabetic characters. Example dialog:
+STALE CLAIM (pre-dates the ff7tk-sourced kExtendedChars rewrite, no longer
+matches code): this entry used to claim 0xD6 decodes as "Û" and 0xD9 as
+"Ù" and are the unhandled button-icon bytes. Checked against the CURRENT
+table (ff7_text.cpp kExtendedChars, indexed byte-0x5F): 0xD6 and 0xD9 are
+now both empty/reserved slots (L'\0', already silently discarded as a
+guarded space — no garbage spoken). The real Û/Ù mappings currently live
+at 0x85→Û / 0x84→Ù (and again at 0xD3→Û / 0xD2→Ò... actually 0xD2→Ù,
+0xD1→Ò — see the table's 0xD0/0xD8 rows). So the ORIGINAL bug this entry
+describes (button icons somehow rendering as accented Latin garbage) is
+not reproducible against current code with the byte values as given.
 
-  "Run by holding [CANCEL] while using the [DIRECTION] buttons."
+ALSO NOTE: real FF7 controller-button icon bytes ARE already identified
+and handled — 0xF6-0xF9 (Circle/Triangle/Square/Cross, sourced from the
+ff7tk eng[] table) are consumed as single bytes and silently discarded in
+decode_walk (ff7_text.cpp), added since this TODO entry was first written.
+They're silent, not descriptive, so the original "fix idea" (map to a
+short string like "[Cancel]"/"[Dpad]") is still worth doing — it just
+needs to target 0xF6-0xF9, not 0xD6/0xD9.
 
-FF7's font renderer draws the appropriate button sprite; TTS sees a raw
-Unicode code point with no meaning. Currently spoken as garbage or silence.
-
-Fix ideas:
-  - In ff7_text.cpp's decode table, map these code points to short descriptive
-    strings (e.g., 0xD6 -> L"[Cancel]", 0xD9 -> L"[Dpad]").
-  - Cross-reference the FF7 font/glyph table to identify all such mappings.
-  - May also apply to other high-range characters in the custom encoding.
+NEXT: if a player encounters a dialog that visibly shows a button-icon
+sprite (Circle/Triangle/Square/Cross/D-pad) and the mod reads it as
+silence or garbage, capture a fresh raw byte dump (debug_log=true,
+log_raw_bytes already dumps up to 256 bytes) through that exact dialog to
+re-derive the correct byte value before mapping it — do not guess from
+this entry's original byte claims again.
 
 
 [TTS] "New Game" spoken during company logo splash (~350ms after launch)
@@ -683,13 +694,19 @@ in-game). Residuals:
     wrong trio name, demote the three entries to "man"/"woman"/"big man".
   - The old character_id (+0x6C) route stays DISPROVED — never name from it.
 
-[NAV] Items category: chest open/closed — RESOLVED v2.18.1 (2026-07-14)
+[NAV] Items category: chest open/closed — RESOLVED v2.18.1 (2026-07-14), TIGHTENED v2.18.2
 ---------------------------------------------------------------------------
 Floor pickups despawn when collected (off-mesh filter drops them). Chests:
-"Chest, opened" suffix from field_event_data lastFrame (+0x6A) != 0 —
-live-derived at the nmkin_1 metal chest, survives field re-entry (init
-script re-poses looted chests open). Full state matrix in research §8
-v2.18.1. Residual watch items:
+"Chest, opened" suffix, live-derived at the nmkin_1 metal chest, survives
+field re-entry (init script re-poses looted chests open). v2.18.1 shipped
+a single-condition check (lastFrame (+0x6A) != 0); v2.18.2's code-review
+pass tightened it to a TWO-condition check — lastFrame != 0 AND
+currentFrame == lastFrame<<4 (the lid animation held at its own final
+subframe) — to stop a non-lid animation that RETURNS to rest (deny
+rattle, cutscene pose) from misreading as "opened"; the residual risk
+flips to a missed "opened" instead, the safer direction (a wasted walk
+vs. skipped treasure). Full state matrix in research §8 v2.18.1/.2.
+Residual watch items:
   - Confirmed on the METAL variant only; wood ("trb wood") and glow
     ("trb glow") variants expected identical — verify from normal play
     when one is encountered (wrong announce = report immediately).

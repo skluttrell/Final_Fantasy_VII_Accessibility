@@ -253,7 +253,7 @@ Key source files in the FFNx repository relevant to the accessibility DLL projec
 
 ---
 
-## 9. Notes on the 2013 vs 2026 Steam Release
+## 10. Notes on the 2013 vs 2026 Steam Release
 
 **Updated 2026-07-08 with confirmed details** (this section was originally a stub written before the 2026 release actually shipped).
 
@@ -301,8 +301,8 @@ FFNx's own version-detection code (`FFNx/src/common.h`) only distinguishes FF7 P
 - **7th Heaven**: needs its "Canary" channel for 2026-release compatibility (as of the earliest post-launch guides, Feb 2026) — check current channel status when actually installing, this may have since graduated to stable.
 - A Cheat Engine table specifically for "Final Fantasy VII (Re-Release 2026)" exists on FearLessRevolution (`fearlessrevolution.com/viewtopic.php?t=38397`) — not fetchable via automated tools (403s bots), but worth a manual look if Cheat Engine ever becomes usable on this machine (it would not launch during the 2013 investigation — "This app won't run on your PC" — untested whether that's specific to the old install or a general machine issue).
 
-### Open questions to verify empirically once installed (not answered by research)
+### Open questions — RESOLVED 2026-07-08 by direct install/test (see `FFVII-2026-Project.md`)
 
-- Executable bitness (32-bit vs 64-bit) — everything in the 2013 investigation assumed/confirmed 32-bit (WOW64 debugging quirks, `Wow64GetThreadContext` needed, etc.). If the bundled `ff7_en` is still 32-bit this all carries over directly; if not, some of the lower-level techniques (not the high-level architecture) need adjusting.
-- Whether the anti-debugging behavior that crashed the 2013 investigation's hardware-breakpoint attempt (see `project_ffvii_access` memory, "Battle command menu cursor" section, session 2) reproduces on the 2026 release's Steam wrapper — no evidence found either way in research; Denuvo/EasyAntiCheat were not found associated with this release (other modern FF7 titles like Remake/Rebirth confirmed to NOT use Denuvo), but the classic-engine executable may still carry the same lightweight Steam-DRM-level anti-debug behavior observed in 2013.
-- Whether confirmed 2013 addresses (MENU_CURSOR, TITLE_CURSOR, dialog rawptr table, etc.) actually match byte-for-byte, or are shifted by some constant/rebuild difference — the fastest way to know is direct testing once installed, not further research.
+- **Executable bitness: CONFIRMED 32-bit.** The bundled `ff7_en` in the 2026 release is `PE32 executable (GUI) Intel 80386`, same as 2013 — no WOW64/debugging-technique adjustment was needed.
+- Whether the 2013 investigation's anti-debugging crash (hardware-breakpoint attempt, see `project_ffvii_access` memory "Battle command menu cursor" section, session 2) reproduces on the 2026 release's Steam wrapper is **still untested** — it was never revisited, since the battle-menu-cursor problem was independently solved via static disassembly (v2.9, 2026-07-12) without needing that technique. Only relevant if a future investigation specifically needs hardware breakpoints again.
+- **Whether confirmed 2013 addresses carry over byte-for-byte: CONFIRMED YES, with zero code changes.** The already-compiled 2013 `version.dll` worked unmodified on first try against the 2026 install — title cursor, full field dialog pipeline, main menu cursor, and Config sub-menu TTS all confirmed working; battle action TTS (v2.7) and the battle-menu-cursor (v2.9) were confirmed working on this same install shortly after. One shared `AccessibilityMod/` codebase now serves both releases; see `FFVII-Accessibility-Research.md` §8 for the full version history built on this install since.
