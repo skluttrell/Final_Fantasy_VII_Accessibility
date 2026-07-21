@@ -5,6 +5,30 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TIMER] Stale timer resurrects itself on a save loaded past the escape — FIXED v2.30.8 (2026-07-20)
+------------------------------------------------------------------------
+Player report: "When I load the game from the slums, the timer from
+the escape starts again immediately. It should be cleared or
+something." Confirmed by the session log: the No.1 Reactor escape
+finished with ~596 seconds still on the clock; FF7 never resets that
+savemap field afterward, so it just keeps ticking down once per real
+second forever, invisible in vanilla play (its clock window closed
+with the escape), but SAVED to every subsequent save file. On a fresh
+launch loading such a save, TimerThread saw a still-decrementing
+nonzero value and announced "Timer started" — technically correct
+about the VALUE, wrong about the CONTEXT. Fix: live-hook STTIM (opcode
+0x38, same execute_opcode_table pattern as MESSAGE/ASK) instead of
+trusting the value alone — TimerThread now requires Hooks::SttimSeen()
+(true only after a REAL STTIM call fires this process run) before
+treating any nonzero value as a genuine timer; also makes T/Shift+T
+correctly say "No active timer" while unarmed instead of reading the
+stale number. RESIDUAL, unconfirmed either way: a save taken WHILE
+mid-escape (a deliberate checkpoint) may or may not re-fire STTIM on
+reload — if a play report shows that case going silent, add a second
+arm signal for it rather than reverting this fix. Research §8 v2.30.8.
+Deployed both installs. VERIFY: loading past a completed escape stays
+silent; the next genuinely new timed sequence still announces normally.
+
 [DIALOG] Wait/choice audio cues — SHIPPED v2.30.5, RETUNED v2.30.6 (2026-07-20), awaiting play-test
 ------------------------------------------------------------------------
 User request: a short high tone when a story dialog is waiting for the

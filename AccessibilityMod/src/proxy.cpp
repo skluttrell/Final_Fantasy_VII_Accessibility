@@ -2666,6 +2666,23 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         if (val > kMaxSane) {   // garbage (pre-init) — ignore entirely
             have_last = false;
             running = false;
+        } else if (!Hooks::SttimSeen()) {
+            // v2.30.8: no live STTIM call observed yet THIS PROCESS RUN —
+            // this savemap field can hold a STALE value left over from an
+            // earlier session's save (player report 2026-07-20: loading
+            // into the slums, well past the No.1 Reactor escape, made the
+            // timer "start again immediately" — the escape had ended with
+            // time still on the clock, and that value just kept ticking in
+            // the background across the save, invisible in vanilla FF7
+            // since its on-screen clock window closed with the escape).
+            // last_val/have_last still get updated unconditionally below
+            // (so a REAL STTIM later doesn't read as a spurious "jump"),
+            // but this branch deliberately does NOT touch last_change or
+            // `running` — leaving both alone keeps timer_live false (see
+            // its definition below) for as long as this branch keeps
+            // being taken, which correctly makes T/Shift+T report "No
+            // active timer" too, not just silence the automatic
+            // announcements.
         } else if (have_last && val != last_val && !frozen) {
             if (val < last_val && (last_val - val) <= 5) {
                 // Normal downward tick(s).

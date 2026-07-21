@@ -224,6 +224,34 @@ static int (__cdecl* s_old_message)() = nullptr;
 // The int parameter is passed by the opcode dispatcher (opaque, forwarded unchanged).
 static int (__cdecl* s_old_ask)(int) = nullptr;
 
+// Saved opcode table entry for STTIM (0x38, "set timer" -- writes the
+// countdown-escape clock). Calling convention matches MESSAGE: __cdecl, no
+// parameters, handler reads its h/m/s script args directly.
+static int (__cdecl* s_old_sttim)() = nullptr;
+
+// v2.30.8: true once a LIVE STTIM opcode call has been observed THIS
+// PROCESS RUN. Plain volatile write/read is sufficient -- this is a
+// monotonic "once true, stays true for the rest of the session" latch, not
+// a value that needs read-modify-write atomicity, and LONG reads/writes
+// are naturally atomic on x86.
+//
+// WHY THIS EXISTS: COUNTDOWN_TIMER_SECONDS (ff7_addresses.h) is savemap
+// state, so it SURVIVES a save/load -- already flagged as a risk when
+// that address was found (see its doc comment: "Being savemap state, the
+// timer persists in saves"). Player report 2026-07-20: loading a save
+// taken well after an escape had already completed (with time left on
+// the clock, so the value never reached 0) made TimerThread treat that
+// STALE, still-nonzero value as a BRAND NEW timer the instant it next
+// ticked down a second -- announcing "Timer started" in the slums, nowhere
+// near an active escape. The value alone can't distinguish "a real
+// countdown just began" from "leftover data from a previous playthrough
+// segment that happens to still be counting down in the background,
+// invisible in vanilla FF7 since its on-screen clock window is long
+// closed." A live STTIM call is the one signal that unambiguously means
+// the former -- TimerThread (proxy.cpp) gates its "just started"
+// detection on this being true.
+static volatile LONG s_sttim_seen = 0;
+
 // ---------------------------------------------------------------------------
 // Per-window dialog state tracking
 //
@@ -963,6 +991,27 @@ static int __cdecl hook_ask(int unk)
 }
 
 // ---------------------------------------------------------------------------
+// Hook: STTIM opcode (0x38) — "set timer"
+//
+// Fires once, the instant a countdown-escape timer is (re)started. See
+// s_sttim_seen's doc comment above for why TimerThread (proxy.cpp) needs
+// this instead of just watching COUNTDOWN_TIMER_SECONDS's value: that
+// memory is savemap state and can hold a stale, still-ticking leftover
+// value from an earlier session that has nothing to do with a live escape.
+//
+// No script parameters are read here — STTIM's own h/m/s args go straight
+// into COUNTDOWN_TIMER_SECONDS by the ORIGINAL handler (which we always
+// chain to unconditionally, same as every other hook in this file); we
+// only need to know THAT it fired, not decode its arguments ourselves.
+// ---------------------------------------------------------------------------
+static int __cdecl hook_sttim()
+{
+    s_sttim_seen = 1;
+    Log::Write("[FF7Access] STTIM opcode fired -- countdown timer armed for this session.");
+    return s_old_sttim();
+}
+
+// ---------------------------------------------------------------------------
 // Install / Uninstall
 // ---------------------------------------------------------------------------
 
@@ -996,8 +1045,20 @@ bool Install()
         *reinterpret_cast<uint32_t*>(ask_entry_addr));
     patch_dword(ask_entry_addr, reinterpret_cast<uint32_t>(&hook_ask));
 
+    // --- STTIM hook (opcode 0x38) ---
+    //
+    // Same pattern as MESSAGE. Gives TimerThread (proxy.cpp) a live
+    // "a countdown just (re)started" signal — see s_sttim_seen's doc
+    // comment for why the savemap value alone isn't trustworthy on its own.
+    const uint32_t sttim_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x38 * sizeof(uint32_t);
+
+    s_old_sttim = reinterpret_cast<int (__cdecl*)()>(
+        *reinterpret_cast<uint32_t*>(sttim_entry_addr));
+    patch_dword(sttim_entry_addr, reinterpret_cast<uint32_t>(&hook_sttim));
+
     s_installed = true;
-    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK opcode table).");
+    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM opcode table).");
     return true;
 }
 
@@ -1018,6 +1079,13 @@ void Uninstall()
         reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x48 * sizeof(uint32_t);
     if (s_old_ask) {
         patch_dword(ask_entry_addr, reinterpret_cast<uint32_t>(s_old_ask));
+    }
+
+    // Restore STTIM entry.
+    const uint32_t sttim_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x38 * sizeof(uint32_t);
+    if (s_old_sttim) {
+        patch_dword(sttim_entry_addr, reinterpret_cast<uint32_t>(s_old_sttim));
     }
 
     s_installed = false;
@@ -1041,6 +1109,14 @@ bool ConsumeDialogWaitTone()
 bool ConsumeDialogChoiceTone()
 {
     return InterlockedExchange(&s_dialog_choice_pending, 0) != 0;
+}
+
+// See s_sttim_seen's doc comment above and hooks.h for full rationale.
+// Deliberately NOT a consume/test-and-clear — this is a sticky "has this
+// happened at all yet this process run" latch, not an edge event.
+bool SttimSeen()
+{
+    return s_sttim_seen != 0;
 }
 
 } // namespace Hooks

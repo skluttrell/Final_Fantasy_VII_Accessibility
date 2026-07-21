@@ -225,7 +225,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `SAVEMAP_PARTY_IDS` | `0xDC0230` | u8[3] — character IDs of party slots 0-2 (0xFF = empty; 9=Young Cloud→record 6, 10=Sephiroth→record 7 during the Kalm flashback). **Self-verifying at runtime**: slot 0's byte must equal PARTY_LEADER (0xDC09E5) or PartySlotLabel falls back to positional "ally N" (v2.19) |
 | `SAVEMAP_ITEMS` | `0xDC0234` | **Party inventory items[320]** u16 (savemap+0x4FC — pinned by party_members[3]+pad in FFNx's savemap struct, i.e. 4 bytes past the live-verified party IDs): id = bits 0-8 (0-127 items, 128-255 weapons, 256-287 armor, 288-319 accessories), qty = bits 9-15, **EMPTY = 0xFFFF** (format from FFNx's own menu_decrease_item_quantity reimplementation, menu.cpp). Screen row order = array order (Arrange rewrites the array). v2.31's item-list data source — needed NO scan |
 | `SAVEMAP_KEYITEM_BITS` | `0xDC0894` | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed (player has no key items to verify against) |
-| `COUNTDOWN_TIMER_SECONDS` | `0xDC08BC` | **The timed-escape clock, u32 WHOLE SECONDS** (savemap+0xB84 = FFNx's own `countdown_timer` field). STATIC-PROVEN pre-play (v2.34, the scorpion one-shot problem): the STTIM opcode (0x38) handler 0x61FCD8 stores h·3600+m·60+s here (ff7_timer_static.py). The WSPCL clock window renders FROM it → rewriting it freezes display AND satisfies script time checks (Shift+T). Persists in saves (it's savemap) — announcer requires observed DECREASE before trusting it |
+| `COUNTDOWN_TIMER_SECONDS` | `0xDC08BC` | **The timed-escape clock, u32 WHOLE SECONDS** (savemap+0xB84 = FFNx's own `countdown_timer` field). STATIC-PROVEN pre-play (v2.34, the scorpion one-shot problem): the STTIM opcode (0x38) handler 0x61FCD8 stores h·3600+m·60+s here (ff7_timer_static.py). The WSPCL clock window renders FROM it → rewriting it freezes display AND satisfies script time checks (Shift+T). ⚠ Persists in saves (it's savemap) and the game never resets it once an escape ends — a v2.30.8 play report (loading well past a completed escape resurrected "Timer started" in the slums) proved a bare observed-DECREASE heuristic isn't enough; v2.30.8 LIVE-HOOKS opcode 0x38 itself (execute_opcode_table[0x38], same pattern as MESSAGE/ASK) so TimerThread only trusts this value once a real STTIM call has fired THIS process run (`Hooks::SttimSeen()`) |
 | `COUNTDOWN_TIMER_MS` | `0xDC08C0` | u32 sub-second accumulator driving the 1/sec tick (= FFNx `millisecond_counter`, operand at timer_menu_sub+0xD06). Not consumed by the mod |
 | *(savemap char HP/MP)* | — | Character record words (record base = SAVEMAP_CHAR_RECORDS + rec·0x84): **+0x2C cur HP, +0x38 max HP, +0x30 cur MP, +0x3A max MP** — offsets from FFNx's savemap_char struct, the same struct that supplied the live-verified +0x10 name field. v2.31 speaks them in the use-on-whom pane (heal-target parity), guarded by the v2.19 leader cross-check |
 | *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
@@ -2431,6 +2431,76 @@ next play session: MESSAGE dialogs speak one beat per real on-screen
 page turn, no dead silence; capture a fresh debug log through an ASK
 choice (ideally the SAME Aeris scene) so `ASK[i]: '...'` lines pin down
 the exact indexing mismatch.
+
+### v2.30.8 (2026-07-20): countdown timer no longer resurrects itself from a stale save
+
+Player report: "When I load the game from the slums, the timer from
+the escape starts again immediately. It should be cleared or
+something."
+
+**Root cause, confirmed exactly by the same-session debug log**:
+```
+TIMER value jump 4294967295 -> 596 (re-detecting)
+TIMER started: 595 seconds
+TIMER tick 595 -> 594 (1000ms)
+TIMER tick 594 -> 593 (1063ms)
+...
+```
+`COUNTDOWN_TIMER_SECONDS` is savemap state (ff7_addresses.h's own doc
+comment already flagged this when the address was found: "Being
+savemap state, the timer persists in saves"). The No.1 Reactor escape
+was completed with ~596 seconds still on the clock — FF7 never resets
+this field to 0 once the escape ends, and nothing in vanilla gameplay
+cares, because the on-screen clock window (WSPCL) that renders FROM
+it closes with the escape and nothing ever reads the value again. But
+the field keeps ticking down once per real second IN THE BACKGROUND,
+FOREVER, completely invisibly in vanilla play — and that ongoing
+countdown is exactly what got written into every subsequent save. On
+a fresh game launch loading that save, TimerThread's `have_last`/
+`running` state (a background thread, lifetime = process run) starts
+fresh, reads 0xFFFFFFFF once (pre-init garbage, the "value jump" line),
+then reads the REAL leftover value (596) and — because it's still
+actively decrementing — announces "Timer started" the instant the next
+real tick registers, deep in the slums, nowhere near the reactor.
+
+**Fix**: a live opcode hook, not a value heuristic. STTIM (opcode 0x38,
+handler 0x61FCD8 — already statically located when this address was
+found in v2.34) is the ONLY code that writes a fresh countdown value;
+hooking it (same `execute_opcode_table` patch pattern as MESSAGE/ASK)
+gives an unambiguous "a real countdown just (re)started" signal that a
+stale savemap value alone cannot provide. `Hooks::SttimSeen()` is a
+sticky latch — false until a live STTIM fires THIS PROCESS RUN, true
+for the rest of the session once it does. TimerThread's tick-processing
+branch (the one that sets `running=true` and announces) is now gated
+on it: while unseen, `last_val`/`have_last` still track the raw value
+silently (so a genuine STTIM later doesn't misread as a spurious
+"jump"), but `last_change`/`running` are left untouched — which also
+correctly makes `timer_live` (used by both the automatic announcements
+AND the T/Shift+T on-demand readout) false the whole time, so pressing
+T while unarmed correctly says "No active timer" instead of reporting
+the stale number.
+
+**RESIDUAL RISK, not fixed speculatively**: if a player deliberately
+saves WHILE mid-escape (a checkpoint before a hard timed section) and
+later reloads that save, this fix would ALSO suppress announcements
+until a live STTIM fires again — and it's unconfirmed whether the
+field's re-entry/resume logic calls STTIM again on a mid-escape load,
+or only on the ORIGINAL trigger (a scripted event, likely NOT part of
+the field's basic init script that runs on every entry/load). If a play
+report shows a genuine mid-escape reload going silent, the fix is
+detecting that specific resume case as an ADDITIONAL arm signal, not
+reverting this change (the reported bug — a stale timer haunting
+completely unrelated, already-finished areas — is real and confirmed;
+this trade-off is a hypothesis about an untested edge case).
+
+No new addresses (STTIM's handler address 0x61FCD8 was already known
+from the original v2.34 investigation; opcode 0x38 was already
+documented as its opcode number). Built clean, deployed both installs
+2026-07-20 (hash-verified). VERIFY next play session: loading a save
+well past a completed timed escape stays silent; the NEXT genuinely
+new timed sequence (whenever next reachable) still announces normally
+(confirms the STTIM hook itself fires correctly, not just that it's
+suppressing things).
 
 ---
 

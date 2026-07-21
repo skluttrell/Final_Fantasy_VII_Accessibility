@@ -110,4 +110,40 @@ unsigned long LastDialogActivityTick();
 bool ConsumeDialogWaitTone();
 bool ConsumeDialogChoiceTone();
 
+/*
+ * SttimSeen: true once a LIVE STTIM (opcode 0x38, "set timer") call has
+ * been observed THIS PROCESS RUN. Sticky — once true, stays true for the
+ * rest of the session (unlike the Consume* functions above, this is not
+ * an edge event to drain, just a "has this happened yet at all" latch).
+ *
+ * WHY THIS EXISTS (v2.30.8):
+ *   COUNTDOWN_TIMER_SECONDS (ff7_addresses.h) is savemap state, so it
+ *   SURVIVES a save/load. Player report 2026-07-20: loading a save taken
+ *   well after a timed escape had already completed (with time left on
+ *   the clock, so the value never reached 0) made TimerThread treat that
+ *   STALE, still-nonzero, still-ticking-in-the-background value as a
+ *   brand new timer the instant it next ticked down a second — announcing
+ *   "Timer started" in the slums, nowhere near an active escape. The
+ *   value's behavior alone (nonzero, decrementing) can't distinguish a
+ *   genuinely new countdown from leftover data a previous session saved
+ *   that the game itself no longer shows anywhere (its on-screen clock
+ *   window closed when the escape ended) but also never resets to 0.
+ *
+ *   A live STTIM call is the one unambiguous signal that a real countdown
+ *   has (re)started. TimerThread only treats a nonzero timer value as
+ *   "just started" (and only then begins announcing/tracking it) once
+ *   this is true.
+ *
+ * RESIDUAL RISK: if a player reloads a save taken WHILE genuinely mid-
+ * escape (a deliberate checkpoint/retry save), and the field's re-entry
+ * logic does NOT call STTIM again on that load (unconfirmed either way),
+ * this gate would also suppress announcements for that legitimate case
+ * until STTIM does fire. Flagged for play verification, not fixed
+ * speculatively — see TODO.txt.
+ *
+ * THREAD SAFETY: plain volatile LONG read; a monotonic latch needs no
+ * read-modify-write atomicity, and aligned LONG access is atomic on x86.
+ */
+bool SttimSeen();
+
 } // namespace Hooks
