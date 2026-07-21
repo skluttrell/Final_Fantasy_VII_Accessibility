@@ -279,10 +279,34 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
         // 0xE7: newline as documented in ff7tk eng[] table.
         // split_lines (DecodeLines() only): a newline ends the segment, same
         // as a page break -- see the doc comment above decode_walk().
+        //
+        // v2.30.10: only actually split when `result` (the segment so far)
+        // has real content. Root cause of the ASK cursor bug incorrectly
+        // blamed on index math in v2.30.4/6/9: raw dumps from the 2026-07-21
+        // Aeris flower-girl scene (both the 2-option and the plain "Buy
+        // one"/"Forget it" window) show EVERY selectable option preceded by
+        // an 0xE7 immediately followed by 0xE0 (or, when there's no leading
+        // name/quote line, a bare 0xE0 as the very first byte). Splitting on
+        // BOTH bytes unconditionally turns that into TWO breaks with nothing
+        // between them, inserting a spurious empty entry before every
+        // option. The game's own FIRST_LINE/LAST_LINE opcode params count
+        // real content lines, not raw break bytes, so they landed on our
+        // blank artifact, one slot short of the actual option text --
+        // ask_lines[first_line] was always empty or the PREVIOUS option's
+        // text, never the option the cursor was actually on. Collapsing
+        // consecutive breaks (only creating a new segment when the current
+        // one already holds content) reproduces the game's own line count
+        // exactly in both 2026-07-21 raw dumps (6->4 and 4->2 entries,
+        // matching first_line/last_line in both cases with no other change).
         else if (byte == 0xE0 || byte == 0xE7) {
             if (split_lines) {
-                if (hard_break_out) hard_break_out->push_back(false);
-                pages.emplace_back();
+                if (!result.empty()) {
+                    if (hard_break_out) hard_break_out->push_back(false);
+                    pages.emplace_back();
+                }
+                // else: a break immediately after another break (or as the
+                // very first byte) with nothing in between -- collapse, do
+                // not emit a spurious blank entry.
             }
             else guard_space(result);
             ++p;

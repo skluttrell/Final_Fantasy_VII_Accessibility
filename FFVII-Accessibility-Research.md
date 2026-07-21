@@ -2567,6 +2567,79 @@ missed explicit break byte vs. a genuinely smaller per-window capacity)
 that only a raw-byte log through this exact moment can distinguish; see
 TODO.txt for the full writeup and what to capture next.
 
+### v2.30.10 (2026-07-21): ASK choice cursor — the REAL misalignment, found from a raw byte dump
+
+Player re-tested the exact same Aeris scene the SAME DAY v2.30.9
+shipped: "still broken, same pattern as before." v2.30.9's claim above
+("no index misalignment required... there was no misalignment bug to
+find") was WRONG — it was reached from screenshots alone, which show
+what's ON SCREEN, not the raw byte stream. A fresh `debug_log=true`
+replay of the identical scene supplied the actual raw dump, and it
+overturns that conclusion completely.
+
+**The raw bytes** (from the log, `MSG raw(ASK/PENDING)` lines):
+- Aeris 2-option choice: `"Flower girl" E7 '"What happened?"' E7 E0
+  "You'd better get out of here" E7 E0 "Nothing...hey..."`
+- "Buy one"/"Forget it" (later choice, same scene): `E0 "Buy one" E7 E0
+  "Forget it"`
+
+`decode_walk` (`ff7_text.cpp`, shared by `Decode()`, `DecodeLines()`,
+and `DecodeMessagePages()`) treated 0xE0 and 0xE7 as independent,
+unconditional segment-enders when `split_lines` is true. An `E7`
+immediately followed by an `E0` — or a bare leading `E0` — is TWO
+breaks with NOTHING between them, so decode_walk inserted a spurious
+EMPTY entry before every real option. Logged proof
+(`log_lines`/`ASK[i]`): the Aeris window decoded to **6** entries —
+`'Flower girl'`, `'"What happened?"'`, `''`, `"You'd better get out of
+here"`, `''`, `'Nothing.hey.'` — with the two real options landing at
+indices **3 and 5**, not 2 and 3. The "Buy one" window decoded to
+**4** entries — `''`, `'Buy one'`, `''`, `'Forget it'` — real options at
+**1 and 3**, not 0 and 1.
+
+But the game's own `FIRST_LINE`/`LAST_LINE` opcode params count REAL
+CONTENT lines (the Aeris window visually has exactly 4: name, quote,
+option A, option B — matching the screenshots), not raw break-byte
+count. So `first_line=2` pointed at OUR blank artifact (silently
+no-op'd by the existing `if (!line.empty())` guard — explaining why the
+very first announce was silent) and every subsequent cursor move
+announced the PREVIOUS option's text, one slot behind the game's actual
+selection. This — not the v2.30.9 suppression bug, which was real but
+insufficient on its own — is what reproduced "spoken at the bottom...
+not spoken at all" even after v2.30.9 shipped: v2.30.9 fixed the
+missing *first* announcement's suppression, but the announcement it
+un-suppressed was still reading the WRONG array slot.
+
+**Fix** (`ff7_text.cpp`, `decode_walk`'s newline case): a newline-class
+byte (0xE0 or 0xE7) now only ends the current segment when that segment
+already holds real content; two in a row (or a leading one with nothing
+preceding it) collapse into a single break instead of manufacturing an
+empty entry. This is a `decode_walk`-level change, so it also affects
+`DecodeMessagePages` (MESSAGE pagination) — reviewed and judged safe/
+likely beneficial there too: a genuinely empty rendered line is not
+something normal dialogue ever intentionally produces, and collapsing
+it stops such an artifact from silently consuming a slot toward
+`kLinesPerPage`'s cap.
+
+**Verified OFFLINE before redeploying** (per this project's established
+dry-run practice — see the Method Playbook): a standalone Python
+re-implementation of the new `decode_walk` logic, fed the EXACT two raw
+byte dumps above, reproduced the game's own line count precisely —
+6→4 entries for Aeris (`first_line=2` now correctly indexes `"You'd
+better get out of here"`, `last_line=3` → `"Nothing...hey..."`) and 4→2
+for Buy one/Forget it (`first_line=0`/`last_line=1` now index each
+option directly, no leading blank). No new addresses; pure decoder
+logic fix. Built clean, deployed both installs (hash-verified). VERIFY
+next play session: the Aeris 2-option choice (and others) now speak the
+starting option once right after the intro AND track the cursor
+accurately as it moves in both directions.
+
+LESSON: screenshots are ground truth for what's ON SCREEN, but this
+bug lived in the RAW BYTE STREAM between screen-rendered lines (an
+artifact of how two control bytes combine) — no screenshot could ever
+have revealed it. When a fix based on visual evidence doesn't hold up
+on immediate re-test, that is the signal to go back for the actual byte
+data, not to re-interpret the same screenshots differently.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

@@ -165,7 +165,7 @@ the bank/address the 3 data bytes reference, read its current value,
 resolve by type) — a bigger task than a decode-table tweak. Research
 §8 v2.30.6 residual note.
 
-[DIALOG] Choice menus: cursor tracking — ROOT CAUSE FOUND + FIXED v2.30.9 (2026-07-21), awaiting play-test
+[DIALOG] Choice menus: cursor tracking — REAL ROOT CAUSE FOUND + FIXED v2.30.10 (2026-07-21), awaiting play-test
 ------------------------------------------------------------------------
 Player report chain: (1) only first option read, no cursor tracking
 [v1]; (2) v2.30.4 wired ASKMENU_OPTION + DecodeLines but ASSUMED cursor
@@ -179,42 +179,56 @@ choice spoken at the bottom... arrow back up to it, not spoken at
 all"), even though the session log proves first_line/last_line read
 correctly (2/3 for a 2-option choice) AND the cursor-change detection
 fires for both directions (2->3, 3->2 both logged).
-2026-07-21: player supplied screen-by-screen CAPTURES of the exact Aeris
-scene (Screenshots/Dialogs/flower_girl/) instead of a log — ground truth
-for what each ASK window actually contains. fg_2_t1/fg_3_t2 confirm the
-4-line layout (name / lead-in quote / option A [cursor here by default] /
-option B) matching first_line=2,last_line=3 exactly — ask_lines[2]/[3] DO
-hold the right text, so the index math was correct all along. fg_5_t3
-(a later choice in the same scene) shows a window with NO name/quote
-lines at all, just the 2 options — proof first_line/last_line legitimately
-varies per window and isn't a fixed offset bug.
-ACTUAL ROOT CAUSE (hooks.cpp WindowState::ask_last_option + hook_ask):
-v2.30.4 and v2.30.6 both deliberately seeded ask_last_option to the
-starting option (0, then FIRST_LINE) specifically to SUPPRESS the OPTION
-CURSOR block from "re-announcing" the option already mentioned inside
-the "Choose: ..." intro sentence. That suppression was the bug: the
-intro reads the WHOLE window as one run-on sentence (name + lead-in +
-every option), so the default-highlighted option only ever gets a
-buried, mid-sentence mention — never a clean, isolated announcement.
-With a 2-option choice and the cursor starting at the topmost option
-(nowhere to arrow "up" to), the player would hear nothing but that one
-buried mention, matching "spoken at the bottom [of the run-on intro]...
-arrow back up to it [a no-op, already at top], not spoken at all" with
-no misalignment required at all.
-FIX v2.30.9: stopped seeding ask_last_option from FIRST_LINE — left at
-the -1 the new-dialog branch already sets, so the OPTION CURSOR block
-fires once immediately after the intro for the starting option too,
-exactly like every subsequent cursor move already does. first_line is
-still read and logged for diagnostics, just no longer forced into
-ask_last_option.
+2026-07-21 (first pass): player supplied screen-by-screen CAPTURES of the
+exact Aeris scene (Screenshots/Dialogs/flower_girl/). Misread at the
+time as proof the index math was fine (the intro/quote/option layout in
+the screenshots visually matched first_line=2/last_line=3) — v2.30.9
+shipped a fix for a real but SEPARATE bug (ask_last_option was seeded to
+the starting option specifically to suppress the OPTION CURSOR block's
+first announce, which meant the default-highlighted option never got a
+clean callout, only a buried mid-sentence mention inside the "Choose:"
+intro). That fix was correct and still needed, but player re-test SAME
+DAY showed the SAME symptom persisting -- v2.30.9 alone wasn't enough.
+2026-07-21 (second pass, real root cause): a fresh debug_log=true replay
+of the SAME scene (not just screenshots) gave the actual raw byte dump,
+and it changes the diagnosis completely. The Aeris ASK raw bytes are
+literally "Flower girl" E7 '"What happened?"' E7 E0 "You'd better get
+out of here" E7 E0 "Nothing...hey...", and the "Buy one"/"Forget it"
+window is E0 "Buy one" E7 E0 "Forget it". decode_walk (ff7_text.cpp)
+was treating BOTH 0xE0 and 0xE7 as independent newline bytes that always
+end the current segment -- so an E7 immediately followed by an E0 (or a
+bare leading E0) produced TWO breaks with nothing between them, i.e. a
+SPURIOUS EMPTY ENTRY inserted before every real option. Logged proof
+(ASK[]  dump): Aeris case decoded to 6 entries -- 'Flower girl' /
+'"What happened?"' / '' / "You'd better get out of here" / '' /
+'Nothing.hey.' -- with the real options landing at [3] and [5], one
+slot AFTER the blank artifacts. But the game's own FIRST_LINE/LAST_LINE
+count REAL CONTENT lines (4 total: name, quote, option A, option B), not
+raw break bytes -- so first_line=2 pointed at OUR blank filler, not
+option A, silently no-op'ing the very first announce (line.empty()
+check just skipped it) and shifting every subsequent cursor move's
+announce one option behind the game's actual selection. This -- not the
+v2.30.9 suppression bug -- is what reproduced "first choice spoken at
+the bottom [i.e. never cleanly, only mid-intro]... not spoken at all
+[the blank-entry no-op]" even after v2.30.9 shipped.
+FIX v2.30.10 (ff7_text.cpp decode_walk): a newline-class byte (0xE0 or
+0xE7) now only ends the current segment when that segment already has
+real content; two in a row (or a leading one with nothing before it)
+collapse into a single break instead of producing an empty entry.
+Verified OFFLINE first (per this project's dry-run practice) against
+BOTH captured raw dumps before redeploying: the fix reproduces the
+game's own line count exactly -- 6->4 entries for Aeris (first_line=2
+now correctly indexes "You'd better get out of here", last_line=3
+"Nothing...hey..."), 4->2 for Buy one/Forget it (first_line=0/last_line=1
+now index each option directly, no leading blank).
 ALSO UNEXPLAINED, no log evidence yet: nested "choice leads to another
 choice tree" is SILENT INCLUDING THE INTRO (not just wrong-line) —
 more severe than the index bug, needs its own log capture through a
 nested tree specifically.
-Research §8 v2.30.6/.7/.9. Deployed both installs. VERIFY: the Aeris
+Research §8 v2.30.6/.7/.9/.10. Deployed both installs. VERIFY: the Aeris
 2-option choice (and others) now speak the starting/default option once,
-right after the "Choose:" intro, with no further code changes needed if
-that's confirmed.
+right after the "Choose:" intro, and track the cursor accurately in both
+directions, with no further code changes needed if that's confirmed.
 
 [DIALOG] Some short "flash text" screens still speak as one block, not one per page — CONFIRMED by screenshots 2026-07-21, root cause NOT YET FOUND
 ------------------------------------------------------------------------
