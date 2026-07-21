@@ -115,17 +115,36 @@ namespace Hooks {
 // ---------------------------------------------------------------------------
 static void log_raw_bytes(const char* path_tag, const char* text)
 {
-    char hex[72] = {}; int n = 0;
-    for (int i = 0; i < 18; ++i) {
+    // v2.30.7: was capped at 18 bytes -- nowhere near enough to hand-decode
+    // a real multi-line message or a multi-option ASK choice (both
+    // 2026-07-20 bug reports needed the FULL text to diagnose, and the
+    // truncated dumps in that session's log left several bytes short of
+    // where the actual bug lived). 256 covers effectively every FF7
+    // dialog/choice string without approaching the 4096-byte decode cap.
+    char hex[800] = {}; int n = 0;
+    for (int i = 0; i < 256; ++i) {
         const uint8_t b = reinterpret_cast<const uint8_t*>(text)[i];
         if (b == 0xFF) break;
         n += _snprintf_s(hex + n, (int)sizeof(hex) - n, _TRUNCATE, "%02X ", b);
     }
     if (n > 0) hex[n - 1] = '\0'; // trim trailing space
-    char line[140];
+    char line[840];
     _snprintf_s(line, sizeof(line), _TRUNCATE,
         "[FF7Access] MSG raw(%s): %s", path_tag, hex);
     Log::Write(line);
+}
+
+// v2.30.7: dump each decoded line/page's full text, one log line per entry,
+// so a mismatch between our split and the game's own line numbering is
+// directly visible (no hand-decoding hex against the encoding table).
+static void log_lines(const char* path_tag, const std::vector<std::wstring>& lines)
+{
+    for (size_t i = 0; i < lines.size(); ++i) {
+        char line[300];
+        _snprintf_s(line, sizeof(line), _TRUNCATE,
+            "[FF7Access] %s[%zu]: '%ls'", path_tag, i, lines[i].c_str());
+        Log::Write(line);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +235,9 @@ struct WindowState {
     // (starting, paging, closing) by comparing last vs. current each frame.
     uint8_t last_opcode    = 0;
 
-    // v2.30.4: the decoded PAGES of the current dialog (one entry per
-    // on-screen page — see FF7Text::DecodePages), and the index of the next
+    // v2.30.4 (revised v2.30.7): the decoded PAGES of the current dialog
+    // (one entry per on-screen page — see FF7Text::DecodeMessagePages),
+    // and the index of the next
     // one to speak. START speaks pages[0] and sets next_page=1; each PAGE
     // transition speaks pages[next_page++]. This is the field this struct's
     // page_count field was originally reserved for (see the v1 header
@@ -583,17 +603,23 @@ static int __cdecl hook_message()
         // s_old_message() already updated DIALOG_TEXT_PTRS[window_id] to the
         // new dialog's text. Read it now. If still invalid, retry next frame.
         //
-        // v2.30.4: FF7's rawptr holds the WHOLE multi-page message the
-        // instant the window opens (there's no "page 2 doesn't exist yet"
-        // state), so we decode all of it right here — but only SPEAK the
-        // first page. The rest sit cached in s_window[].pages, one page
-        // spoken per later PAGE-advance event, so TTS stays paced to what's
-        // actually on screen instead of reading the whole message up front
-        // (player report 2026-07-20).
+        // v2.30.4 (revised v2.30.7): FF7's rawptr holds the WHOLE multi-
+        // page message the instant the window opens (there's no "page 2
+        // doesn't exist yet" state), so we decode all of it right here —
+        // but only SPEAK the first page. The rest sit cached in
+        // s_window[].pages, one page spoken per later PAGE-advance event,
+        // so TTS stays paced to what's actually on screen instead of
+        // reading the whole message up front (player report 2026-07-20).
+        // FF7Text::DecodeMessagePages groups lines into ~4-line pages
+        // (FF7's on-screen box capacity) AND still honors any explicit
+        // page-break byte as a forced early page close — see its doc
+        // comment for why a pure hard-break-only split (this mod's first
+        // attempt) went silent on dialogs that soft-wrap with no such byte
+        // present (player report 2026-07-20).
         // ------------------------------------------------------------------
         else if (s_window[window_id].pending_speak && Config::Get().speak_dialog) {
             if (is_valid_dialog_rawptr(raw_text)) {
-                s_window[window_id].pages = FF7Text::DecodePages(raw_text);
+                s_window[window_id].pages = FF7Text::DecodeMessagePages(raw_text);
                 char dbg[80];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)",
@@ -601,6 +627,7 @@ static int __cdecl hook_message()
                     s_window[window_id].pages.size());
                 Log::Write(dbg);
                 log_raw_bytes("PENDING", raw_text);
+                log_lines("MSG PAGE", s_window[window_id].pages);
                 speak_page(s_window[window_id], /*interrupt=*/true);
                 s_window[window_id].pending_speak = false;
             }
@@ -877,6 +904,16 @@ static int __cdecl hook_ask(int unk)
                     window_id, s_window[window_id].ask_lines.size(),
                     first_line, last_line);
                 Log::Write(lines_dbg);
+                // v2.30.7: dump every line's actual TEXT (not just the
+                // count) -- player report 2026-07-20 said the v2.30.6
+                // first_line fix still announced the wrong line, and
+                // first_line/last_line alone (confirmed correct: 2/3 for
+                // the Aeris flower-girl choice) weren't enough to prove
+                // whether ask_lines[2]/ask_lines[3] actually HOLD those
+                // two answers or something else entirely -- this makes
+                // that directly visible in the log instead of requiring
+                // hand-decoded hex.
+                log_lines("ASK", s_window[window_id].ask_lines);
                 s_window[window_id].pending_speak = false;
             }
             // else: rawptr not ready; retry next frame

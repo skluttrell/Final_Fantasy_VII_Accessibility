@@ -2360,6 +2360,78 @@ tone fires once per hold, not early, not doubled; ASK choice cursor
 announces the CORRECT highlighted line as you arrow through, including
 nested choice-leads-to-choice trees; commas read naturally.
 
+### v2.30.7 (2026-07-20): pagination actually splits on-screen now; ASK bug still open, better diagnostics shipped
+
+Same-day play report on the v2.30.6 build: the wait tone now fires
+correctly once per hold ("no longer beeps multiple times"), but two
+bugs remained.
+
+**(1) MESSAGE pagination went silent after page 1 — root cause: not
+every on-screen page break has a byte marking it.** Player description
+matched a dialog whose STATE MACHINE still fired real `PAGE`
+transitions (confirming multiple actual screens), but
+`FF7Text::DecodePages()` (v2.30.4) returned only ONE page for it — no
+`(N pages)` in the log for N>1, meaning there was no 0xE8/0xE9 anywhere
+in that string. DecodePages() could only ever catch AUTHOR-PLACED hard
+breaks; it had no way to know where the RENDERER would additionally
+soft-wrap a long unbroken passage once it ran out of the ~4 lines FF7's
+standard dialog box can show at once. Confirmed independently in the
+2026-07-19 log too: `id=4`'s (1 pages) result coexisted with a real
+`4→8 [PAGE]` transition — the exact mismatch this explains.
+
+Fix: `FF7Text::DecodePages()` is retired; `FF7Text::DecodeMessagePages()`
+replaces it, built on the SAME line-splitting `decode_walk` uses for
+DecodeLines (extended with a new optional `hard_break_out` vector
+tracking which boundary was a page-break byte vs. a plain newline).
+Lines are grouped into pages of up to **4** (FF7's documented standard
+message-window line capacity — an ASSUMPTION, not something read from
+the game; the first thing to revisit if a future report shows pages
+breaking early/late relative to the screen), but an explicit page-break
+byte still forces an early close regardless of line count, so
+deliberately short hard-broken passages (dramatic pauses) are still
+respected. `speak_page()`'s existing bounds check
+(`next_page >= pages.size()` → silent no-op) means an imperfect line-
+count guess degrades gracefully — worst case a page or two is
+mistimed, never a crash or garbage speech, and it can never be WORSE
+than the prior all-silent failure mode.
+
+**(2) ASK choice-menu cursor: still wrong, cause NOT YET FOUND — but
+the v2.30.6 first_line fix is confirmed at least partially correct.**
+The session log for the Aeris flower-girl choice shows:
+```
+ASK win=2 lines=6 first_line=2 last_line=3
+ASK win=2 option 2->3
+ASK win=2 option 3->2
+ASK win=2 option 2->3
+```
+first_line/last_line (2/3) are exactly what the player's own
+description implies (a 2-option choice), AND the cursor-change
+DETECTION is firing correctly for both directions (2→3 and 3→2) — so
+the v2.30.6 fix's mechanism is doing what it was designed to do. The
+player report ("first choice spoken at the bottom instead of the
+beginning; arrowing back up to it, nothing at all") means
+`ask_lines[2]`/`ask_lines[3]` likely do NOT hold the two answers the
+way assumed — but WITHOUT the actual line CONTENT (the log only had
+counts, not text) this can't be pinned down further, and a third blind
+index guess isn't warranted after two misses.
+
+Shipped instead: `log_raw_bytes()`'s capture cap raised from 18 to 256
+bytes (the truncated dumps in the 2026-07-19/20 logs repeatedly cut off
+exactly where the interesting bytes were), and a new `log_lines()`
+helper dumps every decoded page/line's FULL TEXT (not just a count) for
+both MESSAGE pages and ASK lines — the next session's log shows the
+actual mismatch directly, no hex hand-decoding required. The nested
+"choice leads to another choice tree, not spoken at all" report is a
+SEPARATE, more severe symptom (not just wrong-line, but silent
+including the intro) with no log evidence yet to explain it — flagged
+for the same next-session diagnostic pass.
+
+Built clean, deployed both installs 2026-07-20 (hash-verified). VERIFY
+next play session: MESSAGE dialogs speak one beat per real on-screen
+page turn, no dead silence; capture a fresh debug log through an ASK
+choice (ideally the SAME Aeris scene) so `ASK[i]: '...'` lines pin down
+the exact indexing mismatch.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

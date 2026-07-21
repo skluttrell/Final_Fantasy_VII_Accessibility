@@ -63,48 +63,62 @@ namespace FF7Text {
  * This function does NOT modify game memory. It reads sequentially from
  * encoded_text until a 0xFF terminator is encountered. Page breaks
  * (0xE8/0xE9) are flattened to a space, same as a newline -- use
- * DecodePages() below when the caller needs to pace speech to the screen.
+ * DecodeMessagePages() below when the caller needs to pace speech to the
+ * screen.
  */
 std::wstring Decode(const char* encoded_text);
 
 /*
- * DecodePages: Same decoding as Decode(), but split into one string per
- * displayed PAGE instead of flattening page breaks (0xE8/0xE9) to spaces.
+ * DecodeLines: Same decoding as Decode(), but split into one string per
+ * LINE -- every newline (0xE0/0xE7) or page break (0xE8/0xE9) starts a new
+ * entry, instead of DecodeMessagePages()'s multi-line-per-page grouping.
  *
- * WHY THIS EXISTS (v2.30.4): FF7's dialog rawptr holds the COMPLETE
- * multi-page message from the moment the window opens -- there is no
- * "page 2 doesn't exist yet" state to wait for. A caller that decodes the
- * whole rawptr and speaks it once at window-open therefore reads every
- * page in the message before the player has advanced past page 1: the
- * words are correct, but TTS is running well ahead of the screen (player
+ * WHY A SEPARATE FUNCTION FROM DecodeMessagePages() (v2.30.4): the two
+ * callers want different granularities. ASK choice menus (hook_ask) are
+ * the opposite of flowing prose: each answer is conventionally its own
+ * single screen line, so a newline IS the option boundary the cursor
+ * moves between. DecodeLines() is for that case -- pairing decoded
+ * line[i] with the choice cursor's option index i.
+ */
+std::vector<std::wstring> DecodeLines(const char* encoded_text);
+
+/*
+ * DecodeMessagePages: Same decoding as Decode(), but split into one
+ * string per displayed PAGE, for callers (hook_message) that need to pace
+ * speech to the screen instead of reading the whole multi-page message at
+ * once.
+ *
+ * WHY THIS EXISTS (v2.30.4, revised v2.30.7): FF7's dialog rawptr holds
+ * the COMPLETE multi-page message from the moment the window opens --
+ * there is no "page 2 doesn't exist yet" state to wait for. A caller that
+ * decodes the whole rawptr and speaks it once at window-open therefore
+ * reads every page before the player has advanced past page 1 (player
  * report 2026-07-20 -- sounds like repeating because the display is still
- * catching up to what was already spoken). DecodePages() lets the caller
- * speak exactly one page per START/page-advance event, matching what's
- * actually on screen; result[i] corresponds to the i-th page shown.
+ * catching up to what was already spoken).
+ *
+ * v2.30.4's first attempt (DecodePages, since removed) split ONLY on
+ * explicit page-break bytes (0xE8/0xE9). That covers author-placed hard
+ * breaks, but FF7's dialog box also soft-wraps to a new screen purely
+ * because it ran out of the ~4 lines it can show at once, with NO special
+ * byte marking that point in the source text -- a dialog that relies on
+ * that (player report 2026-07-20) decoded as a single page, so it all
+ * spoke at once and every later on-screen page turn (confirmed still
+ * happening by the STATE MACHINE's own PAGE transitions) found nothing
+ * left to say: dead silence, no cue to press the button.
+ *
+ * This version groups decoded LINES (same splitting as DecodeLines) into
+ * pages of up to 4, but an explicit page-break byte still forces an early
+ * page close regardless of line count (some passages use deliberately
+ * SHORT hard-broken pages for pacing, and merging those with what follows
+ * would be wrong). The 4-line cap is an ASSUMPTION (FF7's documented
+ * standard message-window capacity), not something read from the game.
  *
  * Returns an empty vector if the input is null. A page whose visible text
  * is empty after filtering still gets an (empty) entry, so indices stay
  * aligned with the game's own page-advance event count -- callers should
  * skip speaking empty entries rather than dropping them from the vector.
  */
-std::vector<std::wstring> DecodePages(const char* encoded_text);
-
-/*
- * DecodeLines: Same decoding as Decode(), but split into one string per
- * LINE -- every newline (0xE0/0xE7) or page break (0xE8/0xE9) starts a new
- * entry, instead of DecodePages()'s page-breaks-only split.
- *
- * WHY A SEPARATE FUNCTION FROM DecodePages() (v2.30.4): the two callers
- * want different granularities. MESSAGE dialogs (Decode/DecodePages) are
- * flowing prose that WORD-WRAPS onto multiple newlines within a single
- * page -- splitting on every newline there would fragment one sentence
- * into several fake "pages". ASK choice menus (hook_ask) are the opposite:
- * each answer is conventionally its own single screen line, so a newline
- * IS the option boundary the cursor moves between. DecodeLines() is for
- * that second case -- pairing decoded line[i] with the choice cursor's
- * option index i.
- */
-std::vector<std::wstring> DecodeLines(const char* encoded_text);
+std::vector<std::wstring> DecodeMessagePages(const char* encoded_text);
 
 /*
  * DecodeChar: Decode ONE FF7-encoded byte to its speakable wchar_t, or L'\0'

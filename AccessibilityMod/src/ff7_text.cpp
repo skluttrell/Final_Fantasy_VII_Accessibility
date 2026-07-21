@@ -182,16 +182,26 @@ wchar_t DecodeChar(unsigned char byte)
 
 namespace {
 
-// decode_walk: the shared byte-stream walk behind Decode(), DecodePages(),
-// and DecodeLines(). Returns one RAW (un-canonicalized, untrimmed) wstring
-// per segment. A page break (0xE8/0xE9) always ends the current segment.
-// When split_lines is true, a newline (0xE0/0xE7) ends it too (DecodeLines'
-// one-entry-per-screen-line splitting); when false, a newline is just a
-// guarded space within the current segment (Decode()/DecodePages() --
-// prose word-wraps across newlines within one page). Callers that don't
-// care about segment boundaries (Decode()) just join the entries back
-// together. Always returns at least one (possibly empty) entry.
-std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines)
+// decode_walk: the shared byte-stream walk behind Decode(), DecodeLines(),
+// and DecodeMessagePages(). Returns one RAW (un-canonicalized, untrimmed)
+// wstring per segment. A page break (0xE8/0xE9) always ends the current
+// segment. When split_lines is true, a newline (0xE0/0xE7) ends it too
+// (DecodeLines'/DecodeMessagePages' one-entry-per-screen-line splitting);
+// when false, a newline is just a guarded space within the current
+// segment (Decode() -- prose word-wraps across newlines within one page).
+// Callers that don't care about segment boundaries (Decode()) just join
+// the entries back together. Always returns at least one (possibly
+// empty) entry.
+//
+// hard_break_out (optional, v2.30.7): when non-null and split_lines is
+// true, appended to at every segment boundary -- true if that boundary
+// was a page break (0xE8/0xE9, an author-placed HARD break), false if it
+// was a plain newline (0xE0/0xE7, just a soft line wrap). Size is
+// segment_count-1 (nothing follows the last segment). DecodeMessagePages()
+// uses this to know when a page must end HERE regardless of line count,
+// vs. when it's free to keep accumulating lines.
+std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines,
+                                      std::vector<bool>* hard_break_out = nullptr)
 {
     std::vector<std::wstring> pages;
     pages.emplace_back();
@@ -270,7 +280,10 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
         // split_lines (DecodeLines() only): a newline ends the segment, same
         // as a page break -- see the doc comment above decode_walk().
         else if (byte == 0xE0 || byte == 0xE7) {
-            if (split_lines) pages.emplace_back();
+            if (split_lines) {
+                if (hard_break_out) hard_break_out->push_back(false);
+                pages.emplace_back();
+            }
             else guard_space(result);
             ++p;
             at_start = false;
@@ -280,8 +293,9 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
         // multi-page message from window-open, so these mark where the
         // DISPLAY actually breaks to a fresh screen (v2.30.4: split into a
         // new page entry here instead of flattening to a space -- see
-        // DecodePages() doc comment in ff7_text.h for why).
+        // DecodeMessagePages() doc comment in ff7_text.h for why).
         else if (byte == 0xE8 || byte == 0xE9) {
+            if (hard_break_out) hard_break_out->push_back(true);
             pages.emplace_back();
             ++p;
             at_start = false;
@@ -388,21 +402,70 @@ std::wstring Decode(const char* encoded_text)
     return filter_and_trim(joined);
 }
 
-std::vector<std::wstring> DecodePages(const char* encoded_text)
-{
-    std::vector<std::wstring> out;
-    if (!encoded_text) return out;
-    for (const std::wstring& raw : decode_walk(encoded_text, /*split_lines=*/false))
-        out.push_back(filter_and_trim(raw));
-    return out;
-}
-
 std::vector<std::wstring> DecodeLines(const char* encoded_text)
 {
     std::vector<std::wstring> out;
     if (!encoded_text) return out;
     for (const std::wstring& raw : decode_walk(encoded_text, /*split_lines=*/true))
         out.push_back(filter_and_trim(raw));
+    return out;
+}
+
+// v2.30.7: FF7's own dialog box shows a fixed number of lines at a time
+// (4, per widely-documented FF7 window sizing); its RENDERER breaks a page
+// there even when the SOURCE TEXT has no explicit page-break byte at that
+// point -- player report 2026-07-20: a dialog with real on-screen page
+// turns (confirmed by the STATE MACHINE's own PAGE transitions still
+// firing) decoded as a single DecodePages() entry because there was no
+// 0xE8/0xE9 anywhere in it, so the whole thing spoke at once and every
+// later PAGE event found nothing left to say (dead silence, no cue to
+// press the button). DecodePages() alone can only ever catch the AUTHOR-
+// PLACED hard breaks; it has no way to know where the RENDERER will
+// additionally soft-wrap a long unbroken passage.
+//
+// This is the fix: group decoded LINES (same newline splitting as
+// DecodeLines) into pages of up to kLinesPerPage, but still respect an
+// explicit page-break byte as a forced early close (some passages use
+// deliberately SHORT hard-broken pages for pacing/emphasis, and those
+// must not get merged with what follows). Result: dialogs with explicit
+// markers behave exactly as before (DecodePages and DecodeMessagePages
+// agree whenever a page never exceeds kLinesPerPage lines); dialogs that
+// rely purely on the renderer's own overflow wrap now get a page speak
+// for every screen the player actually sees, instead of one page and
+// then silence.
+//
+// kLinesPerPage=4 is an ASSUMPTION (FF7's standard message window's
+// documented capacity), not a value read from the game -- if a future
+// play report shows pages breaking a line early or late relative to what
+// is actually on screen, that number is the first thing to revisit.
+std::vector<std::wstring> DecodeMessagePages(const char* encoded_text)
+{
+    constexpr size_t kLinesPerPage = 4;
+
+    std::vector<std::wstring> out;
+    if (!encoded_text) return out;
+
+    std::vector<bool> hard_break;
+    const std::vector<std::wstring> raw_lines =
+        decode_walk(encoded_text, /*split_lines=*/true, &hard_break);
+
+    std::wstring current_page;
+    size_t lines_in_page = 0;
+    for (size_t i = 0; i < raw_lines.size(); ++i) {
+        const std::wstring line = filter_and_trim(raw_lines[i]);
+        if (!current_page.empty() && !line.empty()) current_page += L' ';
+        current_page += line;
+        ++lines_in_page;
+
+        const bool is_hard_break_here = (i < hard_break.size()) && hard_break[i];
+        const bool is_last_line       = (i + 1 == raw_lines.size());
+        if (is_hard_break_here || lines_in_page >= kLinesPerPage || is_last_line) {
+            out.push_back(current_page);
+            current_page.clear();
+            lines_in_page = 0;
+        }
+    }
+    if (out.empty()) out.push_back(std::wstring());
     return out;
 }
 

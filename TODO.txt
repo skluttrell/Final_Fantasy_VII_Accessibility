@@ -81,19 +81,23 @@ shows. STILL VERIFY ON THE NEXT FEW WINS (debug_log still true):
   - drops speak correct names; log "VICTORY drop[i] id=N f4=M" names
     the f4 field (qty? taken-flag?) from real data.
 
-[DIALOG] Long-dialog paging re-read — SUPERSEDED by v2.30.4 (2026-07-20)
+[DIALOG] Long-dialog paging: silent after page 1 — FIXED v2.30.7 (2026-07-20)
 ------------------------------------------------------------------------
-Player report: long dialogs re-read parts when pressing to continue.
-v2.30.3's fix (per-window last_spoken + speak_incremental) correctly
-stopped literal re-speaking, but play-testing showed the actual bug was
-PACING: the rawptr holds the whole multi-page message at window-open,
-so START spoke every page before the player advanced past page 1 —
-right words, TTS running ahead of the screen. v2.30.4: FF7Text::
-DecodePages() splits on page-break bytes instead of flattening them;
-hook_message speaks one cached page per START/PAGE event. last_spoken/
-speak_incremental removed (DecodePages supersedes them). Research §8
-v2.30.4. Deployed both installs. VERIFY: dialogs speak one page per
-screen, no reading ahead.
+Player report chain: (1) long dialogs re-read parts when pressing to
+continue [v2.30.3, superseded]; (2) fixed pacing but spoke the WHOLE
+message at once [v2.30.4's DecodePages, page-break-bytes-only split];
+(3) v2.30.4 fixed dialogs that HAVE explicit page-break bytes, but for
+dialogs that soft-wrap to a new screen with NO such byte (confirmed by
+the state machine's own PAGE transitions still firing), DecodePages()
+returned just 1 page — spoke it all at once, then dead silence with no
+beep for every later on-screen page (2026-07-20 follow-up: "it also
+does not split the dialog up... speaks the entire dialog in one pass").
+v2.30.7: DecodePages() retired, replaced by FF7Text::DecodeMessagePages
+— groups decoded lines into ~4-line pages (FF7's documented box
+capacity, an ASSUMPTION not read from the game) but still force-closes
+early on an explicit page-break byte when present. Research §8 v2.30.7.
+Deployed both installs. VERIFY: dialogs speak one beat per real
+on-screen page turn, including ones with no explicit page-break byte.
 
 [DIALOG] Word-boundary gluing around tokens/control bytes — FIXED v2.30.4, comma decoded v2.30.6 (2026-07-20)
 ------------------------------------------------------------------------
@@ -137,29 +141,36 @@ the bank/address the 3 data bytes reference, read its current value,
 resolve by type) — a bigger task than a decode-table tweak. Research
 §8 v2.30.6 residual note.
 
-[DIALOG] Choice menus: cursor tracking — SHIPPED v2.30.4, index bug FIXED v2.30.6 (2026-07-20)
+[DIALOG] Choice menus: cursor tracking — STILL BROKEN after two fix attempts (2026-07-20), needs a full raw-text log to diagnose
 ------------------------------------------------------------------------
-Player report: choice menus read only the first option and don't
-announce others as you move. Scan run 2026-07-20
-(ask_cursor_scan_20260720_102217.log): ONE candidate, ASKMENU_OPTION
-0xCC14D1 (a plain global, NOT the per-window struct STATIC had
-flagged). Wired into hook_ask: FF7Text::DecodeLines() splits the ASK
-text on every newline (one entry per on-screen choice line), and the
-hook announces lines[option] when ASKMENU_OPTION changes. v2.30.4
-ASSUMED the cursor starts at option 0 — WRONG, per player follow-up
-2026-07-20 ("only one will speak and it is the first choice but... at
-the end of the choice set instead of the beginning"). v2.30.6: disasm
-of field_opcode_ask_update_loop_6310A1 (ff7_ask_lines_static.py,
-dumped much further than the original scan) proved the ASK opcode
-carries FIRST_LINE/LAST_LINE parameters (indices 3/4, right after
-dialog_id) that the game's own cursor-clamp logic uses — choice text
-routinely has leading QUESTION line(s) before the real options, so the
-starting option is FIRST_LINE, not 0. Fix: read it via
-get_opcode_param_byte(3) and seed ask_last_option from it instead of
-hardcoding 0. No longer speculative — derived from the game's own
-clamp logic, not a guess. Research §8 v2.30.6. Deployed both installs.
-VERIFY: the announced option matches the actual highlighted choice
-while arrowing through, including choice-leads-to-choice trees.
+Player report chain: (1) only first option read, no cursor tracking
+[v1]; (2) v2.30.4 wired ASKMENU_OPTION + DecodeLines but ASSUMED cursor
+starts at option 0 — wrong, "spoken at the end of the choice set
+instead of the beginning"; (3) v2.30.6 read the ASK opcode's own
+FIRST_LINE/LAST_LINE params (disasm-confirmed: field_opcode_ask_
+update_loop_6310A1 clamps the cursor to them) and seeded
+ask_last_option from FIRST_LINE instead of 0 — player follow-up
+2026-07-20 ("Aeris" flower-girl choice): SAME SYMPTOM PERSISTS ("first
+choice spoken at the bottom... arrow back up to it, not spoken at
+all"), even though the session log proves first_line/last_line read
+correctly (2/3 for a 2-option choice) AND the cursor-change detection
+fires for both directions (2->3, 3->2 both logged). Something is still
+misaligning ask_lines[N] against the game's own line N, but WITHOUT
+the actual TEXT of ask_lines[2]/ask_lines[3] (the log only had counts)
+this can't be pinned down further — a third blind index guess isn't
+warranted after two misses.
+v2.30.7: added log_lines() — dumps every ASK line's FULL decoded text
+(not just the count) to the log, and log_raw_bytes' cap raised 18->256
+bytes so the complete choice text is captured too. NEXT: reproduce
+(ideally the same Aeris scene) with debug_log=true, send the log — the
+`ASK win=%u lines=N first_line=X last_line=Y` line plus the `ASK[i]:
+'...'` dumps that follow it should make the exact mismatch obvious.
+ALSO UNEXPLAINED, no log evidence yet: nested "choice leads to another
+choice tree" is SILENT INCLUDING THE INTRO (not just wrong-line) —
+more severe than the index bug, needs its own log capture through a
+nested tree specifically.
+Research §8 v2.30.6 (first attempt) + v2.30.7 (diagnostics). Deployed
+both installs.
 
 [NAV] Train-graveyard triggers all say "line N" — DATA LIMITATION (not a bug)
 ------------------------------------------------------------------------
