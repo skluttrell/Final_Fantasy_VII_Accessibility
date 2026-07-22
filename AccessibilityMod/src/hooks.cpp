@@ -319,6 +319,27 @@ struct WindowState {
     std::vector<std::wstring> ask_lines;
     int ask_last_option = -1;
 
+    // v2.30.13: this ASK's FIRST_LINE opcode param (the cursor's clamp
+    // floor / canonical starting line) and the RAW mirror value captured
+    // at the PENDING frame, BEFORE this window's update loop has
+    // necessarily rewritten it. WHY: the per-window pixel mirror
+    // (ASK_CURSOR_PIXEL_Y) keeps the PREVIOUS ASK's resting position
+    // until the new window starts accepting input (~0.5-1.3s after open
+    // in the 2026-07-22 logs) -- announcing that stale value spoke the
+    // WRONG option at open, then re-announced when the game initialized
+    // the real cursor (player report: "spoke one of the choices multiple
+    // times"). The first announce is therefore suppressed while the
+    // mirror still equals the captured stale baseline, UNLESS it equals
+    // first_line (then it's correct regardless -- the game clamps the
+    // cursor into [first,last] and starts there for a fresh variable).
+    // Residual accepted: a re-asked dialog whose script var preserved a
+    // mid-range cursor equal to the stale baseline skips its initial
+    // announce (first keypress recovers) -- indistinguishable from
+    // staleness without more state, and strictly better than speaking a
+    // wrong option.
+    uint8_t ask_first_line      = 0;
+    int     ask_mirror_baseline = -1;
+
     // v2.30.5/6: MESSAGE-only. True while this window's dialog state byte
     // has already been observed holding steady long enough to count as
     // "waiting for the confirm button" (see the WAIT TONE block in
@@ -382,6 +403,8 @@ static void reset_windows_if_field_changed()
         w.pending_speak   = false;
         w.ask_lines.clear();
         w.ask_last_option = -1;
+        w.ask_first_line  = 0;
+        w.ask_mirror_baseline = -1;
         w.wait_tone_armed = false;
         w.state_change_tick = 0;
     }
@@ -942,6 +965,8 @@ static int __cdecl hook_ask(int unk)
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].ask_lines.clear();      // v2.30.4: fresh choice
             s_window[window_id].ask_last_option = -1;
+            s_window[window_id].ask_first_line  = 0;          // v2.30.13
+            s_window[window_id].ask_mirror_baseline = -1;     // v2.30.13
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] ASK win=%u id=%u [DLGID] pending", window_id, dialog_id);
@@ -950,24 +975,21 @@ static int __cdecl hook_ask(int unk)
         // PENDING SPEAK: rawptr is fresh — s_old_ask() ran last frame.
         else if (s_window[window_id].pending_speak && Config::Get().speak_choices) {
             if (is_valid_dialog_rawptr(raw_text)) {
-                const std::wstring decoded = FF7Text::Decode(raw_text);
-                if (!decoded.empty()) {
-                    char dbg[80];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] ASK win=%u id=%u [PENDING] speaking",
-                        window_id, s_window[window_id].last_dialog_id);
-                    Log::Write(dbg);
-                    log_raw_bytes("ASK/PENDING", raw_text);
-                    std::wstring announcement = L"Choose: ";
-                    announcement += decoded;
-                    TTS::Speak(announcement, /*interrupt=*/true);
-                } else {
-                    char dbg[80];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] ASK win=%u id=%u [PENDING] decoded empty",
-                        window_id, s_window[window_id].last_dialog_id);
-                    Log::Write(dbg);
-                }
+                // v2.30.13: decode the lines FIRST — the intro is now built
+                // from them (context lines only), not from a flat Decode()
+                // of the whole window. WHY THE RESTRUCTURE (player request
+                // 2026-07-22): the old intro read the ENTIRE window —
+                // name, question, AND every option — as one utterance,
+                // which (a) ran the question straight into the option
+                // announces with no audible break, and (b) spoke option
+                // text that the cursor announces then repeated ("each
+                // choice once" expectation). Now the intro speaks only
+                // the lines BEFORE first_line (speaker name + question);
+                // the highlighted option follows as its own QUEUED
+                // utterance (see the OPTION CURSOR block's interrupt
+                // choice), so the TTS engine's natural utterance boundary
+                // provides the pause between question and choice, and
+                // each option is heard exactly once — when highlighted.
                 // v2.30.6: split into per-line text for the option-cursor
                 // announces below, AND read the ASK opcode's own FIRST_LINE
                 // parameter (index 3, the byte right after dialog_id) to
@@ -997,13 +1019,43 @@ static int __cdecl hook_ask(int unk)
                 s_window[window_id].ask_lines = FF7Text::DecodeLines(raw_text);
                 const uint8_t first_line = FF7Addr::get_opcode_param_byte(3);
                 const uint8_t last_line  = FF7Addr::get_opcode_param_byte(4);
+                s_window[window_id].ask_first_line = first_line;
+                // v2.30.13: capture the mirror's CURRENT raw value as the
+                // stale baseline — this is the last moment before option
+                // tracking starts, and the game's update loop may not have
+                // rewritten the mirror for THIS window yet (see the
+                // WindowState::ask_mirror_baseline doc comment).
+                s_window[window_id].ask_mirror_baseline =
+                    FF7Addr::get_ask_cursor_line(window_id);
                 // v2.30.9: do NOT seed ask_last_option from first_line here --
                 // that suppressed the very first OPTION CURSOR announce (see
                 // the WindowState::ask_last_option doc comment). Leave it at
                 // the -1 the is_new_ask_dialog branch already set, so the
                 // OPTION CURSOR block below fires once for the starting
-                // option this same frame, exactly like every later cursor
-                // move.
+                // option, exactly like every later cursor move.
+
+                // v2.30.13: intro = "Choose:" + CONTEXT lines only (the
+                // lines before first_line — speaker name and question).
+                // The options themselves are no longer in the intro; the
+                // highlighted one follows as its own queued utterance.
+                std::wstring announcement = L"Choose:";
+                size_t ctx_end = static_cast<size_t>(first_line);
+                if (ctx_end > s_window[window_id].ask_lines.size())
+                    ctx_end = s_window[window_id].ask_lines.size();
+                for (size_t i = 0; i < ctx_end; ++i) {
+                    if (s_window[window_id].ask_lines[i].empty()) continue;
+                    announcement += L' ';
+                    announcement += s_window[window_id].ask_lines[i];
+                }
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] ASK win=%u id=%u [PENDING] speaking (ctx=%zu) baseline=%d",
+                    window_id, s_window[window_id].last_dialog_id, ctx_end,
+                    s_window[window_id].ask_mirror_baseline);
+                Log::Write(dbg);
+                log_raw_bytes("ASK/PENDING", raw_text);
+                TTS::Speak(announcement, /*interrupt=*/true);
+
                 char lines_dbg[96];
                 _snprintf_s(lines_dbg, sizeof(lines_dbg), _TRUNCATE,
                     "[FF7Access] ASK win=%u lines=%zu first_line=%u last_line=%u",
@@ -1011,14 +1063,9 @@ static int __cdecl hook_ask(int unk)
                     first_line, last_line);
                 Log::Write(lines_dbg);
                 // v2.30.7: dump every line's actual TEXT (not just the
-                // count) -- player report 2026-07-20 said the v2.30.6
-                // first_line fix still announced the wrong line, and
-                // first_line/last_line alone (confirmed correct: 2/3 for
-                // the Aeris flower-girl choice) weren't enough to prove
-                // whether ask_lines[2]/ask_lines[3] actually HOLD those
-                // two answers or something else entirely -- this makes
-                // that directly visible in the log instead of requiring
-                // hand-decoded hex.
+                // count) -- the raw-index-vs-text mismatch class of bug
+                // (v2.30.10) is only diagnosable when the log shows what
+                // each split line actually holds.
                 log_lines("ASK", s_window[window_id].ask_lines);
                 s_window[window_id].pending_speak = false;
             }
@@ -1031,6 +1078,8 @@ static int __cdecl hook_ask(int unk)
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].ask_lines.clear();      // v2.30.4
             s_window[window_id].ask_last_option = -1;
+            s_window[window_id].ask_first_line  = 0;          // v2.30.13
+            s_window[window_id].ask_mirror_baseline = -1;     // v2.30.13
             TTS::Silence();
         }
 
@@ -1058,17 +1107,41 @@ static int __cdecl hook_ask(int unk)
         if (!s_window[window_id].pending_speak && !closing &&
             Config::Get().speak_choices && !s_window[window_id].ask_lines.empty()) {
             const int option = FF7Addr::get_ask_cursor_line(window_id);
-            if (option >= 0 &&
+            const bool first_announce =
+                (s_window[window_id].ask_last_option == -1);
+            // v2.30.13 stale-baseline suppression: until the first
+            // announce, a mirror reading that still equals the value
+            // captured at the PENDING frame is presumed to be the
+            // PREVIOUS ASK's leftover (the update loop hasn't rewritten
+            // it for this window yet) — unless it equals first_line,
+            // which is correct regardless of freshness. See the
+            // WindowState::ask_mirror_baseline doc comment; the
+            // 2026-07-22 log showed exactly this (stale 3 announced as
+            // 'Later!' at the soldier choice's open, then re-announced
+            // as the real cursor arrived ~900ms later).
+            const bool presumed_stale = first_announce &&
+                option == s_window[window_id].ask_mirror_baseline &&
+                option != static_cast<int>(s_window[window_id].ask_first_line);
+            if (option >= 0 && !presumed_stale &&
                 option != s_window[window_id].ask_last_option &&
                 static_cast<size_t>(option) < s_window[window_id].ask_lines.size()) {
                 char dbg[96];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] ASK win=%u option %d->%d",
-                    window_id, s_window[window_id].ask_last_option, option);
+                    "[FF7Access] ASK win=%u option %d->%d%s",
+                    window_id, s_window[window_id].ask_last_option, option,
+                    first_announce ? " (queued)" : "");
                 Log::Write(dbg);
                 const std::wstring& line = s_window[window_id].ask_lines[option];
-                if (!line.empty())
-                    TTS::Speak(line, /*interrupt=*/true);
+                if (!line.empty()) {
+                    // v2.30.13: the FIRST announce QUEUES (interrupt=false)
+                    // so it plays after the "Choose: <question>" intro
+                    // finishes instead of killing it — the utterance
+                    // boundary is what gives the player-requested pause
+                    // between the question and the highlighted choice.
+                    // Subsequent cursor moves interrupt as before (snappy
+                    // response while flipping through options).
+                    TTS::Speak(line, /*interrupt=*/!first_announce);
+                }
                 s_window[window_id].ask_last_option = option;
             }
         }

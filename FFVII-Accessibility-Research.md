@@ -2759,6 +2759,58 @@ fight-or-flee choice (both the pre-battle 4-line and post-battle
 2-line variants) speaks its options and tracks the cursor; Aeris trees
 still work (regression check for the source swap).
 
+### v2.30.13 (2026-07-22): stale-mirror double-speak fixed + question/choice pause
+
+v2.30.12 PLAY-CONFIRMED same day ("All the dialog choices that I
+encountered spoke properly now") with two polish reports: (1) some
+trees spoke one choice multiple times instead of each once; (2)
+request for an audible pause between the question ("What happened?")
+and the first choice announce.
+
+**(1) Stale mirror at window open — log-diagnosed (10:01:39)**: the
+pixel mirror `u16[0xCFF5DE+win·0x30]` keeps the PREVIOUS ASK's resting
+position until the new window's update loop starts accepting input
+(0.5–1.3s after open across the session's examples). At the soldier
+choice's open, win=2's mirror still held 3 — the option picked in the
+previous win=2 choice (Aeris tree) — so `option -1->3` announced
+'Later!' spuriously, then `3->2` announced 'Fight them!' when the game
+clamped the real cursor in ~900ms later. One choice heard twice. At
+the post-battle 2-line re-ask the stale 3 fell OUT of ask_lines'
+bounds and was silently skipped — which is why only SOME trees showed
+the symptom. Fix: `ask_mirror_baseline` captures the mirror's raw
+value at the PENDING frame (the last moment before tracking starts);
+until the first announce, a reading equal to the baseline is presumed
+stale and skipped, UNLESS it equals `first_line` — correct regardless
+of freshness, because the update loop clamps the cursor into
+[first,last] and a fresh variable starts there. Accepted residual
+(documented in the struct comment): a re-asked dialog whose script
+variable preserved a mid-range cursor that happens to equal the stale
+baseline misses only its initial announce (first keypress recovers) —
+indistinguishable from staleness without more state, and strictly
+better than announcing a wrong option.
+
+**(2) Intro restructure — also retires the intro/option double-read**:
+the intro previously spoke the ENTIRE window (name + question + every
+option) as one run-on utterance, which the immediate option announce
+then interrupted at an arbitrary point (whenever the mirror happened
+to become valid — same-frame at some windows, 1.3s in at others).
+Now: intro = "Choose:" + only the CONTEXT lines (indices <
+first_line), and the FIRST option announce uses interrupt=false so it
+QUEUES after the intro — the TTS utterance boundary supplies the
+requested pause with no timing games. Options are no longer read in
+the intro at all: each choice is heard exactly once (the highlighted
+one right after the question, the others as the cursor reaches them).
+Subsequent cursor moves keep interrupt=true for snappy flipping. A
+window with no context lines (first_line=0, e.g. "Buy one"/"Forget
+it") gets a bare "Choose:" intro followed by the queued first option.
+
+New per-window state: `ask_first_line`, `ask_mirror_baseline` (reset
+on new dialog, close, and field change). No new addresses. Deployed
+both installs (hash-verified). VERIFY: (a) question → pause → first
+choice at the Aeris tree; (b) no double-spoken choice at trees that
+follow another choice on the same window; (c) flipping still announces
+each option immediately.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

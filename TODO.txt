@@ -285,9 +285,45 @@ EVERY accepting frame (disasm 0x631384-0x63139C, in the 2026-07-20
 ask_lines log all along). New ASK_CURSOR_PIXEL_Y + get_ask_cursor_line()
 in ff7_addresses.h (validity: y>=6, 16px boundary, else skip frame);
 hook_ask switched to it; ASKMENU_OPTION demoted to provenance-only in
-§4/§14. Research §8 v2.30.12. Deployed both installs. VERIFY: soldier
-fight-or-flee speaks + tracks (both pre- and post-battle variants);
-Aeris trees still work (regression check).
+§4/§14. Research §8 v2.30.12.
+PLAY-CONFIRMED 2026-07-22 (second session): "All the dialog choices
+that I encountered spoke properly now" — cursor source works
+everywhere. Two follow-up polish items became v2.30.13 (next entry).
+
+[DIALOG] ASK polish: stale-mirror double-speak + question/choice pause — FIXED v2.30.13 (2026-07-22), awaiting play-test
+------------------------------------------------------------------------
+Player reports after v2.30.12 confirmed: (1) "during some dialog trees
+it spoke one of the choices multiple times rather than each choice
+once"; (2) requested an audible pause between Aeris's "What happened?"
+and the first choice.
+(1) ROOT CAUSE, log-diagnosed (10:01:39): the per-window pixel mirror
+keeps the PREVIOUS ASK's resting position until the new window starts
+accepting input (~0.5-1.3s in the logs). At the soldier choice's open
+the mirror still held 3 (the option chosen in the previous win=2
+choice), so 'Later!' was announced spuriously, then 'Fight them!' when
+the game clamped the real cursor in — one choice heard twice. Windows
+where the stale value fell OUT of the new ask_lines' bounds skipped it
+silently, which is why only SOME trees showed it. FIX: capture the
+mirror's raw value at the PENDING frame as ask_mirror_baseline; until
+the first announce, a reading equal to that baseline is presumed stale
+and skipped — UNLESS it equals first_line (correct regardless, since
+the game clamps the cursor into [first,last]). Accepted residual: a
+re-asked dialog whose script var preserved a mid-range cursor equal to
+the stale baseline misses its initial announce (first keypress
+recovers) — strictly better than speaking a wrong option.
+(2) FIX, same restructure: the intro no longer reads the whole window.
+It now speaks "Choose:" + only the CONTEXT lines (before first_line —
+speaker name + question), and the first option announce QUEUES
+(interrupt=false) instead of interrupting, so it plays after the intro
+finishes — the TTS utterance boundary provides the requested pause.
+Options are no longer read in the intro at all, so each choice is
+heard exactly once: the highlighted one after the question, the rest
+as the cursor reaches them. Subsequent cursor moves still interrupt
+(snappy flipping). Research §8 v2.30.13. Deployed both installs.
+VERIFY: (a) question then pause then first choice at the Aeris tree;
+(b) no double-spoken choice at the soldier tree (or any tree following
+another choice on the same window); (c) flipping through options still
+announces each immediately.
 
 [DIALOG] Some short "flash text" screens still speak as one block, not one per page — CONFIRMED by screenshots 2026-07-21, root cause NOT YET FOUND
 ------------------------------------------------------------------------
