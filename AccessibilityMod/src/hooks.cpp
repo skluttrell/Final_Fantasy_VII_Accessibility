@@ -338,6 +338,56 @@ struct WindowState {
 };
 static WindowState s_window[8];
 
+// ---------------------------------------------------------------------------
+// reset_windows_if_field_changed: clear per-window dialog tracking when the
+// player crosses to a new field. Called at the top of hook_message and
+// hook_ask, before any dialog_id comparison.
+//
+// WHY (v2.30.11, 2026-07-21 log-diagnosed): dialog_id is a FIELD-LOCAL
+// script parameter — two different fields can reuse the same id for
+// completely unrelated dialogs. s_window[].last_dialog_id survived field
+// changes, so a dialog on the new field whose id happened to equal the
+// LAST id seen on that window slot on a PREVIOUS field was treated as
+// "same dialog still open" and silently skipped: no intro speech, no
+// choice tone, no ask_lines (which also mutes the ASK cursor announces).
+// Confirmed case (session log 2026-07-21 20:14): the Aeris flower-girl
+// scene's second choice ran win=0 with (inferred) id=3 while win=0's
+// stale last_dialog_id was 3 from a MESSAGE two fields earlier — the ASK
+// opened, ran its whole state machine (START..CLOSE logged), and said
+// nothing. The same collision could silence a MESSAGE equally.
+//
+// Field-change detection = FIELD_FILE_BUFFER pointer comparison, the same
+// reliable signal log_field_header_if_changed already uses (a new field
+// always allocates a new buffer). The reset therefore runs on the first
+// MESSAGE/ASK opcode executed on the new field, before that opcode's own
+// dialog_id comparison — no dialog can already be open at that instant
+// (this call IS the new field's first dialog opcode), so clearing every
+// slot is safe by construction.
+// ---------------------------------------------------------------------------
+static void reset_windows_if_field_changed()
+{
+    static const char* s_last_field_buf = nullptr;
+    const char* const buf =
+        *reinterpret_cast<const char* const*>(FF7Addr::FIELD_FILE_BUFFER);
+    if (!buf || buf == s_last_field_buf) return;
+    const bool first_ever = (s_last_field_buf == nullptr);
+    s_last_field_buf = buf;
+    if (first_ever) return;   // process start: slots are already pristine
+
+    for (WindowState& w : s_window) {
+        w.last_opcode     = 0;
+        w.pages.clear();
+        w.next_page       = 0;
+        w.last_dialog_id  = 0xFF;   // sentinel: "none spoken yet" (see struct)
+        w.pending_speak   = false;
+        w.ask_lines.clear();
+        w.ask_last_option = -1;
+        w.wait_tone_armed = false;
+        w.state_change_tick = 0;
+    }
+    Log::Write("[FF7Access] FIELD changed: window dialog tracking reset.");
+}
+
 // Whether our hooks are currently installed.
 static bool s_installed = false;
 
@@ -489,6 +539,11 @@ static int __cdecl hook_message()
         s_first_call_logged = true;
         Log::Write("[FF7Access] hook_message: first call (hook chain active).");
     }
+
+    // v2.30.11: dialog_ids are field-local — drop all stale per-window
+    // tracking the moment a new field's first dialog opcode runs, or a
+    // cross-field id collision silences it (see the helper's doc comment).
+    reset_windows_if_field_changed();
 
     // Heartbeat every 500 calls: confirms the hook is still being called
     // during stretches where no new-dialog events are detected.
@@ -830,6 +885,10 @@ static int __cdecl hook_ask(int unk)
     // Stamp dialog activity (same rationale as hook_message): an ASK choice
     // window is open this frame, so wall-bump tones must be suppressed.
     s_last_dialog_tick = GetTickCount();
+
+    // v2.30.11: same field-change reset as hook_message — an ASK can be the
+    // new field's first dialog opcode too (see the helper's doc comment).
+    reset_windows_if_field_changed();
 
     // window_id is at ASK parameter index 1. Source: FFNx voice.cpp line 462.
     const uint8_t window_id = FF7Addr::get_opcode_param_byte(1);

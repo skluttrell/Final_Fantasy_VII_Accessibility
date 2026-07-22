@@ -2645,6 +2645,62 @@ have revealed it. When a fix based on visual evidence doesn't hold up
 on immediate re-test, that is the signal to go back for the actual byte
 data, not to re-interpret the same screenshots differently.
 
+### v2.30.11 (2026-07-21): the "silent nested choice" was a cross-field dialog_id collision
+
+Same-evening play-test of v2.30.10 (log 20:13–20:14) CONFIRMED the
+decode fix — Aeris choices 1 and 3 decoded to exactly the right line
+counts (6→4 and 4→2), spoke the starting option, and tracked the cursor
+both directions. But choice 2 ("Don't see many flowers around here" /
+"Never mind") was totally silent — no intro, no choice tone, no cursor
+announces — and the log caught the whole thing:
+
+```
+[20:14:01.916] ASK win=0 7->0 [skip]
+[20:14:01.950] ASK win=0 0->1 [START]      <- opened fine
+[20:14:02.982] ASK win=0 2->6 [skip]
+[20:14:11.383] ASK win=0 6->7 [CLOSE]      <- closed fine
+```
+
+A full open→close lifecycle with **no `[DLGID] pending` line between
+them**: `is_new_ask_dialog` (`dialog_id != last_dialog_id`) never fired.
+The stale value is visible earlier in the same log — the last win=0
+dialog before entering the flower-girl field was `MSG win=0 id=3` at
+20:12:15, on a DIFFERENT field. dialog_id is a field-local script
+parameter; the flower-girl field's second choice evidently also carries
+id=3 (its scene neighbors are ids 0/1/5/6), colliding with the
+leftover. Every downstream action gates on that one detector — the
+intro speak, `dialog_choice_tone`, and `ask_lines` population (whose
+emptiness also no-ops the OPTION CURSOR block) — producing total
+silence. This retires the old "nested choice tree is silent" theory:
+nesting had nothing to do with it, and the same collision could
+equally silence a MESSAGE on any field.
+
+**Fix**: `reset_windows_if_field_changed()` (hooks.cpp) — on every
+`FIELD_FILE_BUFFER` pointer change (a new field always allocates a new
+buffer; the exact signal `log_field_header_if_changed` has relied on
+all along), clear every `s_window[]` slot's dialog tracking:
+`last_dialog_id` back to the 0xFF sentinel, pending/pages/ask state
+cleared, tone arming reset. Called at the top of BOTH `hook_message`
+and `hook_ask`, so the reset executes on the new field's first dialog
+opcode, strictly before that opcode's own dialog_id comparison — and
+since that call IS the new field's first dialog, no open dialog can
+predate it: clearing every slot is safe by construction. Logs
+`FIELD changed: window dialog tracking reset.` for future traceability.
+
+LESSON: a detector keyed on a SCRIPT-LOCAL identifier must be reset at
+the identifier's scope boundary. `last_dialog_id` was scoped per
+window-slot but dialog_id itself is scoped per FIELD — the mismatch sat
+latent for the mod's entire life (v1.4 onward) until two fields
+happened to reuse the same id on the same window slot back-to-back.
+The "nested tree" framing was a red herring from correlation: nested
+choices simply make back-to-back same-window ASKs (and thus collisions)
+more likely to be noticed there first.
+
+Deployed both installs (hash-verified). VERIFY: replay the Aeris tree
+(after at least one field crossing) — all three choices should speak;
+watch generally for dialogs that used to go silent right after screen
+changes.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

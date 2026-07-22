@@ -221,14 +221,47 @@ game's own line count exactly -- 6->4 entries for Aeris (first_line=2
 now correctly indexes "You'd better get out of here", last_line=3
 "Nothing...hey..."), 4->2 for Buy one/Forget it (first_line=0/last_line=1
 now index each option directly, no leading blank).
-ALSO UNEXPLAINED, no log evidence yet: nested "choice leads to another
-choice tree" is SILENT INCLUDING THE INTRO (not just wrong-line) —
-more severe than the index bug, needs its own log capture through a
-nested tree specifically.
-Research §8 v2.30.6/.7/.9/.10. Deployed both installs. VERIFY: the Aeris
-2-option choice (and others) now speak the starting/default option once,
-right after the "Choose:" intro, and track the cursor accurately in both
-directions, with no further code changes needed if that's confirmed.
+PLAY-TEST 2026-07-21 (evening session, log 20:13-20:14): v2.30.10
+CONFIRMED for choices 1 and 3 of the Aeris scene — correct line counts
+(4 and 2, double-break collapse working), correct option text at
+first_line/last_line, starting option spoken, cursor tracked both ways.
+The "nested choice silent" mystery was ALSO solved by the same log —
+see the next entry (cross-field dialog_id collision, fixed v2.30.11).
+Research §8 v2.30.6/.7/.9/.10. Deployed both installs.
+
+[DIALOG] Second Aeris choice silent (was "nested choice tree silent") — ROOT CAUSE FOUND + FIXED v2.30.11 (2026-07-21), awaiting play-test
+------------------------------------------------------------------------
+Player report (same session that confirmed v2.30.10): choices 1 and 3
+of the Aeris scene spoke perfectly, but choice 2 ("Don't see many
+flowers around here" / "Never mind", fg_3_t2.jpg) said NOTHING — no
+intro, no tone, no cursor announces. The session log captured it
+exactly: at 20:14:01 an ASK opened on win=0 and ran its ENTIRE state
+machine (START -> ... -> CLOSE all logged) with NO "[DLGID] pending"
+line — meaning is_new_ask_dialog never fired because the opcode's
+dialog_id EQUALED s_window[0].last_dialog_id. The stale value: the last
+win=0 dialog before entering the flower-girl field was MSG id=3 on a
+PREVIOUS field (20:12:15). dialog_id is FIELD-LOCAL — the flower-girl
+field's second choice evidently also carries id=3 (neighbors are ids
+0/1/5/6), colliding with the leftover. Everything downstream gates on
+that one detector: intro speech, dialog_choice_tone, ask_lines
+population (whose emptiness also no-ops the cursor block) — hence
+TOTAL silence, matching the "silent including the intro" severity the
+old nested-tree entry described. NOT actually nested-tree-specific:
+any MESSAGE or ASK on any field whose id collides with the same
+window's last id from a previous field would go equally silent.
+FIX v2.30.11 (hooks.cpp): reset_windows_if_field_changed() — clears
+every s_window[] slot's dialog tracking (last_dialog_id -> 0xFF
+sentinel, pending/pages/ask state) whenever FIELD_FILE_BUFFER's pointer
+changes (the same new-buffer-per-field signal
+log_field_header_if_changed already relies on). Called at the top of
+BOTH hook_message and hook_ask, so the reset lands on the new field's
+first dialog opcode, before its dialog_id comparison. Safe by
+construction: that first opcode call means no dialog predates it on
+the new field. Logs "FIELD changed: window dialog tracking reset."
+Deployed both installs. VERIFY: replay the Aeris tree after crossing
+at least one field — all three choices should now speak; also watch
+for any dialog that previously went silent right after a screen
+change.
 
 [DIALOG] Some short "flash text" screens still speak as one block, not one per page — CONFIRMED by screenshots 2026-07-21, root cause NOT YET FOUND
 ------------------------------------------------------------------------
