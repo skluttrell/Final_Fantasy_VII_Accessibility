@@ -258,10 +258,36 @@ BOTH hook_message and hook_ask, so the reset lands on the new field's
 first dialog opcode, before its dialog_id comparison. Safe by
 construction: that first opcode call means no dialog predates it on
 the new field. Logs "FIELD changed: window dialog tracking reset."
-Deployed both installs. VERIFY: replay the Aeris tree after crossing
-at least one field — all three choices should now speak; also watch
-for any dialog that previously went silent right after a screen
-change.
+PLAY-CONFIRMED 2026-07-22: all of Aeris's dialog trees now function
+correctly.
+
+[DIALOG] Soldier fight-or-flee choice silent — ROOT CAUSE FOUND + FIXED v2.30.12 (2026-07-22), awaiting play-test
+------------------------------------------------------------------------
+Player report (same session that confirmed v2.30.11): the fight-or-flee
+choices when soldiers confront you after the Aeris meeting don't speak.
+Log evidence (09:29:32 pre-battle + 09:30:11 post-battle): decode was
+PERFECT (ASK[2]='Fight them!', ASK[3]='Later!', first_line=2/
+last_line=3) but the cursor read "option -1->0" — announcing the
+'Cloud:' name line — then NEVER changed for the whole choice, both
+times, while the same session's Aeris choices (same window id!) had
+tracked flawlessly.
+ROOT CAUSE: ASKMENU_OPTION (0xCC14D1) was never a cursor global. The
+ASK handler disasm (already captured 2026-07-19) shows the live cursor
+is a STACK LOCAL synced from/to the ASK opcode's OWN bank/address
+script variable — per DIALOG. The live scan that found 0xCC14D1 simply
+found the scanned dialog's variable; Aeris-field dialogs share it,
+the soldier field's dialog doesn't (stale, frozen). A scan can never
+tell a true global from one dialog's output variable — only
+cross-field play exposes it.
+FIX v2.30.12: read the per-WINDOW cursor mirror instead — the update
+loop writes u16[0xCFF5DE + win*0x30] = line*16+6 (highlight pixel Y)
+EVERY accepting frame (disasm 0x631384-0x63139C, in the 2026-07-20
+ask_lines log all along). New ASK_CURSOR_PIXEL_Y + get_ask_cursor_line()
+in ff7_addresses.h (validity: y>=6, 16px boundary, else skip frame);
+hook_ask switched to it; ASKMENU_OPTION demoted to provenance-only in
+§4/§14. Research §8 v2.30.12. Deployed both installs. VERIFY: soldier
+fight-or-flee speaks + tracks (both pre- and post-battle variants);
+Aeris trees still work (regression check).
 
 [DIALOG] Some short "flash text" screens still speak as one block, not one per page — CONFIRMED by screenshots 2026-07-21, root cause NOT YET FOUND
 ------------------------------------------------------------------------

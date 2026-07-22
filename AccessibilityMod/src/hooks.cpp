@@ -1035,20 +1035,31 @@ static int __cdecl hook_ask(int unk)
         }
 
         // ------------------------------------------------------------------
-        // OPTION CURSOR (v2.30.4): announce the highlighted line on change.
-        // Runs every frame once the intro has spoken (pending_speak cleared)
-        // — the cursor can move on any frame, not just on a state
-        // transition, so this is independent of the branches above.
-        // ASKMENU_OPTION is scan-confirmed but not statically verified (see
-        // its ff7_addresses.h comment); bounding the read to ask_lines'
-        // size means a wrong/stale value can silently no-op, not crash or
-        // speak garbage.
+        // OPTION CURSOR (v2.30.4, cursor source replaced v2.30.12):
+        // announce the highlighted line on change. Runs every frame once
+        // the intro has spoken (pending_speak cleared) — the cursor can
+        // move on any frame, not just on a state transition, so this is
+        // independent of the branches above.
+        //
+        // v2.30.12: reads the per-WINDOW cursor mirror (get_ask_cursor_line
+        // — pixel-Y word the update loop rewrites every accepting frame),
+        // NOT the old ASKMENU_OPTION global. That global turned out to be
+        // the ASK opcode's per-DIALOG script variable: dialogs whose
+        // bank/address params name a different variable left it stale and
+        // frozen — the 2026-07-22 soldier fight-or-flee choice read 0
+        // (with first_line=2, so it spoke the 'Cloud:' name line) and then
+        // never tracked a single cursor move, while every Aeris choice
+        // (sharing the scanned dialog's variable) worked. Full derivation
+        // in ff7_addresses.h at ASK_CURSOR_PIXEL_Y.
+        // get_ask_cursor_line returns -1 on a transient invalid read;
+        // bounding to ask_lines' size keeps any residual bad value a
+        // silent no-op, not a crash or garbage speech.
         // ------------------------------------------------------------------
         if (!s_window[window_id].pending_speak && !closing &&
             Config::Get().speak_choices && !s_window[window_id].ask_lines.empty()) {
-            const int option =
-                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::ASKMENU_OPTION);
-            if (option != s_window[window_id].ask_last_option &&
+            const int option = FF7Addr::get_ask_cursor_line(window_id);
+            if (option >= 0 &&
+                option != s_window[window_id].ask_last_option &&
                 static_cast<size_t>(option) < s_window[window_id].ask_lines.size()) {
                 char dbg[96];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,

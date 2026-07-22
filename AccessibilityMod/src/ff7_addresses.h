@@ -95,24 +95,55 @@ constexpr uint32_t BUILD_DIALOG_WINDOW = 0x6E97E0;
 // Source: ff7_externals.current_dialog_string_pointer // 0xCBF578 in ff7.h
 constexpr uint32_t DIALOG_TEXT_PTRS = 0xCBF578;
 
-// ASK (choice-menu) currently-highlighted option index (0-based).
+// ASK (choice-menu) cursor -- the FULL story (finalized v2.30.12):
 //
-// PROVENANCE: STATIC (ff7_ask_cursor_static.py, 2026-07-19) found the ASK
-// handler (0x618E83) keeps the live selection in a STACK LOCAL passed by
-// address into the cursor-move update loop (0x6310A1) -- there is no fixed
-// global for it, and it is NOT part of the per-window struct at
-// 0xCFF5D3 + window_id*0x30 that holds the ASK window's state byte
-// (that struct's region was scanned too; this address fell outside it).
-// LIVE-SCAN-CONFIRMED (ff7_ask_cursor_scan.py, log
-// ask_cursor_scan_20260720_102217.log): two press-and-revert rounds
-// (Down then Up) intersected to this ONE candidate -- goes +1 on Down,
-// reverts exactly on Up, both rounds.
+// The live selection is a STACK LOCAL in the ASK handler (0x618E83),
+// passed by address into the cursor-move update loop (0x6310A1) each
+// frame, and synced from/to the ASK opcode's own SCRIPT VARIABLE (the
+// bank/address named in the opcode's first parameters) around the call
+// -- 0x618E8B reads it in via helper 0x60F750, 0x618F25/0x618F6B write
+// it back via 0x60FA7D. There is NO fixed global for it.
 //
-// WIRED since v2.30.4 (hooks.cpp hook_ask, the OPTION CURSOR block) --
-// announces the option line on change. See TODO.txt DIALOG "Choice
-// menus" and research §8 v2.30.4/.6/.9/.10 for the alignment bugs found
-// and fixed since it was first wired.
-constexpr uint32_t ASKMENU_OPTION = 0x00CC14D1;  // u8, 0-based selected option
+// ASKMENU_OPTION below (0xCC14D1) is therefore NOT a cursor global --
+// it is the script variable of whatever dialog the 2026-07-20 live scan
+// happened to run against (ff7_ask_cursor_scan.py, log ..._102217). Any
+// dialog whose bank/address params name a different variable leaves it
+// STALE AND FROZEN, which is exactly what the 2026-07-22 soldier
+// fight-or-flee log showed (option read 0 with first_line=2, then never
+// changed) while every Aeris-field choice (evidently sharing the
+// scanned variable) tracked perfectly. Kept only as provenance -- DO
+// NOT read it for cursor tracking.
+constexpr uint32_t ASKMENU_OPTION = 0x00CC14D1;  // per-DIALOG script var, NOT a global
+
+// The reliable, dialog-independent cursor readout instead: the update
+// loop MIRRORS the clamped cursor into the ASK per-window struct every
+// frame the choice is accepting input (disasm ff7_ask_lines_static.py
+// log ..._171327, 0x631384-0x63139C, unconditional in that branch --
+// not just on key presses):
+//
+//   mov  word ptr [0xCFF5DE + window_id*0x30], line*16 + 6
+//
+// i.e. the highlight's pixel Y offset inside the window: 16 px per text
+// line, 6 px top margin. Same struct family as the other per-window ASK
+// fields the disasms surfaced (byte 0xCFF5D2+n*0x30 input-armed flag,
+// u16 0xCFF5DC+n*0x30 = 5 while choosing, u16 0xCFF5E4+n*0x30 = 7 on
+// confirm, u16 0xCFF5E6+n*0x30 state-flag word whose bit 0 gates the
+// input branch). Written from the already-clamped line value, so it
+// holds first_line*16+6 from the window's first accepting frame onward.
+constexpr uint32_t ASK_CURSOR_PIXEL_Y = 0x00CFF5DE;  // u16, +window_id*0x30
+constexpr uint32_t ASK_WINDOW_STRIDE  = 0x30;
+
+// get_ask_cursor_line: current 0-based highlighted LINE of an open ASK
+// window, or -1 if the pixel word does not currently hold a valid
+// resting highlight position (y < 6, or not on a 16-px line boundary --
+// callers just skip the announce that frame and re-read the next).
+inline int get_ask_cursor_line(uint8_t window_id)
+{
+    const uint16_t y = *reinterpret_cast<const volatile uint16_t*>(
+        ASK_CURSOR_PIXEL_Y + window_id * ASK_WINDOW_STRIDE);
+    if (y < 6 || ((y - 6) & 0xF) != 0) return -1;
+    return (y - 6) >> 4;
+}
 
 // Pointer to the decompressed field file buffer.
 // The 4-byte value AT this address IS the buffer base address (single dereference).

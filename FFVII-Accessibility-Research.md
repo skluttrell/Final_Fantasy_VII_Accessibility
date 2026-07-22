@@ -116,7 +116,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | Symbol | Address | Source |
 |--------|---------|--------|
 | `current_dialog_string_pointer` (DIALOG_TEXT_PTRS) | `0xCBF578` | `ff7.h` |
-| `ASKMENU_OPTION` | `0x00CC14D1` | u8, 0-based ASK choice-menu highlighted option. LIVE-SCAN-CONFIRMED ONLY (ask_cursor_scan_20260720_102217.log, single intersected press-and-revert candidate, +1 Down / revert Up); falls OUTSIDE the per-window struct region 0xCFF5D3+win·0x30 that STATIC (ff7_ask_cursor_static.py) found the ASK update loop's state byte in — this is a separate global, not (yet) statically explained. v2.30.4 wires it into hook_ask; line-index alignment unverified (see §8 v2.30.4) |
+| `ASKMENU_OPTION` | `0x00CC14D1` | ⚠ **DEMOTED v2.30.12 — NOT a cursor global, DO NOT read.** It is the ASK opcode's per-DIALOG script OUTPUT VARIABLE (the bank/address named in the opcode's own first params): the handler 0x618E83 reads it into a stack local (helper 0x60F750), the update loop 0x6310A1 moves/clamps THAT, and it's written back on exit (0x60FA7D). The 2026-07-20 live scan simply found the variable of the dialog it scanned — Aeris-field choices shared it (tracked fine), the soldier fight-or-flee dialog did not (frozen at 0, log-proven 2026-07-22). Replaced by ASK_CURSOR_PIXEL_Y below |
+| `ASK_CURSOR_PIXEL_Y` | `0x00CFF5DE` | **The dialog-independent ASK cursor readout (v2.30.12)**: u16 at +window_id·0x30, rewritten by the update loop EVERY frame the choice accepts input (disasm 0x631384–0x63139C, ff7_ask_lines_static log 20260720_171327): `line·16 + 6` — the highlight's pixel Y inside the window (16 px/line, 6 px top margin). Decode: `line = (y−6)>>4`, valid only when y≥6 and (y−6)%16==0 (else skip the frame). Part of the ASK per-window struct family, stride 0x30: byte 0xCFF5D2+n·0x30 input-armed flag, u16 0xCFF5DC+n·0x30 = 5 while choosing, u16 0xCFF5E4+n·0x30 = 7 on confirm, u16 0xCFF5E6+n·0x30 state-flag word (bit 0 gates the input branch) |
 | `field_file_buffer` | `0xCFF594` | `externals_102_us.h` |
 | `field_script_ptr` | `0xCBF5E8` | `externals_102_us.h` |
 | `field_curr_script_position` | `0xCC0CF8` | `ff7_data.h` |
@@ -2701,6 +2702,63 @@ Deployed both installs (hash-verified). VERIFY: replay the Aeris tree
 watch generally for dialogs that used to go silent right after screen
 changes.
 
+### v2.30.12 (2026-07-22): ASKMENU_OPTION demoted — the cursor global was never a global
+
+Play-test confirmed v2.30.11 (all Aeris trees now correct), but the
+soldier fight-or-flee choices right after went silent. The log
+(09:29:32 + 09:30:11) shows a NEW failure mode, different from every
+previous ASK bug: decode was perfect (`ASK[2]: 'Fight them!'`,
+`ASK[3]: 'Later!'`, first_line=2/last_line=3 correct), but the cursor
+read `option -1->0` — index 0 = the 'Cloud:' NAME line, not the
+highlighted option — and then **never changed again** for the entire
+choice, both times. Meanwhile the Aeris choices in the SAME session
+(including on the same window id, win=2) had tracked flawlessly.
+
+**Root cause — re-reading the two existing static logs together**:
+`ff7_ask_cursor_static` (0x618E83) had already proven the live cursor
+is a STACK LOCAL: read in from a script variable via helper 0x60F750,
+passed by address (`lea ecx,[ebp-4]; push ecx`) into update loop
+0x6310A1, written back via 0x60FA7D on exit. The variable it syncs
+with is the ASK opcode's own bank/address parameter — PER DIALOG.
+`ASKMENU_OPTION` (0xCC14D1), found by live scan against one particular
+dialog, is simply THAT dialog's script variable. Dialogs that name the
+same variable track "perfectly" (all the Aeris-field choices); dialogs
+that name a different one leave 0xCC14D1 stale and frozen (the soldier
+field's). The scan could never have distinguished a true global from
+the scanned dialog's output variable — only cross-field play could.
+
+**The dialog-independent readout was sitting in the OTHER static log
+all along**: `ff7_ask_lines_static` (0x631384–0x63139C) shows the
+update loop mirroring the clamped cursor into the ASK per-window
+struct EVERY accepting frame (not just on key presses):
+`u16[0xCFF5DE + win·0x30] = line·16 + 6` — the highlight's pixel Y
+(16 px per line, 6 px top margin). Window-indexed, dialog-independent,
+already-clamped.
+
+**Fix**: new `ASK_CURSOR_PIXEL_Y`/`ASK_WINDOW_STRIDE` +
+`get_ask_cursor_line()` (ff7_addresses.h) — `line = (y−6)>>4`, with
+y≥6 and 16-px-boundary validity checks returning −1 (caller skips the
+frame; ask_lines bounds check unchanged). hook_ask's OPTION CURSOR
+block now reads that instead of ASKMENU_OPTION, which is demoted in
+§4/§14 to provenance-only. Also mapped in passing, same struct stride
+0x30: 0xCFF5D2 input-armed byte, 0xCFF5DC = 5 while choosing,
+0xCFF5E4 = 7 on confirm, 0xCFF5E6 state-flag word (bit 0 gates the
+input branch).
+
+LESSON (two): (1) a live scan finds A memory cell that correlates with
+the probed behavior, not THE authoritative source — when a scanned
+address works for some content and freezes for other content, suspect
+a per-CONTENT variable (script var, bank cell) rather than a broken
+read; (2) the decisive disasm line (0x63139C) had been sitting in an
+already-captured log since 2026-07-20 — when a new failure mode
+appears, re-read the EXISTING static logs against the new question
+before launching new investigations.
+
+Deployed both installs (hash-verified). VERIFY: the soldier
+fight-or-flee choice (both the pre-battle 4-line and post-battle
+2-line variants) speaks its options and tracks the cursor; Aeris trees
+still work (regression check for the source swap).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -3122,7 +3180,7 @@ and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 | `0xCC0B60` | field_event_data_ptr | → 0xCC1670 (observed) |
 | `0xCC0CF8` | field_curr_script_position | WORD per entity |
 | `0xCC0D88` | **modules_global_object struct** | spans ≈0x138 bytes → 0xCC0EC0; see sub-map below |
-| `0xCC14D1` | ASKMENU_OPTION | u8, ASK choice-menu highlighted option (0-based). Live-scan-confirmed only, not statically explained (v2.30.4) |
+| `0xCC14D1` | ASKMENU_OPTION | ⚠ demoted v2.30.12: the ASK opcode's per-DIALOG script output variable, NOT a cursor global — frozen for any dialog whose bank/address params name a different variable (soldier fight-or-flee, log 2026-07-22). Cursor now read from 0xCFF5DE (below). Kept as provenance only |
 | `0xCC15D0` | FIELD_ID | does NOT zero in battle |
 | `0xCC162C` | FIELD_PLAYER_MODEL_ID | |
 | `0xCC1638` | FIELD_MOVIE_PLAYING word | |
@@ -3161,6 +3219,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xCFF3D8` | field_camera_rotation_matrix | FFNx name embeds the address; used as a chain cross-check in v2.14. The rotation matrix itself is NOT yet used by the mod (control_direction supersedes it for input-relative directions) |
 | `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
 | `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | → field_trigger_header (field name, control_direction, gateways[12]) — the v2.14 pathfinder source; see §4. control_direction = world bearing of screen-DOWN (live-calibrated 2026-07-13); screen angle = world + ctrl − 180 |
+| `0xCFF5D2–0xCFF74F` | ASK per-window struct array | 8 windows × stride 0x30 (v2.30.12 disasm consolidation): byte 0xCFF5D2+n·0x30 input-armed flag, u16 0xCFF5DC+n·0x30 = 5 while choosing, **u16 0xCFF5DE+n·0x30 = ASK_CURSOR_PIXEL_Y (highlight pixel Y = line·16+6 — the mod's cursor source)**, u16 0xCFF5E4+n·0x30 = 7 on confirm, u16 0xCFF5E6+n·0x30 state-flag word (bit 0 gates input). Sits between the triggers-header ptr 0xCFF454 and the field model globals 0xCFF73x — same field-module BSS cluster |
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file — dialog text (§5), model labels (v2.16), and since v2.22 the WALKMESH (section index 4: triangles + adjacency, the turn-by-turn/journey data source; §4 *(walkmesh section)* row) |
 | `0xCFF738` | FIELD_ANIM_DATA_PTR | → field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
