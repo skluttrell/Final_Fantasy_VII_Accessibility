@@ -2806,10 +2806,40 @@ it") gets a bare "Choose:" intro followed by the queued first option.
 
 New per-window state: `ask_first_line`, `ask_mirror_baseline` (reset
 on new dialog, close, and field change). No new addresses. Deployed
-both installs (hash-verified). VERIFY: (a) question → pause → first
-choice at the Aeris tree; (b) no double-spoken choice at trees that
-follow another choice on the same window; (c) flipping still announces
-each option immediately.
+both installs (hash-verified). **PLAY-CONFIRMED 2026-07-22
+("Everything seems to work now") — closing the entire ASK chain:
+v2.30.9 (suppression) → .10 (double-break split) → .11 (cross-field id
+collision) → .12 (per-window cursor mirror) → .13 (stale baseline +
+intro restructure), all verified in play.**
+
+### v2.30.14 (2026-07-22): stale-timer suppression play-confirmed; unarmed-tick diagnostic
+
+Player bonus test of the v2.30.8 machinery: replayed the No.1 Reactor
+escape, saved on the Sector 8 street fields AFTER completing it
+(Slot 3, caption "No.1 Reactor" — a save that, per the v2.30.8
+finding, carries the invisible still-ticking leftover timer), then
+loaded that save from a FRESH LAUNCH (session log 10:44). Result:
+completely silent — no spurious "Timer started", no announcements.
+**That is the v2.30.8 stale-timer suppression confirmed in its
+strongest form**: a cold-start load of a save with a ticking stale
+value, the exact shape of the original 2026-07-20 bug report.
+
+Log-quality gap found while verifying: the unarmed TimerThread branch
+logged nothing, so the log alone couldn't distinguish "the save
+carried no timer" from "a ticking value was correctly suppressed" —
+the conclusion above needed field-trail inference (the loaded save's
+position on the post-escape street fields). v2.30.14 adds a
+once-per-process-run diagnostic when the gate suppresses a sane,
+nonzero, actively-decrementing value:
+`TIMER ticking value N suppressed (no STTIM this run: stale leftover,
+or a mid-countdown save load)`. No behavior or speech change.
+
+The v2.30.8 RESIDUAL stands but is likely moot for No.1: a save made
+DURING a countdown and loaded fresh would also be suppressed (whether
+FF7 re-fires STTIM on such a load is still unproven either way), but
+the No.1 escape route has no save point, so the case can only arise at
+a later timed sequence that allows saving. When one is reached, the
+new diagnostic plus a play report will settle it conclusively.
 
 ---
 

@@ -2683,6 +2683,31 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
             // being taken, which correctly makes T/Shift+T report "No
             // active timer" too, not just silence the automatic
             // announcements.
+            //
+            // v2.30.14 diagnostic: log ONCE per process run when a sane,
+            // nonzero, actively-DECREMENTING value is being suppressed by
+            // this gate. WHY: this branch was silent, which made the
+            // 2026-07-22 log AMBIGUOUS between "the loaded save carried no
+            // timer at all" and "a ticking value was correctly suppressed"
+            // (fresh-launch load of a post-escape save — the suppression
+            // demonstrably worked, but only field-trail inference proved a
+            // ticking value was even present). It also cannot distinguish
+            // the v2.30.8 RESIDUAL (a save made DURING a countdown, loaded
+            // fresh — a REAL timer the gate would wrongly silence; only
+            // reachable at timed sequences that allow saving, which the
+            // No.1 escape does not). One log line settles both cases in
+            // any future report without speaking or changing behavior.
+            static bool s_unarmed_logged = false;
+            if (!s_unarmed_logged && have_last && val != 0 &&
+                val < last_val && (last_val - val) <= 5) {
+                s_unarmed_logged = true;
+                char dbg[128];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] TIMER ticking value %lu suppressed (no STTIM "
+                    "this run: stale leftover, or a mid-countdown save load)",
+                    static_cast<unsigned long>(val));
+                Log::Write(dbg);
+            }
         } else if (have_last && val != last_val && !frozen) {
             if (val < last_val && (last_val - val) <= 5) {
                 // Normal downward tick(s).

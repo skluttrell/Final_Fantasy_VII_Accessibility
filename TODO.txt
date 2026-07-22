@@ -320,10 +320,29 @@ Options are no longer read in the intro at all, so each choice is
 heard exactly once: the highlighted one after the question, the rest
 as the cursor reaches them. Subsequent cursor moves still interrupt
 (snappy flipping). Research §8 v2.30.13. Deployed both installs.
-VERIFY: (a) question then pause then first choice at the Aeris tree;
-(b) no double-spoken choice at the soldier tree (or any tree following
-another choice on the same window); (c) flipping through options still
-announces each immediately.
+PLAY-CONFIRMED 2026-07-22 ("Everything seems to work now") — the
+entire ASK choice-menu chain (v2.30.9-.13) is now verified working.
+
+[TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
+------------------------------------------------------------------------
+Player bonus test: replayed the No.1 Reactor escape, saved on the
+Sector 8 street fields after it (Slot 3 — carries the invisible
+still-ticking leftover timer per the v2.30.8 finding), then loaded
+that save from a FRESH LAUNCH. Result: total silence — no spurious
+"Timer started", T correctly reports no active timer. That is the
+v2.30.8 fix confirmed in its strongest form (cold-start load of a
+ticking-stale save). Log caveat found while verifying: the unarmed
+TimerThread branch logged NOTHING, leaving "no timer in the save" vs
+"ticking value correctly suppressed" distinguishable only by
+field-trail inference. v2.30.14 adds a once-per-run diagnostic line
+("TIMER ticking value N suppressed...") when a sane decrementing value
+is being gated — no behavior/speech change.
+RESIDUAL (unchanged, likely moot for No.1): a save made DURING a
+countdown, loaded fresh, would also be suppressed (STTIM presumably
+does not re-fire on load — still unproven either way). The No.1 escape
+route has no save point, so this needs a LATER timed sequence that
+allows saving; when one is reached, the new diagnostic line plus a
+play report will settle it. Research §8 v2.30.8/.14.
 
 [DIALOG] Some short "flash text" screens still speak as one block, not one per page — CONFIRMED by screenshots 2026-07-21, root cause NOT YET FOUND
 ------------------------------------------------------------------------
