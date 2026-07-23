@@ -3044,6 +3044,52 @@ for the "fieldbg" namespace, whose whole point is "not a character" —
 the dev prefix was already carrying the answer; the code just wasn't
 listening once the known-item substrings missed.
 
+### v2.30.19 (2026-07-23): positional page turns for state-static windows; parked-model ghosts
+
+Hideout play session (same day): pathfinder "a little buggy" + three
+screenshots of unspoken dialog. The log resolved all of it into three
+fixes:
+
+**1. win=3 multi-page dialogs silent after page 1.** All three
+screenshots were pages 2+ of multi-page dialogs on win=3 — the
+never-moving-state style. Decode was perfect (Barret's 4-page "Yeah,
+you're strong." speech fully cached; the President's 2-page TV
+broadcast too), but NO page-turn signal exists for these windows:
+no 14→2/4→8 transitions (win=0's signal), no state-cycle reruns
+(win=1's v2.30.17 signal) — page 1 spoke, the rest never. Fix:
+**positional paging** — `DecodeMessagePages` now optionally returns
+each page's raw byte offset (decode_walk tracks segment start offsets);
+`hook_message` captures the rawptr at decode (`msg_base`) and, for
+STATE-STATIC windows only, compares the live typewriter pointer's
+offset against the next unspoken page's start (+2 bytes slack for the
+page-break-boundary park): entering page N's range = the display
+turned to it → speak from cache (no re-decode, so no typewriter race),
+re-arm the wait tone with a fresh debounce (win=3 multi-pagers chimed
+only on page 1 before). `state_static` starts true per dialog and any
+observed state transition clears it, so the positional path can never
+double-fire against the state-driven paths. Logs
+`positional PAGE x/y (rel=…)`. ASSUMPTION flagged for the next log:
+win=3's rawptr advances like win=1's proved to (the v1 doc says the
+typewriter pointer behavior is global); if the positional lines never
+appear, the pointer is static on win=3 and a different signal is
+needed.
+
+**2. Parked-model ghosts in the browser.** The hideout dump showed
+models the scene hadn't placed — Tifa (upstairs at that moment), the
+camera dummy, an ungranted materia — ALL at exactly (0,0) with
+triangle id 0, passing the off-mesh filter because tri<0 is the only
+thing it checked and 0 is a valid triangle id. Visible models can also
+read tri=0 (three did) but always with real positions — so the parked
+signature is the COMBINATION `tri==0 && pos==(0,0)`, now skipped. The
+scan re-runs continuously, so a model the script later places appears
+normally the moment it gains a real position.
+
+**3. v2.30.18's camera/swordc match missed** — the .char labels carry
+location-word prefixes (`nible camera`, `modify swordc`), so the
+exact/prefix match never hit. Switched to contains-match (both tokens
+unique in the game-wide catalog). `sub marine` → "Marlene" confirmed
+working via the word-pass (the `sub` prefix is dropped).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

@@ -464,6 +464,47 @@ table, so she now announces by name.
 VERIFY: 7th Heaven People category lists only actual people (Tifa,
 Barret, Marlene by name, patrons); no scenery anywhere including All;
 other fields' People lists unchanged except scenery disappearing.
+FOLLOW-UP v2.30.19 (same day): the hideout log showed the camera/swordc
+exact-match MISSED — real labels carry location prefixes ("nible
+camera", "modify swordc") — switched to contains-match (both tokens
+unique in the catalog). "sub marine" confirmed translating via the
+word pass (sub dropped, marine->Marlene).
+
+[NAV] Ghost "people" from parked models + win=3 multi-page silence — FIXED v2.30.19 (2026-07-23), awaiting play-test
+------------------------------------------------------------------------
+Player report: pathfinder "a little buggy" in the 7th Heaven hideout +
+more unspoken dialog (3 screenshots — all pages 2+ of multi-page win=3
+dialogs).
+1. GHOST MODELS: the hideout log showed models the scene hasn't placed
+   yet parked at EXACTLY (0,0) with triangle id 0 — Tifa (upstairs at
+   the time), the camera dummy, an ungrant­ed materia — passing the
+   off-mesh filter (tri<0) because 0 is a VALID triangle id, and
+   listing as unreachable ghosts. Visible models can also read tri=0
+   but always have nonzero positions, so the filter is the COMBINATION:
+   tri==0 AND pos==(0,0) -> skip. Dynamic: the scan re-runs, so a model
+   the script places later appears normally.
+2. WIN=3 MULTI-PAGE DIALOGS SILENT AFTER PAGE 1: win=3 is the
+   never-moving-state style — no 14->2/4->8 PAGE transitions (win=0's
+   signal), no state-cycle reruns (win=1's signal): page 1 spoke,
+   pages 2..N never (log: Barret's 4-page "Yeah, you're strong."
+   speech + the President's 2-page TV broadcast, exactly the
+   screenshots). FIX: POSITIONAL page advance — DecodeMessagePages now
+   also returns each page's raw byte offset; hook_message captures the
+   rawptr at decode and, for state-static windows only (any observed
+   state transition stands the mechanism down, so it can never
+   double-fire against the state-driven paths), watches the live
+   TYPEWRITER pointer's offset: entering page N's byte range (+2 slack
+   for the page-break-boundary park) = the display turned to page N ->
+   speak it from cache (never re-decodes — no typewriter race), re-arm
+   the wait tone with a fresh debounce (win=3 multi-pagers previously
+   chimed only on page 1). Logs "MSG win=N positional PAGE x/y
+   (rel=...)". ASSUMPTION to verify in the log: win=3's rawptr advances
+   like win=1's (v1 doc + win=1 evidence say yes); if the positional
+   lines never appear, the win=3 pointer is static and this needs a
+   different signal.
+VERIFY: hideout replay — Barret's 4-page speech and the TV broadcast
+speak every page; People list has no ghosts (Tifa only when actually
+present); camera/swordc gone; wait tone per page on win=3 dialogs.
 
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------

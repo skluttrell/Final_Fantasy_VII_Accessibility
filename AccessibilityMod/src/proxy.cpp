@@ -4938,9 +4938,15 @@ static ModelClass ClassifyModelLabel(const std::wstring& lbl,
         // walkable path in 7th Heaven (player report 2026-07-23):
         // "camera" (cutscene camera dummy, 1 occurrence game-wide in the
         // flevel catalog) and "swordc"/"swordc00"/"swordc09" (sword
-        // props, 3 occurrences). Exact/prefix matched deliberately —
-        // this list only grows from played evidence, never guesses.
-        if (lbl == L"camera" || lbl.rfind(L"swordc", 0) == 0)
+        // props, 3 occurrences). v2.30.19: CONTAINS-matched, not
+        // exact/prefix — the .char labels arrive with location-word
+        // prefixes ("nible camera", "modify swordc", same-day log), which
+        // the first attempt's exact match silently missed. Both tokens
+        // are unique in the catalog (no "cameraman"-style collisions), so
+        // contains is still evidence-tight. This list only grows from
+        // played evidence, never guesses.
+        if (lbl.find(L"camera") != std::wstring::npos ||
+            lbl.find(L"swordc") != std::wstring::npos)
             return MC_SCENERY;
         return MC_PERSON;
     }
@@ -6552,6 +6558,22 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
                 if (tri < 0)
                     continue;   // off the walkmesh = not a reachable target
+
+                // v2.30.19: PARKED-model filter. Models a scene hasn't
+                // placed yet sit at EXACTLY (0,0) with triangle id 0 —
+                // the 2026-07-23 hideout log showed Tifa (upstairs at the
+                // time), the camera dummy, and a not-yet-granted materia
+                // all with this exact signature, while every VISIBLE
+                // model had a nonzero position (three of them also read
+                // tri=0, which is why tri alone can't tell — 0 is a valid
+                // triangle id, only the tri==0 AND pos==(0,0) combination
+                // marks "parked"). Listing them produced unreachable
+                // ghost "people"/"items". The scan re-runs continuously,
+                // so the moment the script actually places the model it
+                // gains a real position and appears — hiding is dynamic,
+                // not permanent.
+                if (tri == 0 && mx == 0 && my == 0)
+                    continue;
 
                 eligible[m] = true;
                 ex[m] = static_cast<int16_t>(mx);

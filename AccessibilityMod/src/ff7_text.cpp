@@ -190,14 +190,17 @@ namespace {
 // uses this to know when a page must end HERE regardless of line count,
 // vs. when it's free to keep accumulating lines.
 std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines,
-                                      std::vector<bool>* hard_break_out = nullptr)
+                                      std::vector<bool>* hard_break_out = nullptr,
+                                      std::vector<size_t>* seg_start_out = nullptr)
 {
     std::vector<std::wstring> pages;
     pages.emplace_back();
     pages.back().reserve(128);
+    if (seg_start_out) seg_start_out->push_back(0);
     if (!encoded_text) return pages;
 
-    const uint8_t* p   = reinterpret_cast<const uint8_t*>(encoded_text);
+    const uint8_t* const p_base = reinterpret_cast<const uint8_t*>(encoded_text);
+    const uint8_t* p   = p_base;
     bool at_start       = true; // true until the first visible content byte is consumed
 
     // Safety cap: no real FF7 dialog string approaches 4096 bytes.
@@ -288,10 +291,17 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
                 if (!result.empty()) {
                     if (hard_break_out) hard_break_out->push_back(false);
                     pages.emplace_back();
+                    if (seg_start_out)
+                        seg_start_out->push_back((p + 1) - p_base);
                 }
                 // else: a break immediately after another break (or as the
                 // very first byte) with nothing in between -- collapse, do
-                // not emit a spurious blank entry.
+                // not emit a spurious blank entry; the still-empty
+                // segment's true content now begins after THIS byte, so
+                // keep its recorded start in step (v2.30.19 offsets).
+                else if (seg_start_out) {
+                    seg_start_out->back() = (p + 1) - p_base;
+                }
             }
             else guard_space(result);
             ++p;
@@ -306,6 +316,8 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
         else if (byte == 0xE8 || byte == 0xE9) {
             if (hard_break_out) hard_break_out->push_back(true);
             pages.emplace_back();
+            if (seg_start_out)
+                seg_start_out->push_back((p + 1) - p_base);
             ++p;
             at_start = false;
         }
@@ -447,20 +459,25 @@ std::vector<std::wstring> DecodeLines(const char* encoded_text)
 // documented capacity), not a value read from the game -- if a future
 // play report shows pages breaking a line early or late relative to what
 // is actually on screen, that number is the first thing to revisit.
-std::vector<std::wstring> DecodeMessagePages(const char* encoded_text)
+std::vector<std::wstring> DecodeMessagePages(const char* encoded_text,
+                                             std::vector<size_t>* page_offsets_out)
 {
     constexpr size_t kLinesPerPage = 4;
 
     std::vector<std::wstring> out;
+    if (page_offsets_out) page_offsets_out->clear();
     if (!encoded_text) return out;
 
     std::vector<bool> hard_break;
+    std::vector<size_t> seg_starts;
     const std::vector<std::wstring> raw_lines =
-        decode_walk(encoded_text, /*split_lines=*/true, &hard_break);
+        decode_walk(encoded_text, /*split_lines=*/true, &hard_break, &seg_starts);
 
     std::wstring current_page;
     size_t lines_in_page = 0;
+    size_t page_first_line = 0;
     for (size_t i = 0; i < raw_lines.size(); ++i) {
+        if (lines_in_page == 0) page_first_line = i;
         const std::wstring line = filter_and_trim(raw_lines[i]);
         if (!current_page.empty() && !line.empty()) current_page += L' ';
         current_page += line;
@@ -470,11 +487,20 @@ std::vector<std::wstring> DecodeMessagePages(const char* encoded_text)
         const bool is_last_line       = (i + 1 == raw_lines.size());
         if (is_hard_break_here || lines_in_page >= kLinesPerPage || is_last_line) {
             out.push_back(current_page);
+            // v2.30.19: raw byte offset where this page's first line began
+            // (seg_starts is index-aligned with raw_lines by construction).
+            if (page_offsets_out)
+                page_offsets_out->push_back(
+                    page_first_line < seg_starts.size()
+                        ? seg_starts[page_first_line] : 0);
             current_page.clear();
             lines_in_page = 0;
         }
     }
-    if (out.empty()) out.push_back(std::wstring());
+    if (out.empty()) {
+        out.push_back(std::wstring());
+        if (page_offsets_out) page_offsets_out->push_back(0);
+    }
     return out;
 }
 

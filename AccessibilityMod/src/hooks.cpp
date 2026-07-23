@@ -277,6 +277,25 @@ struct WindowState {
     std::vector<std::wstring> pages;
     size_t next_page = 0;
 
+    // v2.30.19: positional page tracking for STATE-STATIC windows (win=3
+    // style — the state byte never moves, so neither the discrete
+    // 14->2/4->8 PAGE transitions nor the counter-style from-idle reruns
+    // ever fire; a multi-page dialog spoke page 1 and went silent —
+    // 2026-07-23 hideout log, Barret's 4-page "Yeah, you're strong."
+    // speech + both TV-broadcast pages the screenshots showed unspoken).
+    // The one observable those windows still have is the TYPEWRITER
+    // pointer (DIALOG_TEXT_PTRS[win]) advancing through the message
+    // bytes: page_offsets holds each page's raw byte offset (from
+    // DecodeMessagePages), msg_base the pointer captured at decode; when
+    // the live pointer's offset reaches a later page's start, the display
+    // has turned to it — speak that page from cache. state_static starts
+    // true per dialog and is cleared by ANY observed state transition, so
+    // the positional path can never double-fire against the state-driven
+    // paths (win=0/1 windows always transition within a frame or two).
+    std::vector<size_t> page_offsets;
+    const char*         msg_base = nullptr;
+    bool                state_static = true;
+
     // The dialog_id we most recently spoke for this window slot (0xFF = none spoken yet).
     // When dialog_id changes from what we last spoke, a new dialog is starting.
     //
@@ -444,6 +463,9 @@ static void reset_windows_if_field_changed()
         w.close_handled   = false;
         w.last_hook_tick  = 0;
         w.last_speak_tick = 0;
+        w.page_offsets.clear();
+        w.msg_base        = nullptr;
+        w.state_static    = true;
     }
     Log::Write("[FF7Access] FIELD changed: window dialog tracking reset.");
 }
@@ -784,6 +806,15 @@ static int __cdecl hook_message()
                 "[FF7Access] MSG win=%u %u->%u [%s]",
                 window_id, last_state, current_state, tag);
             Log::Write(state_log);
+            // v2.30.19: any transition observed during an open dialog
+            // proves this window has a MOVING state byte — its paging is
+            // owned by the state-driven paths, and the positional page
+            // check below must stand down. (A transition on the DLGID
+            // frame itself doesn't count: the DLGID branch below runs
+            // after this and resets state_static for the new dialog.)
+            if (!s_window[window_id].pending_speak &&
+                !s_window[window_id].pages.empty())
+                s_window[window_id].state_static = false;
         }
 
         // v2.30.17: FROM-IDLE EDGE, two meanings now told apart by whether
@@ -852,6 +883,9 @@ static int __cdecl hook_message()
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].pages.clear();          // v2.30.4: fresh dialog
             s_window[window_id].next_page = 0;
+            s_window[window_id].page_offsets.clear();   // v2.30.19
+            s_window[window_id].msg_base = nullptr;
+            s_window[window_id].state_static = true;
             // v2.30.5: some windows' state byte never reaches CLOSE (win=2/3
             // — see the STATE MACHINE comment above), so DLGID is the only
             // reliable "this is a fresh dialog" edge for them; reset here too
@@ -895,7 +929,9 @@ static int __cdecl hook_message()
         // ------------------------------------------------------------------
         else if (s_window[window_id].pending_speak && Config::Get().speak_dialog) {
             if (is_valid_dialog_rawptr(raw_text)) {
-                s_window[window_id].pages = FF7Text::DecodeMessagePages(raw_text);
+                s_window[window_id].pages = FF7Text::DecodeMessagePages(
+                    raw_text, &s_window[window_id].page_offsets);
+                s_window[window_id].msg_base = raw_text;   // v2.30.19
                 char dbg[80];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)",
@@ -947,6 +983,63 @@ static int __cdecl hook_message()
         // v2.30.15: leaving state 7 re-arms close detection for the next stay.
         if (current_state != 7)
             s_window[window_id].close_handled = false;
+
+        // ------------------------------------------------------------------
+        // POSITIONAL PAGE ADVANCE (v2.30.19): the page-turn signal for
+        // STATE-STATIC windows (win=3 style — state byte parked, no
+        // transitions ever, so neither the 14->2/4->8 paths nor the
+        // counter-style from-idle rerun can fire). The typewriter pointer
+        // is the one observable left: it walks this same byte stream, and
+        // entering page N's byte range means the display turned to page N.
+        // Speaks from the CACHE (never re-decodes — the pointer is
+        // mid-message by definition here). +2 slack on the offsets: the
+        // parked position between pages may sit ON the page-break byte
+        // boundary; requiring the pointer 2 bytes INTO the new page's
+        // content rejects that ambiguity at the cost of one frame.
+        // ------------------------------------------------------------------
+        if (!s_window[window_id].pending_speak &&
+            s_window[window_id].state_static &&
+            s_window[window_id].msg_base &&
+            s_window[window_id].next_page < s_window[window_id].pages.size() &&
+            s_window[window_id].page_offsets.size() ==
+                s_window[window_id].pages.size() &&
+            is_valid_dialog_rawptr(raw_text) &&
+            Config::Get().speak_dialog) {
+            const ptrdiff_t rel = raw_text - s_window[window_id].msg_base;
+            if (rel > 0 && rel < 4096) {
+                // Furthest page whose content the display has entered —
+                // a mashing player skips intermediates, matching what a
+                // sighted player experiences.
+                size_t target = static_cast<size_t>(-1);
+                for (size_t i = s_window[window_id].next_page;
+                     i < s_window[window_id].page_offsets.size(); ++i) {
+                    if (static_cast<size_t>(rel) >=
+                        s_window[window_id].page_offsets[i] + 2)
+                        target = i;
+                }
+                if (target != static_cast<size_t>(-1)) {
+                    char pg[112];
+                    _snprintf_s(pg, sizeof(pg), _TRUNCATE,
+                        "[FF7Access] MSG win=%u positional PAGE %zu/%zu (rel=%ld)",
+                        window_id, target + 1,
+                        s_window[window_id].pages.size(),
+                        static_cast<long>(rel));
+                    Log::Write(pg);
+                    s_window[window_id].next_page = target;
+                    speak_page(s_window[window_id], /*interrupt=*/true);
+                    s_window[window_id].last_speak_tick = GetTickCount();
+                    // Re-arm the wait tone for the NEW page with a fresh
+                    // debounce window: state-static windows never get the
+                    // state-transition resets that re-arm it on the other
+                    // window styles, so without this a win=3 multi-page
+                    // dialog chimed only for its first page (and with only
+                    // the armed-flag cleared, the stale held-time would
+                    // re-fire the tone instantly, mid-typing).
+                    s_window[window_id].wait_tone_armed = false;
+                    s_window[window_id].state_change_tick = GetTickCount();
+                }
+            }
+        }
 
         // v2.30.6: track how long the CURRENT state value has been held —
         // the wait tone below needs this, not just "did it change since

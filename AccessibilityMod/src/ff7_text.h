@@ -116,8 +116,19 @@ std::vector<std::wstring> DecodeLines(const char* encoded_text);
  * is empty after filtering still gets an (empty) entry, so indices stay
  * aligned with the game's own page-advance event count -- callers should
  * skip speaking empty entries rather than dropping them from the vector.
+ *
+ * page_offsets_out (optional, v2.30.19): when non-null, receives the RAW
+ * BYTE OFFSET (from encoded_text) at which each page's content begins --
+ * one entry per returned page, page 0 always offset 0. WHY: windows whose
+ * dialog state byte never moves (win=3 style) give no page-turn signal at
+ * all; the only observable is the game's typewriter pointer
+ * (DIALOG_TEXT_PTRS[win]) advancing through this same byte stream. A
+ * caller that captured the pointer at decode time can compare its current
+ * position against these offsets to detect "the display has entered page
+ * N" positionally (hook_message's positional page advance).
  */
-std::vector<std::wstring> DecodeMessagePages(const char* encoded_text);
+std::vector<std::wstring> DecodeMessagePages(const char* encoded_text,
+                                             std::vector<size_t>* page_offsets_out = nullptr);
 
 /*
  * DecodeChar: Decode ONE FF7-encoded byte to its speakable wchar_t, or L'\0'
