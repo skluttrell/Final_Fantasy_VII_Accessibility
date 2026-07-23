@@ -2916,6 +2916,49 @@ style. When a data source is discovered to have two behavioral modes,
 audit EVERY reader of that source against both modes, not just the one
 that prompted the discovery.
 
+### v2.30.16 (2026-07-23): opcode-call-gap reopen detection — re-talks for every window style
+
+Same-day play-test of v2.30.15: win=1 re-talks CONFIRMED working (the
+log shows id=43 speaking on both talks, wait tones firing and logged)
+— but "the last conversation I had didn't repeat," and the log
+identified it as a **win=3** dialog: valid text on screen (the tone
+block armed with `state=0 held=169281ms`), same id, and ZERO state
+transitions — exactly the "state byte never moves" window style the
+v2.30.15 entry had already flagged as beyond the from-idle re-arm's
+reach. The same log also caught the from-idle re-arm DOUBLE-SPEAKING:
+a window whose state byte is still parked at 0 when the dialog opens
+can complete DLGID+PENDING (speak) BEFORE the 0→1 edge arrives, and
+the edge then re-armed and re-spoke the identical dialog 200ms later
+(win=1 id=43: `[PENDING] speaking` at 10:58:16.146 AND .345).
+
+**Fix — `rearm_if_reopened_after_gap()`, the general mechanism**: the
+MESSAGE/ASK opcode executes every frame (~33ms) while its dialog is on
+screen and not at all in between (the field script blocks on the
+opcode, then moves past it). Therefore the FIRST hook call for a
+window after >500ms of call silence is, by construction, a brand-new
+dialog — independent of dialog_id, independent of window style. Called
+at the top of both hooks' in-range paths; resets `last_dialog_id` to
+the 0xFF sentinel so the DLGID branch fires even for an identical id;
+logs `MSG/ASK win=N reopened after Xms gap (re-armed)`. Structurally
+immune to the double-fire (the gap exists exactly once per reopen —
+every subsequent call refreshes `last_hook_tick`), and the
+continuously-running special windows (WSPCL clock, gil) never present
+a gap, so they can never spuriously re-arm. The from-idle state
+re-arm stays as a backup (for any window whose opcode hypothetically
+keeps running between dialogs), now guarded by a `last_speak_tick`
+age check (>1500ms) that kills the observed double-speak.
+
+Accepted trade-off, judged a FEATURE: a dialog interrupted mid-display
+by anything that freezes the field for >500ms (battle transition)
+re-speaks when it resumes — for a blind player that's context
+restoration, not repetition.
+
+New per-window state: `last_hook_tick`, `last_speak_tick` (stamped in
+both PENDING branches; reset on field change). No new addresses.
+Deployed both installs (hash-verified). VERIFY: the win=3-style
+conversation re-speaks on re-talk; no double-speak anywhere; shop/bar
+re-talks still work.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

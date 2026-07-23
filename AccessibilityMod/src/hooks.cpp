@@ -370,6 +370,26 @@ struct WindowState {
     // actions by one frame (~33ms, imperceptible); a counter that never
     // repeats a value can never satisfy it.
     bool close_handled = false;
+
+    // v2.30.16: GetTickCount() of the most recent hook call for this
+    // window (0 = never called). The MESSAGE/ASK opcode executes EVERY
+    // frame while its dialog is on screen and NOT AT ALL in between, so
+    // the first call after a quiet gap IS a fresh dialog opening — an
+    // open-detection signal that works for EVERY window style, including
+    // the win=2/3 "state byte never moves" windows that have no idle edge
+    // for the v2.30.15 re-arm to catch (2026-07-23 second log: a win=3
+    // dialog re-opened with valid text, same id, NO state transitions —
+    // and stayed silent; that was the "last conversation didn't repeat").
+    DWORD last_hook_tick = 0;
+
+    // v2.30.16: GetTickCount() of this window's last PENDING speak.
+    // Guards the v2.30.15 from-idle re-arm against a double-speak the
+    // same log exposed: a window whose state byte is still parked at 0
+    // when the dialog opens can complete DLGID+PENDING (speak!) BEFORE
+    // the 0->1 edge arrives — the edge then re-armed and re-spoke the
+    // same dialog 200ms later (win=1 id=43, 10:58:16.146 and .345). The
+    // re-arm now also requires the last speak to be comfortably old.
+    DWORD last_speak_tick = 0;
 };
 static WindowState s_window[8];
 
@@ -422,8 +442,60 @@ static void reset_windows_if_field_changed()
         w.wait_tone_armed = false;
         w.state_change_tick = 0;
         w.close_handled   = false;
+        w.last_hook_tick  = 0;
+        w.last_speak_tick = 0;
     }
     Log::Write("[FF7Access] FIELD changed: window dialog tracking reset.");
+}
+
+// ---------------------------------------------------------------------------
+// rearm_if_reopened_after_gap (v2.30.16): the general fresh-dialog detector
+// for same-id re-talks, called at the top of BOTH hooks' in-range paths.
+//
+// The MESSAGE/ASK opcode executes EVERY frame while its dialog is on screen
+// and NOT AT ALL between dialogs (the field script blocks on the opcode,
+// then moves past it). So the first hook call for a window after a quiet
+// gap is, by construction, a brand-new dialog opening — regardless of
+// dialog_id and regardless of window style. This is what makes it strictly
+// more general than the v2.30.15 from-idle STATE re-arm: the win=2/3-style
+// windows whose state byte never moves produce no idle edge at all, and
+// the 2026-07-23 second log showed exactly that failure — a win=3 dialog
+// re-opened (valid text, wait tone armed) with the same id and NO state
+// transitions, and stayed silent ("the last conversation didn't repeat").
+//
+// It also cannot double-fire the way the state re-arm could (same log,
+// win=1 id=43 spoken twice 200ms apart): the gap exists only once per
+// reopen — every subsequent call updates last_hook_tick and sees no gap.
+//
+// kOpcodeGapMs = 500: an open dialog's opcode runs every frame (~33ms), so
+// anything approaching 500ms of silence means the opcode ENDED. Kept well
+// under the fastest realistic dismiss-and-retalk cycle. A dialog that
+// resumes after a mid-dialog interruption longer than this (e.g. a battle
+// transition freezing the field) re-arms and re-speaks — for a blind
+// player, restoring context after a battle is a feature, not a bug.
+//
+// The clock/gil special windows (WSPCL etc.) run their update loop
+// continuously for their whole lifetime, so they never present a gap and
+// never spuriously re-arm.
+// ---------------------------------------------------------------------------
+static void rearm_if_reopened_after_gap(uint8_t window_id, const char* hook_tag)
+{
+    constexpr DWORD kOpcodeGapMs = 500;
+    const DWORD now  = GetTickCount();
+    WindowState& w   = s_window[window_id];
+    const DWORD prev = w.last_hook_tick;
+    w.last_hook_tick = now;
+    if (prev == 0) return;                    // first call ever / after reset
+    if ((now - prev) <= kOpcodeGapMs) return; // opcode running continuously
+    if (w.pending_speak) return;              // a dialog is already pended
+    if (w.last_dialog_id != 0xFF) {
+        w.last_dialog_id = 0xFF;
+        char dbg[96];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] %s win=%u reopened after %lums gap (re-armed)",
+            hook_tag, window_id, static_cast<unsigned long>(now - prev));
+        Log::Write(dbg);
+    }
 }
 
 // Whether our hooks are currently installed.
@@ -634,6 +706,10 @@ static int __cdecl hook_message()
         // validity before speaking.
         const char* raw_text = FF7Addr::get_dialog_text_ptr(window_id);
 
+        // v2.30.16: general same-id reopen detection (all window styles) —
+        // must run before the DLGID comparison below.
+        rearm_if_reopened_after_gap(window_id, "MSG");
+
         // ------------------------------------------------------------------
         // STATE MACHINE: detect starting, paging, and closing transitions.
         //
@@ -719,12 +795,20 @@ static int __cdecl hook_message()
         // 0xFF sentinel here lets the DLGID branch below fire this same
         // frame. Guarded on !pending_speak: a DIFFERENT-id dialog has
         // usually already pended on the previous (x->0) frame, and
-        // re-arming then would only double-log and delay it. Windows whose
-        // state byte never moves (win=2/3 style) never produce this edge —
-        // their same-id re-talks remain undetectable (pre-existing
-        // limitation, now documented in TODO.txt).
+        // re-arming then would only double-log and delay it.
+        //
+        // v2.30.16: ALSO guarded on the last speak being comfortably old —
+        // same-day log showed a window whose state byte was still parked
+        // at 0 when the dialog opened could complete DLGID+PENDING (speak)
+        // BEFORE the 0->1 edge arrived; the edge then re-armed and
+        // re-spoke the same dialog 200ms later (win=1 id=43, 10:58:16).
+        // The gap re-arm above is now the primary reopen detector anyway
+        // (it also covers the never-moving-state windows this edge can't
+        // see); this edge stays as a backup for any window whose opcode
+        // somehow keeps running between dialogs (no gap to detect).
         if (last_state == 0 && current_state != 0 && current_state != 7 &&
-            !s_window[window_id].pending_speak) {
+            !s_window[window_id].pending_speak &&
+            (GetTickCount() - s_window[window_id].last_speak_tick) > 1500) {
             s_window[window_id].last_dialog_id = 0xFF;
         }
 
@@ -796,6 +880,7 @@ static int __cdecl hook_message()
                 log_lines("MSG PAGE", s_window[window_id].pages);
                 speak_page(s_window[window_id], /*interrupt=*/true);
                 s_window[window_id].pending_speak = false;
+                s_window[window_id].last_speak_tick = GetTickCount(); // v2.30.16
             }
             // else: rawptr not ready; retry next frame
         }
@@ -998,6 +1083,10 @@ static int __cdecl hook_ask(int unk)
     } else {
         const char* raw_text = FF7Addr::get_dialog_text_ptr(window_id);
 
+        // v2.30.16: general same-id reopen detection, same as hook_message —
+        // must run before is_new_ask_dialog is computed below.
+        rearm_if_reopened_after_gap(window_id, "ASK");
+
         // State machine for close detection and log visibility.
         const uint8_t current_state = FF7Addr::get_dialog_state(window_id);
         const uint8_t last_state    = s_window[window_id].last_opcode;
@@ -1027,9 +1116,12 @@ static int __cdecl hook_ask(int unk)
         // v2.30.15: same-id RE-ARM on the from-idle edge, same as
         // hook_message — a re-asked choice with an unchanged dialog_id
         // (re-talking to the same NPC) must present as new. See the
-        // hook_message re-arm comment for the full reasoning.
+        // hook_message re-arm comment for the full reasoning, including
+        // the v2.30.16 last-speak-age guard (double-speak protection) and
+        // why the gap re-arm above is now the primary reopen detector.
         if (last_state == 0 && current_state != 0 && current_state != 7 &&
-            !s_window[window_id].pending_speak) {
+            !s_window[window_id].pending_speak &&
+            (GetTickCount() - s_window[window_id].last_speak_tick) > 1500) {
             s_window[window_id].last_dialog_id = 0xFF;
         }
 
@@ -1154,6 +1246,7 @@ static int __cdecl hook_ask(int unk)
                 // each split line actually holds.
                 log_lines("ASK", s_window[window_id].ask_lines);
                 s_window[window_id].pending_speak = false;
+                s_window[window_id].last_speak_tick = GetTickCount(); // v2.30.16
             }
             // else: rawptr not ready; retry next frame
         }

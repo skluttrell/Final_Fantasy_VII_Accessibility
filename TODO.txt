@@ -362,9 +362,42 @@ that ask_lines survives (the pixel mirror read at 0xCFF60E was invalid
 at the PENDING frame — baseline=-1 — and no option lines appeared; if
 they still don't after this fix, the win=1 mirror needs its own
 investigation). Research §8 v2.30.15. Deployed both installs.
-VERIFY: shop owner repeat dialogs speak every time; 7th Heaven
-conversation (intro + choices + cursor) speaks fully; chime presence
-per dialog + the new tone log lines.
+PARTIAL PLAY-TEST same day: win=1 re-talks CONFIRMED speaking (id=43
+spoke on both talks, wait tones logged firing) — but exposed two new
+issues fixed in v2.30.16 (next entry).
+
+[DIALOG] win=2/3-style re-talks still silent + from-idle re-arm double-speak — FIXED v2.30.16 (2026-07-23), awaiting play-test
+------------------------------------------------------------------------
+Player report after v2.30.15: "Some repeating text isn't being spoken
+again. The last conversation I had didn't repeat." Log showed:
+1. The unrepeated conversation was on win=3 — the "state byte never
+   moves" style (the limitation the v2.30.15 entry predicted): valid
+   text on screen (wait tone armed, logged with held=169s), same id,
+   ZERO state transitions — no idle edge for the state re-arm to see.
+2. BONUS find in the same log: the v2.30.15 from-idle re-arm could
+   DOUBLE-SPEAK — a window whose state byte is still parked at 0 when
+   the dialog opens completes DLGID+PENDING (speaks) BEFORE the 0->1
+   edge arrives; the edge then re-armed and re-spoke the same dialog
+   200ms later (win=1 id=43, 10:58:16.146 + .345, both [PENDING]
+   speaking lines logged).
+FIX v2.30.16: rearm_if_reopened_after_gap() — the OPCODE-CALL-GAP
+detector, now the primary reopen signal for both hooks. The
+MESSAGE/ASK opcode runs every frame while its dialog is on screen and
+not at all in between, so the first hook call for a window after
+>500ms of silence IS a fresh dialog — works for EVERY window style
+including never-moving-state win=2/3, and structurally cannot
+double-fire (the gap exists only once per reopen; every later call
+refreshes last_hook_tick). Logs "MSG/ASK win=N reopened after Xms gap
+(re-armed)". The v2.30.15 from-idle state re-arm stays as backup,
+now guarded by last_speak_tick age >1500ms (kills the double-speak).
+Special windows (WSPCL clock etc.) run continuously, so they present
+no gap and cannot spuriously re-arm. Known trade-off, judged a
+feature: a dialog interrupted mid-display by something that freezes
+the field >500ms (battle transition) re-speaks on resume — context
+restoration for a blind player. Research §8 v2.30.16. Deployed both
+installs. VERIFY: the previously-unrepeated conversation (win=3 style)
+re-speaks on re-talk; no double-speak on any dialog; shop/bar re-talks
+still work.
 
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------
