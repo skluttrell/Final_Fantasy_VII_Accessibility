@@ -323,6 +323,49 @@ as the cursor reaches them. Subsequent cursor moves still interrupt
 PLAY-CONFIRMED 2026-07-22 ("Everything seems to work now") — the
 entire ASK choice-menu chain (v2.30.9-.13) is now verified working.
 
+[DIALOG] win=1 dialogs silenced/skipped + same-NPC re-talks silent — FIXED v2.30.15 (2026-07-23), awaiting play-test
+------------------------------------------------------------------------
+Player reports (2026-07-23, screenshots in Screenshots/Dialogs/unsorted/
++ 7th_heaven/): (1) some shop owners not read; (2) 7th Heaven
+conversation choices don't speak; (3) button chime missing for some
+dialogs. Log evidence separated these into TWO real bugs:
+1. FALSE CLOSE on counter-style windows. win=1's dialog state byte is
+   the DENSE COUNTER style (0->1->3->5->7->9...->rest, known since the
+   v2.30.5 wait-tone work) — it PASSES THROUGH value 7 while climbing,
+   and the close detector ("current==7") fired there: TTS::Silence()
+   cut win=1 speech off ~270ms in (the 7th Heaven MESSAGE audibly
+   truncated) and wiped ask_lines, muting the whole 7th Heaven choice
+   (decode was perfect — 'Yeah'/'Not this time' logged — but the
+   cursor block no-ops with empty ask_lines). FIX: CLOSE commits only
+   on the SECOND consecutive frame at 7 (per-window close_handled
+   latch; a counter never repeats a value, discrete windows park at 7
+   through the whole close animation — their close just lands ~33ms
+   later). Guarded !pending_speak for the new-dialog-during-7-hold race.
+2. SAME-ID RE-TALKS NEVER RE-SPOKE (any window). The Sector 5 shop
+   owner's repeat dialog ran full state cycles with ZERO [DLGID] lines:
+   re-talking to an NPC re-runs the same opcode with the SAME dialog_id,
+   and last_dialog_id (deliberately kept = id after close to stop
+   one-frame re-fires) made the detector permanently blind to it. FIX:
+   from-idle RE-ARM — when a window's state leaves 0 (fresh open edge;
+   win=0: 7->0 then 0->1, win=1: rest->0 then 0->1) and nothing is
+   pending, last_dialog_id resets to 0xFF so the DLGID branch fires
+   even for an identical id. LIMITATION: win=2/3-style windows whose
+   state byte never moves produce no idle edge — same-id re-talks
+   there remain undetectable (needs a different signal if reported).
+3. Chime: could not be diagnosed — the wait tone was never logged.
+   v2.30.15 logs every arm ("MSG win=N wait tone (state=X held=Yms)");
+   next session's log will show armed-vs-inaudible per dialog. The
+   win=1 false CLOSE also reset wait_tone_armed mid-dialog, so fix 1
+   may cure some missing chimes by itself.
+RESIDUAL to watch: whether win=1 ASK option-cursor announces work now
+that ask_lines survives (the pixel mirror read at 0xCFF60E was invalid
+at the PENDING frame — baseline=-1 — and no option lines appeared; if
+they still don't after this fix, the win=1 mirror needs its own
+investigation). Research §8 v2.30.15. Deployed both installs.
+VERIFY: shop owner repeat dialogs speak every time; 7th Heaven
+conversation (intro + choices + cursor) speaks fully; chime presence
+per dialog + the new tone log lines.
+
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------
 Player bonus test: replayed the No.1 Reactor escape, saved on the

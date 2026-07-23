@@ -2841,6 +2841,81 @@ the No.1 escape route has no save point, so the case can only arise at
 a later timed sequence that allows saving. When one is reached, the
 new diagnostic plus a play report will settle it conclusively.
 
+### v2.30.15 (2026-07-23): win=1 false CLOSE + same-id re-talk blindness — two bugs, one log
+
+Player reports with screenshots: some shop owners not read
+(`unread_dialog_1.jpg`, Sector 5 "I'm not opening up. Go away!!"), the
+7th Heaven bar conversation's choices silent
+(`unread_choices_1.jpg`, "Did you fight with Barret?" Yeah/Not this
+time), and the wait chime missing for some dialogs. The same-session
+log split this into two distinct mechanisms:
+
+**Bug 1 — false CLOSE on counter-style windows.** The 7th Heaven ASK
+(win=1, id=4) decoded PERFECTLY — `ASK[1]: 'Yeah'`, `ASK[2]: 'Not this
+time'`, first_line=1/last_line=2, intro spoken — and then:
+
+```
+[10:37:21.688] ASK win=1 3->5 [skip]
+[10:37:21.721] ASK win=1 5->7 [CLOSE]   <- the counter PASSING THROUGH 7
+```
+
+win=1's state byte is the DENSE COUNTER style (0→1→3→5→7→9→…→rest,
+documented since the v2.30.5 wait-tone work). It passes THROUGH 7 one
+frame after the intro speaks; the close detector (`current==7`) treated
+that as the dialog closing: `TTS::Silence()` cut the speech ~270ms in
+(same for the win=1 MESSAGE at 10:37:13 — spoken at .354, silenced at
+.622) and cleared `ask_lines`, leaving the OPTION CURSOR block a
+permanent no-op (empty lines) — the whole choice muted. Every win=1
+dialog in the session shows the same `5->7 [CLOSE]` signature. Fix:
+CLOSE now commits only on the SECOND consecutive frame at 7
+(`close_handled` per-window latch, reset when the state leaves 7, plus
+a `!pending_speak` guard for the new-dialog-arrives-during-the-7-hold
+race). A counter never repeats a value, so it can never commit; the
+discrete windows (win=0/2) genuinely park at 7 for the whole close
+animation, so their close actions land one frame (~33ms) later —
+imperceptible.
+
+**Bug 2 — same-id re-talks never re-spoke.** The Sector 5 shop
+dialogs (10:32:54, 10:33:06, 10:33:35) ran complete state cycles
+(rest→0→climb→rest) with ZERO `[DLGID]` lines — never spoken at all.
+Re-talking to an NPC re-runs the same MESSAGE opcode with the SAME
+dialog_id, and `last_dialog_id` — deliberately kept equal to the id
+after close to stop one-frame re-fires — makes the detector
+permanently blind to the repeat. This has been latent since v1.4;
+nobody had re-talked to the same NPC during focused testing before.
+Fix: from-idle RE-ARM — on the state edge out of 0 (a fresh window
+open: win=0 goes 7→0 then 0→N, win=1 goes rest→0 then 0→N) with
+nothing pending, `last_dialog_id` resets to the 0xFF sentinel so the
+DLGID branch fires even for an identical id. The `!pending_speak`
+guard keeps the normal different-id path (which pends on the x→0 frame
+itself) from being double-triggered. LIMITATION: win=2/3-style windows
+whose state byte never moves produce no idle edge — their same-id
+re-talks stay undetectable (pre-existing; would need a different
+signal).
+
+**Chime report — undiagnosable, now instrumented**: the wait tone had
+NO log line, so "tone never armed" vs "tone armed but drowned out"
+could not be distinguished for any dialog. Every arm now logs
+`MSG win=N wait tone (state=X held=Yms)`. Note the false CLOSE also
+reset `wait_tone_armed` mid-dialog on win=1, so Bug 1's fix may cure
+some of the missing chimes by itself.
+
+RESIDUAL to watch: whether win=1's ASK option-cursor announces work
+now that `ask_lines` survives — the pixel mirror (0xCFF5DE+0x30 =
+0xCFF60E) read invalid at the PENDING frame (`baseline=-1`) and no
+option transitions were logged before the false CLOSE wiped the state;
+if options still don't announce on win=1 choices, the win=1 mirror
+instance needs its own look.
+
+LESSON: the two window state-machine STYLES (small discrete enum vs
+dense per-tick counter) were already a documented, hard-won fact from
+the wait-tone work (v2.30.5/6) — but only the wait tone was audited
+against both styles at the time. Every OTHER consumer of the state
+byte (close detection, start detection) kept assuming the discrete
+style. When a data source is discovered to have two behavioral modes,
+audit EVERY reader of that source against both modes, not just the one
+that prompted the discovery.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

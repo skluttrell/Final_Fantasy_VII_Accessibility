@@ -356,6 +356,20 @@ struct WindowState {
     // (player report 2026-07-20: multiple/early beeps, presses not
     // registering for 2-3 tries).
     DWORD state_change_tick = 0;
+
+    // v2.30.15: true once this window's CLOSE actions have run for the
+    // current stay at state 7 (cleared whenever the state leaves 7). CLOSE
+    // is now committed only on the SECOND consecutive frame at 7 — win=1's
+    // dense per-tick counter PASSES THROUGH 7 on its way up (5->7->9, one
+    // frame each), and the old "current==7" test fired a FALSE CLOSE there:
+    // TTS::Silence() cut the just-started speech off ~270ms in and wiped
+    // ask_lines, muting the whole choice (2026-07-23 log, 7th Heaven bar +
+    // Sector 5 shop dialogs — every win=1 dialog was affected). Discrete
+    // windows (win=0/2) genuinely PARK at 7 during the close animation, so
+    // requiring a second consecutive frame there only delays their close
+    // actions by one frame (~33ms, imperceptible); a counter that never
+    // repeats a value can never satisfy it.
+    bool close_handled = false;
 };
 static WindowState s_window[8];
 
@@ -407,6 +421,7 @@ static void reset_windows_if_field_changed()
         w.ask_mirror_baseline = -1;
         w.wait_tone_armed = false;
         w.state_change_tick = 0;
+        w.close_handled   = false;
     }
     Log::Write("[FF7Access] FIELD changed: window dialog tracking reset.");
 }
@@ -668,17 +683,49 @@ static int __cdecl hook_message()
                                current_state != 0 && current_state != 7);
         const bool paging   = (last_state == 14 && current_state == 2) ||
                               (last_state == 4  && current_state == 8);
-        const bool closing  = (last_state != 7 && current_state == 7);
+        // v2.30.15: CLOSE commits only on the SECOND consecutive frame at 7
+        // — win=1's dense counter passes THROUGH 7 (5->7->9) and the old
+        // "current==7" test false-closed there, silencing every win=1
+        // dialog ~270ms in (see WindowState::close_handled). Discrete
+        // windows park at 7 for the whole close animation, so their close
+        // actions just land one frame (~33ms) later than before.
+        // !pending_speak: if a NEW dialog's id arrived during the 7-hold
+        // (DLGID pended it last frame), the deferred commit must not run —
+        // it would clear that pending speak; the DLGID branch already did
+        // the cleanup the close would have done.
+        const bool closing  = (last_state == 7 && current_state == 7 &&
+                               !s_window[window_id].close_handled &&
+                               !s_window[window_id].pending_speak);
 
-        // Log all state transitions for diagnostic visibility.
+        // Log all state transitions for diagnostic visibility. Entering 7
+        // is tagged "close?" — it only becomes a real CLOSE if the state
+        // holds 7 next frame (the commit logs its own line).
         if (current_state != last_state) {
             const char* tag = starting ? "START" : paging ? "PAGE" :
-                              closing  ? "CLOSE" : "skip";
+                              (current_state == 7) ? "close?" : "skip";
             char state_log[80];
             _snprintf_s(state_log, sizeof(state_log), _TRUNCATE,
                 "[FF7Access] MSG win=%u %u->%u [%s]",
                 window_id, last_state, current_state, tag);
             Log::Write(state_log);
+        }
+
+        // v2.30.15: SAME-ID RE-ARM. A window opening FROM IDLE (state 0 ->
+        // nonzero, not 7) is a brand-new dialog even when its dialog_id
+        // equals last_dialog_id — re-talking to the same NPC re-runs the
+        // SAME opcode with the SAME id (2026-07-23 log: the Sector 5 shop
+        // owner's repeat dialog produced full state cycles with ZERO
+        // [DLGID] lines — never spoken). Clearing last_dialog_id to the
+        // 0xFF sentinel here lets the DLGID branch below fire this same
+        // frame. Guarded on !pending_speak: a DIFFERENT-id dialog has
+        // usually already pended on the previous (x->0) frame, and
+        // re-arming then would only double-log and delay it. Windows whose
+        // state byte never moves (win=2/3 style) never produce this edge —
+        // their same-id re-talks remain undetectable (pre-existing
+        // limitation, now documented in TODO.txt).
+        if (last_state == 0 && current_state != 0 && current_state != 7 &&
+            !s_window[window_id].pending_speak) {
+            s_window[window_id].last_dialog_id = 0xFF;
         }
 
         // ------------------------------------------------------------------
@@ -772,13 +819,23 @@ static int __cdecl hook_message()
             // again, speaking "Welcome to Project Echo-S." twice. Setting
             // last_dialog_id=dialog_id prevents that re-fire while still allowing
             // a new dialog (different id) to be detected on the very next frame.
+            // (Same-id RE-TALKS are handled by the v2.30.15 from-idle re-arm
+            // above, which fires only when the window later reopens from 0.)
             s_window[window_id].pending_speak  = false;
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].pages.clear();          // v2.30.4
             s_window[window_id].next_page = 0;
             s_window[window_id].wait_tone_armed = false; // v2.30.5
+            s_window[window_id].close_handled = true;    // v2.30.15: once per stay at 7
+            char close_log[64];
+            _snprintf_s(close_log, sizeof(close_log), _TRUNCATE,
+                "[FF7Access] MSG win=%u CLOSE committed", window_id);
+            Log::Write(close_log);
             TTS::Silence();
         }
+        // v2.30.15: leaving state 7 re-arms close detection for the next stay.
+        if (current_state != 7)
+            s_window[window_id].close_handled = false;
 
         // v2.30.6: track how long the CURRENT state value has been held —
         // the wait tone below needs this, not just "did it change since
@@ -855,6 +912,17 @@ static int __cdecl hook_message()
                 if (!s_window[window_id].wait_tone_armed) {
                     s_window[window_id].wait_tone_armed = true;
                     InterlockedExchange(&s_dialog_wait_pending, 1);
+                    // v2.30.15: the tone was previously invisible in the
+                    // log, which made the 2026-07-23 "chime doesn't fire
+                    // for all dialogs" report undiagnosable — no way to
+                    // tell "tone never armed" from "tone armed but
+                    // inaudible/drowned out". One line per arm settles it.
+                    char tone_log[96];
+                    _snprintf_s(tone_log, sizeof(tone_log), _TRUNCATE,
+                        "[FF7Access] MSG win=%u wait tone (state=%u held=%lums)",
+                        window_id, current_state,
+                        static_cast<unsigned long>(held_ms));
+                    Log::Write(tone_log);
                 }
             } else {
                 s_window[window_id].wait_tone_armed = false;
@@ -936,15 +1004,33 @@ static int __cdecl hook_ask(int unk)
 
         const bool starting = ((last_state == 0 || last_state == 7) &&
                                current_state != 0 && current_state != 7);
-        const bool closing  = (last_state != 7 && current_state == 7);
+        // v2.30.15: two-consecutive-frame CLOSE commit, same as
+        // hook_message — win=1's dense counter passes THROUGH 7 and the
+        // old test false-closed there, wiping ask_lines (muting the whole
+        // 7th Heaven choice, 2026-07-23 log) and silencing the intro
+        // mid-word. See WindowState::close_handled. !pending_speak guard:
+        // same new-dialog-during-7-hold race as hook_message's.
+        const bool closing  = (last_state == 7 && current_state == 7 &&
+                               !s_window[window_id].close_handled &&
+                               !s_window[window_id].pending_speak);
 
         if (current_state != last_state) {
-            const char* tag = starting ? "START" : closing ? "CLOSE" : "skip";
+            const char* tag = starting ? "START" :
+                              (current_state == 7) ? "close?" : "skip";
             char state_log[80];
             _snprintf_s(state_log, sizeof(state_log), _TRUNCATE,
                 "[FF7Access] ASK win=%u %u->%u [%s]",
                 window_id, last_state, current_state, tag);
             Log::Write(state_log);
+        }
+
+        // v2.30.15: same-id RE-ARM on the from-idle edge, same as
+        // hook_message — a re-asked choice with an unchanged dialog_id
+        // (re-talking to the same NPC) must present as new. See the
+        // hook_message re-arm comment for the full reasoning.
+        if (last_state == 0 && current_state != 0 && current_state != 7 &&
+            !s_window[window_id].pending_speak) {
+            s_window[window_id].last_dialog_id = 0xFF;
         }
 
         // v2.30.5: a new dialog_id on the ASK opcode IS "a choice was just
@@ -1074,14 +1160,23 @@ static int __cdecl hook_ask(int unk)
         else if (closing) {
             // Same fix as hook_message: set to dialog_id (not 0xFF) to prevent
             // one-frame re-fire of the just-closed ASK on the state=7 frame.
+            // (Same-id RE-ASKS are handled by the v2.30.15 from-idle re-arm.)
             s_window[window_id].pending_speak  = false;
             s_window[window_id].last_dialog_id = dialog_id;
             s_window[window_id].ask_lines.clear();      // v2.30.4
             s_window[window_id].ask_last_option = -1;
             s_window[window_id].ask_first_line  = 0;          // v2.30.13
             s_window[window_id].ask_mirror_baseline = -1;     // v2.30.13
+            s_window[window_id].close_handled = true;         // v2.30.15
+            char close_log[64];
+            _snprintf_s(close_log, sizeof(close_log), _TRUNCATE,
+                "[FF7Access] ASK win=%u CLOSE committed", window_id);
+            Log::Write(close_log);
             TTS::Silence();
         }
+        // v2.30.15: leaving state 7 re-arms close detection (see hook_message).
+        if (current_state != 7)
+            s_window[window_id].close_handled = false;
 
         // ------------------------------------------------------------------
         // OPTION CURSOR (v2.30.4, cursor source replaced v2.30.12):
