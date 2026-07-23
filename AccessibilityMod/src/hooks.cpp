@@ -786,30 +786,56 @@ static int __cdecl hook_message()
             Log::Write(state_log);
         }
 
-        // v2.30.15: SAME-ID RE-ARM. A window opening FROM IDLE (state 0 ->
-        // nonzero, not 7) is a brand-new dialog even when its dialog_id
-        // equals last_dialog_id — re-talking to the same NPC re-runs the
-        // SAME opcode with the SAME id (2026-07-23 log: the Sector 5 shop
-        // owner's repeat dialog produced full state cycles with ZERO
-        // [DLGID] lines — never spoken). Clearing last_dialog_id to the
-        // 0xFF sentinel here lets the DLGID branch below fire this same
-        // frame. Guarded on !pending_speak: a DIFFERENT-id dialog has
-        // usually already pended on the previous (x->0) frame, and
-        // re-arming then would only double-log and delay it.
+        // v2.30.17: FROM-IDLE EDGE, two meanings now told apart by whether
+        // cached pages remain unspoken.
         //
-        // v2.30.16: ALSO guarded on the last speak being comfortably old —
-        // same-day log showed a window whose state byte was still parked
-        // at 0 when the dialog opened could complete DLGID+PENDING (speak)
-        // BEFORE the 0->1 edge arrived; the edge then re-armed and
-        // re-spoke the same dialog 200ms later (win=1 id=43, 10:58:16).
-        // The gap re-arm above is now the primary reopen detector anyway
-        // (it also covers the never-moving-state windows this edge can't
-        // see); this edge stays as a backup for any window whose opcode
-        // somehow keeps running between dialogs (no gap to detect).
+        // Counter-style windows (win=1) re-run their ENTIRE state cycle
+        // for every PAGE of a multi-page dialog: rest -> 0 -> climb ->
+        // rest, same dialog_id throughout, no 14->2/4->8 transitions ever
+        // (those belong to the discrete style). The v2.30.15/16 re-arm
+        // misread each page rerun as a fresh dialog and re-decoded the
+        // rawptr — but that pointer is the live TYPEWRITER pointer, and on
+        // a page rerun the game starts consuming it IMMEDIATELY (no
+        // window-open delay), so the deferred PENDING read lost the first
+        // ~3 characters: the 2026-07-23 11:13 log shows the same 3-page
+        // dialog decoded as '"I should have known."' (complete, first
+        // open), then ''s always pushing...' (lost `"He`), then
+        // 'was worried."' (lost `"I `) — the player heard "was worried"
+        // for '"I was worried."'.
+        //
+        // The first decode already cached EVERY page (rawptr holds the
+        // whole message at open, v2.30.4), so a page rerun must speak the
+        // NEXT CACHED page — same pacing the discrete windows get from
+        // their 14->2/4->8 PAGE transitions — never re-decode.
+        //
+        // The >600ms last-speak guard tells the page rerun apart from the
+        // 0->1 edge of the dialog's OWN opening cycle (~170ms after the
+        // PENDING speak, while page 1 is still on screen — the v2.30.16
+        // double-speak, observed again at 10:58:16 as 200ms): a real page
+        // advance needs the player to have had the page on screen (wait
+        // tone alone needs 300ms+ to arm before they can even hear it).
+        //
+        // When NO unspoken pages remain, the old meaning applies: a
+        // same-id RE-TALK on a window whose opcode never paused (no gap
+        // for the primary v2.30.16 detector) — re-arm the DLGID sentinel,
+        // guarded by the longer 1500ms since-last-speak window.
         if (last_state == 0 && current_state != 0 && current_state != 7 &&
-            !s_window[window_id].pending_speak &&
-            (GetTickCount() - s_window[window_id].last_speak_tick) > 1500) {
-            s_window[window_id].last_dialog_id = 0xFF;
+            !s_window[window_id].pending_speak) {
+            WindowState& w = s_window[window_id];
+            const DWORD since_speak = GetTickCount() - w.last_speak_tick;
+            if (w.next_page < w.pages.size()) {
+                if (since_speak > 600 && Config::Get().speak_dialog) {
+                    char pg[96];
+                    _snprintf_s(pg, sizeof(pg), _TRUNCATE,
+                        "[FF7Access] MSG win=%u counter-style PAGE %zu/%zu",
+                        window_id, w.next_page + 1, w.pages.size());
+                    Log::Write(pg);
+                    speak_page(w, /*interrupt=*/true);
+                    w.last_speak_tick = GetTickCount();
+                }
+            } else if (since_speak > 1500) {
+                w.last_dialog_id = 0xFF;
+            }
         }
 
         // ------------------------------------------------------------------

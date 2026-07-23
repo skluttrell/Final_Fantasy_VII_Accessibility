@@ -27,16 +27,15 @@
  *               These tokens are replaced with the character's in-game name.
  *               In v1 we use the default English names. Future: read from savemap.
  *
- *   0xEB–0xEF followed by three more bytes (4-byte sequence total):
- *               Dynamic token (item_name, number, target_name, attack_name, etc.)
- *               In v1 we replace these with placeholder descriptions. The game
- *               resolves them at render time from script memory banks that are
- *               not trivially accessible from our hook context.
- *               NOTE: 0xEB, 0xEC, 0xED, 0xEE, 0xEF also serve as character name
- *               tokens. The context determines which use applies. In practice,
- *               character name tokens appear only at the START of dialog strings
- *               (the character speaking indicator), while dynamic tokens appear
- *               mid-string. We distinguish them by position (index == 0).
+ *   0xEA–0xF2 mid-string: single-byte character-name reference (same name
+ *               table as the position-0 speaker indicator, minus the ": "
+ *               suffix). v2.30.17: the old reading — mid-string 0xEB-0xF0 as
+ *               4-byte "dynamic tokens" with placeholder text — was DISPROVED
+ *               by live raw captures (Tifa "Did you fight with {Barret}?",
+ *               Wedge "Hey, {Barret}..."): the 4-byte consume ate real text
+ *               (punctuation + newlines) and spoke "[item name]" for what is
+ *               simply Barret's name. See decode_walk()'s mid-string name
+ *               branch for the byte-level evidence.
  *
  *   0xF8        Skip token: the following 2 bytes are formatting data and should
  *               be consumed without output. Total: 3 bytes (0xF8 + 2 data bytes).

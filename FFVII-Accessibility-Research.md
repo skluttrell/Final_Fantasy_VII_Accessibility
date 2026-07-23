@@ -2959,6 +2959,58 @@ Deployed both installs (hash-verified). VERIFY: the win=3-style
 conversation re-speaks on re-talk; no double-speak anywhere; shop/bar
 re-talks still work.
 
+### v2.30.17 (2026-07-23): counter-window page pacing + the "[item name]" tokens were names all along
+
+Same-day partial confirmation of v2.30.16 (gap re-arm working — win=3
+re-talks spoke with `reopened after Xms gap` lines; **win=1 ASK cursor
+now tracking** — `option 2->1` transitions at the 7th Heaven choice,
+closing the v2.30.15 residual), plus two new fixes from one screenshot
++ log pass:
+
+**1. First characters cut off per page on win=1 multi-page dialogs**
+(player screenshot: `"I was worried."` heard as "was worried").
+Counter-style windows re-run their ENTIRE state cycle per PAGE
+(rest→0→climb→rest, same dialog_id, never a 14→2/4→8 transition). The
+v2.30.15/16 from-idle re-arm misread each page rerun as a fresh dialog
+and re-decoded the rawptr — the live TYPEWRITER pointer, which on a
+page rerun starts being consumed IMMEDIATELY (a fresh window open has
+~2 frames of grace; a page rerun has none). The one-frame-deferred
+PENDING read therefore lost ~3 chars per page. The log caught all
+three stages of Tifa's 3-page dialog: `'"I should have known."'`
+(complete — open race won), `''s always pushing...'` (lost `"He`),
+`'was worried."'` (lost `"I `). Fix: the from-idle edge now branches
+on cached state — unspoken pages remaining → speak the NEXT CACHED
+page (the first decode holds the whole message, v2.30.4): correct page
+pacing for counter windows with zero re-decode; guarded >600ms since
+last speak to skip the dialog's own opening 0→1 edge (~170ms after the
+PENDING speak — the v2.30.16 double-speak's exact signature). No
+unspoken pages → the same-id re-talk re-arm as before (>1500ms guard),
+backup for never-gapping windows.
+
+**2. The 0xEB-0xF0 "dynamic tokens" are single-byte character names.**
+Player note: "Barret's name is getting replaced with 'item 1'" — and
+this session's raw bytes settle the long-deferred investigation. Tifa's
+line: `57 49 54 48 00 EB 1F B3 E7 E0` = "WITH " {Barret} '?' '"' nl nl.
+The 4-byte-token reading consumed the `?`, the closing quote, and a
+newline as "data bytes" while speaking "[item name]" for what is
+Barret's name; the Wedge line ("Hey [item name] What about our
+money?") was "Hey, {Barret}..." all along, as the v2.30.6 residual
+suspected. Mid-string 0xEA–0xF2 is now one contiguous single-byte
+character-name branch (ff7tk eng[]: CLOUD..CID — 0xEA/0xF1/0xF2 were
+ALREADY handled this way; the split treatment of the middle of the
+range was the error). `token_placeholder()` deleted; no variable-bank
+investigation needed. If real multi-byte tokens exist in some other
+text, their data bytes now decode as VISIBLE garbage in the debug log
+— re-investigable with evidence, instead of silently eating text.
+
+LESSON: both fixes came from the same principle — when the evidence
+was re-read as a WHOLE (all three page dumps side by side; the token
+byte in its full sentence context), the story was obvious. The
+per-page truncation had looked like three unrelated glitches, and the
+token bug had sat mislabeled for a week behind a plausible-sounding
+"needs a big investigation" framing that two clean byte dumps
+overturned in minutes.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

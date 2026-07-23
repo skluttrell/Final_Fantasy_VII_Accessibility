@@ -146,24 +146,34 @@ placeholder itself is very likely the WRONG type (almost certainly
 Barret's name, not an item — "Hey, Barret, what about our money?" is
 the well-known scene).
 
-[DIALOG] Dynamic-token type resolution (item/number/name placeholders) — DEFERRED, needs investigation
+[DIALOG] "Dynamic tokens" 0xEB-0xF0 — RESOLVED v2.30.17 (2026-07-23): they're just character names
 ------------------------------------------------------------------------
-The 0xEB-0xF0 mid-string dynamic tokens (4 bytes: header + 3 data) are
-generic placeholders ("[item name]", "[number]", etc.) per ff7_text.h's
-own v1 header comment: "the game resolves them at render time from
-script memory banks that are not trivially accessible from our hook
-context." 2026-07-20 evidence (Wedge line) strongly suggests the LABEL
-is frequently wrong — the same header byte can apparently represent an
-item, a number, OR a character name depending on what value the game's
-own variable bank holds at render time, which the static byte decoder
-can't see. A second sample from the same log (`08 0A 3E 05 01` before
-a page break) decoded as pure garbage under the "bytes <=0x5E are
-always ASCII" assumption, hinting there may be MORE undocumented
-control-code structure in this range too. Properly fixing either needs
-a dedicated investigation into FF7's live variable-bank system (find
-the bank/address the 3 data bytes reference, read its current value,
-resolve by type) — a bigger task than a decode-table tweak. Research
-§8 v2.30.6 residual note.
+CLOSED, and much simpler than the deferred investigation assumed. The
+0xEB-0xF0 mid-string bytes were being decoded as 4-byte "dynamic
+tokens" (header + 3 data bytes, spoken as "[item name]"/"[number]"
+placeholders) per an FFNx-derived reading — while 0xEA (Cloud) and
+0xF1/0xF2 (Vincent/Cid) were ALREADY single-byte name references. Two
+independent raw captures with zero counterexamples proved the split
+wrong for field dialog:
+  - Tifa, 7th Heaven (2026-07-23 log): `57 49 54 48 00 EB 1F B3 E7 E0`
+    = "WITH " {Barret} '?' '"' newline newline. The 4-byte reading
+    CONSUMED the '?', the closing quote, and a newline as "data" —
+    truncating the line AND speaking "[item name]" (player heard
+    "item 1") for what is simply Barret's name.
+  - Wedge, train graveyard (2026-07-20): "Hey [item name] What about
+    our money?" = "Hey, {Barret}..." (the v2.30.6 residual already
+    suspected this).
+FIX: mid-string 0xEA-0xF2 is now ONE contiguous single-byte
+character-name branch (ff7tk eng[] table: CLOUD..CID), live savemap
+names respected. token_placeholder() deleted. No variable-bank
+investigation needed. If some other text truly embeds a multi-byte
+token in this range, its data bytes will now decode as VISIBLE garbage
+in the debug log (re-investigate with evidence) instead of silently
+eating real text.
+STILL OPEN from the old entry: the `08 0A 3E 05 01` byte run (before a
+page break, 2026-07-20 log) that decoded as garbage under the
+"<=0x5E is ASCII" assumption — unexplained, unrelated to the name
+range, needs its own capture if it recurs audibly.
 
 [DIALOG] Choice menus: cursor tracking — REAL ROOT CAUSE FOUND + FIXED v2.30.10 (2026-07-21), awaiting play-test
 ------------------------------------------------------------------------
@@ -395,9 +405,36 @@ no gap and cannot spuriously re-arm. Known trade-off, judged a
 feature: a dialog interrupted mid-display by something that freezes
 the field >500ms (battle transition) re-speaks on resume — context
 restoration for a blind player. Research §8 v2.30.16. Deployed both
-installs. VERIFY: the previously-unrepeated conversation (win=3 style)
-re-speaks on re-talk; no double-speak on any dialog; shop/bar re-talks
-still work.
+installs. PARTIAL PLAY-TEST same day: gap re-arm CONFIRMED working
+(win=3 re-talks spoke, logged "reopened after Xms gap"); win=1 ASK
+option cursor CONFIRMED tracking (the v2.30.15 residual is RESOLVED —
+option 2->1 transitions logged at the 7th Heaven choice). But the
+7th Heaven scene exposed a truncation bug in the state re-arm — fixed
+v2.30.17 (next entry).
+
+[DIALOG] win=1 multi-page dialogs: first chars cut off per page — FIXED v2.30.17 (2026-07-23), awaiting play-test
+------------------------------------------------------------------------
+Player report + screenshot (dialog_1.jpg): '"I was worried."' spoken
+as "was worried" in the 7th Heaven scene. Log caught the full
+mechanism on a 3-page Tifa dialog: counter-style windows (win=1)
+re-run their ENTIRE state cycle per PAGE (rest->0->climb->rest, same
+id, never any 14->2/4->8 PAGE transition). The v2.30.15/16 from-idle
+re-arm misread each page rerun as a fresh dialog and re-decoded the
+rawptr — but the rawptr is the live TYPEWRITER pointer, and on a page
+rerun the game starts consuming it immediately (no window-open grace),
+so the deferred PENDING read lost the first ~3 chars: log shows
+'"I should have known."' (page 1, complete — open race won), then
+''s always pushing...' (lost '"He'), then 'was worried."' (lost '"I ').
+FIX: the from-idle edge now branches on whether cached unspoken pages
+remain: YES -> speak the NEXT CACHED page (the first decode already
+holds every page complete, v2.30.4) — proper page pacing for
+counter-style windows, no re-decode, no truncation; guarded >600ms
+since last speak to skip the dialog's own opening 0->1 edge (which
+arrives ~170ms after the PENDING speak and was the v2.30.16
+double-speak). NO -> the old re-talk re-arm (>1500ms guard), kept as
+backup for never-gapping windows. Research §8 v2.30.17. Deployed both
+installs. VERIFY: win=1 multi-page dialogs (Tifa's 3-pager) speak
+every page complete; win=0 multi-page unchanged; no double-speaks.
 
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------

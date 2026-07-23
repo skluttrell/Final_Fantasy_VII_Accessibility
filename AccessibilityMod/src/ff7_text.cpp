@@ -77,22 +77,11 @@ static std::wstring char_name(int idx)
     return def ? std::wstring(def) : std::wstring();
 }
 
-// Tokens 0xEB-0xF0 have two uses depending on position:
-//   - At string index 0: speaker indicator (handled in the at_start block below)
-//   - Mid-string: 4-byte dynamic token ([type_byte][d0][d1][d2])
-// This returns the placeholder for mid-string use.
-static const wchar_t* token_placeholder(uint8_t token_byte)
-{
-    switch (token_byte) {
-    case 0xEB: return L"[item name]";
-    case 0xEC: return L"[number]";
-    case 0xED: return L"[target]";
-    case 0xEE: return L"[attack]";
-    case 0xEF: return L"[special]";
-    case 0xF0: return L"[target letter]";
-    default:   return L"[...]";
-    }
-}
+// (v2.30.17: the token_placeholder() helper that lived here — "[item
+// name]"/"[number]" etc. for a supposed 4-byte mid-string dynamic token in
+// 0xEB-0xF0 — is GONE. Live raw captures proved those bytes are single-byte
+// character-name references in field dialog, same as 0xEA/0xF1/0xF2; see
+// the mid-string name branch in decode_walk() for the evidence.)
 
 // Lookup table for FF7 PC US bytes 0x5F-0xDF.
 // Sourced from ff7tk (LGPL-3.0), FF7Text.h eng[] table -- the authoritative
@@ -231,35 +220,31 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
             ++p;
             at_start = false;
         }
-        // ── Mid-string dynamic token (4-byte: header + 3 data bytes) ──────────
-        // Bytes 0xEB-0xF0 mid-string are NOT single-byte speaker indicators --
-        // they head a 4-byte token encoding a dynamic value (item name, number,
-        // attack name, etc.). Source: FFNx voice.cpp decode_ff7_text cases.
-        // WHY CHECK at_start ABOVE FIRST: without the at_start guard, 0xEB
-        // (Barret) at position 0 would be consumed here as a dynamic token,
-        // emitting "[item name]" instead of "Barret: ".
-        // v2.30.4: guard both sides -- the placeholder text is much longer
-        // than the icon/number FF7 renders inline, and the original bytes
-        // often have no explicit space around the substitution point.
-        else if (byte >= 0xEB && byte <= 0xF0) {
-            guard_space(result);
-            result += token_placeholder(byte);
-            result += L' ';
-            p += 4;
-            at_start = false;
-        }
-        // ── Inline Cloud name reference (mid-string) ──────────────────────────
-        else if (byte == 0xEA) {
-            // 0xEA mid-string = Cloud's name (character record 0) — the live
-            // savemap name via char_name(), so renames are respected (v2.19).
-            guard_space(result);
-            result += char_name(0);
-            result += L' ';
-            ++p;
-            at_start = false;
-        }
-        // ── Mid-string Vincent / Cid reference ────────────────────────────────
-        else if (byte == 0xF1 || byte == 0xF2) {
+        // ── Mid-string character-name reference (single byte, 0xEA-0xF2) ─────
+        // v2.30.17: mid-string 0xEB-0xF0 were previously treated as 4-byte
+        // "dynamic tokens" ([item name] etc., consuming 3 data bytes) on the
+        // strength of an FFNx-derived reading -- while 0xEA (Cloud) and
+        // 0xF1/0xF2 (Vincent/Cid) were already single-byte name refs. That
+        // split was WRONG for field dialog, proven by two independent raw
+        // captures with zero counterexamples:
+        //   - Tifa (7th Heaven, 2026-07-23): `57 49 54 48 00 EB 1F B3 E7 E0`
+        //     = "WITH " + {Barret} + '?' + '"' + newline + newline. Under
+        //     the 4-byte reading, EB CONSUMED the '?', the closing quote,
+        //     and a newline as "data", truncating the line to '"Did you
+        //     fight with [item name]' -- the player heard "item 1".
+        //   - Wedge (train graveyard, 2026-07-20): "Hey [item name] What
+        //     about our money?" -- reads naturally as "Hey, {Barret}..."
+        //     (the v2.30.6 residual note already suspected exactly this).
+        // The character-name range is one CONTIGUOUS run 0xEA-0xF2 (ff7tk
+        // eng[] table: CLOUD..CID), same mid-string as at position 0 -- the
+        // at_start block above adds the ": " speaker suffix, this one just
+        // inlines the name. Live savemap names via char_name() (renames
+        // respected, v2.19). If some OTHER field text truly embeds a
+        // multi-byte dynamic token in this range, its data bytes will now
+        // decode as visible garbage in the debug log and can be
+        // re-investigated with evidence -- strictly better than silently
+        // eating 3 bytes of real text.
+        else if (byte >= 0xEA && byte <= 0xF2) {
             guard_space(result);
             result += char_name(byte - 0xEA);
             result += L' ';
