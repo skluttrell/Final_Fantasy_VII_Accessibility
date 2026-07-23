@@ -359,6 +359,23 @@ struct WindowState {
     uint8_t ask_first_line      = 0;
     int     ask_mirror_baseline = -1;
 
+    // v2.30.20: multi-page ASK support. An ASK's text can contain page
+    // breaks — the Tifa drink offer (2026-07-23 log) is
+    // `Tifa: "How about."` <0xE8> `".something to drink?" / options`:
+    // page 1 is pure lead-in, the caption AND choices live on the LAST
+    // page, and the game's FIRST_LINE/LAST_LINE params index lines OF
+    // THE DISPLAYED PAGE — not of the flattened whole-text line list the
+    // old code decoded (which announced '"How about."' and '".something
+    // to drink?"' as the "choices" and never spoke the real caption).
+    // ask_page_start = raw byte offset of the last page (0 = single-page
+    // ASK, choices visible from open); ask_choices_shown = the display
+    // has reached that page (detected positionally via the typewriter
+    // pointer, same mechanism as hook_message's v2.30.19 positional
+    // paging) — the choice tone, the "Choose:" caption announce, and
+    // the OPTION CURSOR block all wait for it.
+    size_t ask_page_start    = 0;
+    bool   ask_choices_shown = false;
+
     // v2.30.5/6: MESSAGE-only. True while this window's dialog state byte
     // has already been observed holding steady long enough to count as
     // "waiting for the confirm button" (see the WAIT TONE block in
@@ -458,6 +475,8 @@ static void reset_windows_if_field_changed()
         w.ask_last_option = -1;
         w.ask_first_line  = 0;
         w.ask_mirror_baseline = -1;
+        w.ask_page_start  = 0;
+        w.ask_choices_shown = false;
         w.wait_tone_armed = false;
         w.state_change_tick = 0;
         w.close_handled   = false;
@@ -1250,7 +1269,17 @@ static int __cdecl hook_ask(int unk)
         // from speak_dialog: a player who has voice-over covering choice
         // TEXT still gets no other cue that a choice screen just opened.
         const bool is_new_ask_dialog = (dialog_id != s_window[window_id].last_dialog_id);
-        if (is_new_ask_dialog && Config::Get().dialog_choice_tone) {
+        // v2.30.20: the choice tone no longer fires unconditionally at ASK
+        // open — a multi-page ASK's first page is pure lead-in (the Tifa
+        // drink offer; player: "flagged as a choice, but the actual
+        // choice is in the next dialog"). With speak_choices ON, the
+        // PENDING decode discovers single- vs multi-page and fires the
+        // tone at the right moment (open vs choice-page-reached). With
+        // speak_choices OFF there is no decode to consult, so the tone
+        // keeps its old at-open timing — possibly a page early on
+        // multi-page ASKs, accepted for that configuration.
+        if (is_new_ask_dialog && Config::Get().dialog_choice_tone &&
+            !Config::Get().speak_choices) {
             InterlockedExchange(&s_dialog_choice_pending, 1);
         }
 
@@ -1264,6 +1293,9 @@ static int __cdecl hook_ask(int unk)
             s_window[window_id].ask_last_option = -1;
             s_window[window_id].ask_first_line  = 0;          // v2.30.13
             s_window[window_id].ask_mirror_baseline = -1;     // v2.30.13
+            s_window[window_id].ask_page_start  = 0;          // v2.30.20
+            s_window[window_id].ask_choices_shown = false;
+            s_window[window_id].msg_base = nullptr;
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] ASK win=%u id=%u [DLGID] pending", window_id, dialog_id);
@@ -1313,7 +1345,28 @@ static int __cdecl hook_ask(int unk)
                 // newline bytes the game itself renders as line breaks), so
                 // no other index transform is needed — just the correct
                 // starting baseline.
-                s_window[window_id].ask_lines = FF7Text::DecodeLines(raw_text);
+                // v2.30.20: find the LAST page break — the caption and
+                // choices always live on the final page, and the game's
+                // FIRST_LINE/LAST_LINE params index lines OF THAT PAGE
+                // (the Tifa drink offer proved the flattened whole-text
+                // indexing wrong: page 1 "How about." was announced as a
+                // "choice" and the real caption never spoke).
+                size_t last_break = 0;
+                {
+                    const uint8_t* q = reinterpret_cast<const uint8_t*>(raw_text);
+                    for (size_t i = 0; i < 4096 && q[i] != 0xFF; ++i)
+                        if (q[i] == 0xE8 || q[i] == 0xE9)
+                            last_break = i + 1;
+                }
+                s_window[window_id].ask_page_start    = last_break;
+                s_window[window_id].ask_choices_shown = (last_break == 0);
+                s_window[window_id].msg_base          = raw_text;
+                // Page-relative line list: indices now match the game's
+                // own FIRST_LINE/LAST_LINE clamp AND the per-window pixel
+                // mirror (which is also page-relative — it's the highlight
+                // Y inside the displayed window).
+                s_window[window_id].ask_lines =
+                    FF7Text::DecodeLines(raw_text + last_break);
                 const uint8_t first_line = FF7Addr::get_opcode_param_byte(3);
                 const uint8_t last_line  = FF7Addr::get_opcode_param_byte(4);
                 s_window[window_id].ask_first_line = first_line;
@@ -1331,27 +1384,52 @@ static int __cdecl hook_ask(int unk)
                 // OPTION CURSOR block below fires once for the starting
                 // option, exactly like every later cursor move.
 
-                // v2.30.13: intro = "Choose:" + CONTEXT lines only (the
-                // lines before first_line — speaker name and question).
-                // The options themselves are no longer in the intro; the
-                // highlighted one follows as its own queued utterance.
-                std::wstring announcement = L"Choose:";
-                size_t ctx_end = static_cast<size_t>(first_line);
-                if (ctx_end > s_window[window_id].ask_lines.size())
-                    ctx_end = s_window[window_id].ask_lines.size();
-                for (size_t i = 0; i < ctx_end; ++i) {
-                    if (s_window[window_id].ask_lines[i].empty()) continue;
-                    announcement += L' ';
-                    announcement += s_window[window_id].ask_lines[i];
+                if (last_break == 0) {
+                    // Single-page ASK (the common case): choices visible
+                    // from open. v2.30.13 intro — "Choose:" + context
+                    // lines before first_line; queued option follows via
+                    // the cursor block. Choice tone fires now (v2.30.20:
+                    // moved from the DLGID frame, one frame earlier —
+                    // imperceptible; see the tone comment above).
+                    if (Config::Get().dialog_choice_tone)
+                        InterlockedExchange(&s_dialog_choice_pending, 1);
+                    std::wstring announcement = L"Choose:";
+                    size_t ctx_end = static_cast<size_t>(first_line);
+                    if (ctx_end > s_window[window_id].ask_lines.size())
+                        ctx_end = s_window[window_id].ask_lines.size();
+                    for (size_t i = 0; i < ctx_end; ++i) {
+                        if (s_window[window_id].ask_lines[i].empty()) continue;
+                        announcement += L' ';
+                        announcement += s_window[window_id].ask_lines[i];
+                    }
+                    char dbg[96];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] ASK win=%u id=%u [PENDING] speaking (ctx=%zu) baseline=%d",
+                        window_id, s_window[window_id].last_dialog_id, ctx_end,
+                        s_window[window_id].ask_mirror_baseline);
+                    Log::Write(dbg);
+                    TTS::Speak(announcement, /*interrupt=*/true);
+                } else {
+                    // Multi-page ASK: what's on screen NOW is the lead-in
+                    // page(s), not the choices. Speak them as plain
+                    // narrative (no "Choose:", no tone — both fire when
+                    // the display reaches the choice page, detected
+                    // positionally below). Decode a bounded copy of the
+                    // pre-choice bytes: Decode() stops at 0xFF, so
+                    // terminate the prefix explicitly.
+                    std::string prefix(raw_text, raw_text + last_break);
+                    prefix.push_back(static_cast<char>(0xFF));
+                    const std::wstring lead_in = FF7Text::Decode(prefix.c_str());
+                    char dbg[112];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] ASK win=%u id=%u [PENDING] multi-page: "
+                        "choice page at +%zu, speaking lead-in",
+                        window_id, s_window[window_id].last_dialog_id, last_break);
+                    Log::Write(dbg);
+                    if (!lead_in.empty())
+                        TTS::Speak(lead_in, /*interrupt=*/true);
                 }
-                char dbg[96];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] ASK win=%u id=%u [PENDING] speaking (ctx=%zu) baseline=%d",
-                    window_id, s_window[window_id].last_dialog_id, ctx_end,
-                    s_window[window_id].ask_mirror_baseline);
-                Log::Write(dbg);
                 log_raw_bytes("ASK/PENDING", raw_text);
-                TTS::Speak(announcement, /*interrupt=*/true);
 
                 char lines_dbg[96];
                 _snprintf_s(lines_dbg, sizeof(lines_dbg), _TRUNCATE,
@@ -1379,6 +1457,9 @@ static int __cdecl hook_ask(int unk)
             s_window[window_id].ask_last_option = -1;
             s_window[window_id].ask_first_line  = 0;          // v2.30.13
             s_window[window_id].ask_mirror_baseline = -1;     // v2.30.13
+            s_window[window_id].ask_page_start  = 0;          // v2.30.20
+            s_window[window_id].ask_choices_shown = false;
+            s_window[window_id].msg_base = nullptr;
             s_window[window_id].close_handled = true;         // v2.30.15
             char close_log[64];
             _snprintf_s(close_log, sizeof(close_log), _TRUNCATE,
@@ -1389,6 +1470,52 @@ static int __cdecl hook_ask(int unk)
         // v2.30.15: leaving state 7 re-arms close detection (see hook_message).
         if (current_state != 7)
             s_window[window_id].close_handled = false;
+
+        // ------------------------------------------------------------------
+        // CHOICE PAGE REACHED (v2.30.20): positional detection for
+        // multi-page ASKs — the same typewriter-pointer mechanism as
+        // hook_message's v2.30.19 positional paging. When the live
+        // pointer's offset enters the last page's byte range (+2 slack
+        // for the page-break-boundary park), the display has turned to
+        // the page that actually holds the caption and choices: fire the
+        // choice tone, speak "Choose:" + the caption (page-relative
+        // lines before first_line), and unlock the OPTION CURSOR block
+        // (which then queues the highlighted option, exactly like a
+        // single-page ASK's opening sequence).
+        // ------------------------------------------------------------------
+        if (!s_window[window_id].pending_speak &&
+            !s_window[window_id].ask_choices_shown &&
+            s_window[window_id].msg_base &&
+            !s_window[window_id].ask_lines.empty() &&
+            is_valid_dialog_rawptr(raw_text)) {
+            const ptrdiff_t rel = raw_text - s_window[window_id].msg_base;
+            if (rel >= static_cast<ptrdiff_t>(
+                    s_window[window_id].ask_page_start) + 2 &&
+                rel < 4096) {
+                s_window[window_id].ask_choices_shown = true;
+                char pg[96];
+                _snprintf_s(pg, sizeof(pg), _TRUNCATE,
+                    "[FF7Access] ASK win=%u choice page reached (rel=%ld)",
+                    window_id, static_cast<long>(rel));
+                Log::Write(pg);
+                if (Config::Get().dialog_choice_tone)
+                    InterlockedExchange(&s_dialog_choice_pending, 1);
+                if (Config::Get().speak_choices) {
+                    std::wstring announcement = L"Choose:";
+                    size_t ctx_end =
+                        static_cast<size_t>(s_window[window_id].ask_first_line);
+                    if (ctx_end > s_window[window_id].ask_lines.size())
+                        ctx_end = s_window[window_id].ask_lines.size();
+                    for (size_t i = 0; i < ctx_end; ++i) {
+                        if (s_window[window_id].ask_lines[i].empty()) continue;
+                        announcement += L' ';
+                        announcement += s_window[window_id].ask_lines[i];
+                    }
+                    TTS::Speak(announcement, /*interrupt=*/true);
+                    s_window[window_id].last_speak_tick = GetTickCount();
+                }
+            }
+        }
 
         // ------------------------------------------------------------------
         // OPTION CURSOR (v2.30.4, cursor source replaced v2.30.12):
@@ -1412,6 +1539,7 @@ static int __cdecl hook_ask(int unk)
         // silent no-op, not a crash or garbage speech.
         // ------------------------------------------------------------------
         if (!s_window[window_id].pending_speak && !closing &&
+            s_window[window_id].ask_choices_shown &&   // v2.30.20: page-gated
             Config::Get().speak_choices && !s_window[window_id].ask_lines.empty()) {
             const int option = FF7Addr::get_ask_cursor_line(window_id);
             const bool first_announce =

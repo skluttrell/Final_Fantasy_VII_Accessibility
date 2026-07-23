@@ -3090,6 +3090,52 @@ exact/prefix match never hit. Switched to contains-match (both tokens
 unique in the game-wide catalog). `sub marine` → "Marlene" confirmed
 working via the word-pass (the `sub` prefix is dropped).
 
+### v2.30.20 (2026-07-23): multi-page ASK — the choices live on the LAST page
+
+Player reports at Tifa's drink offer: the lead-in dialog was
+tone-flagged as a choice, the "choices" spoke as "How about…" + wrong
+text, and the real caption ("…something to drink?") never spoke. The
+log's raw dump has the whole story in one line — the ASK text contains
+a PAGE BREAK:
+
+```
+EC E7 B2 [How about.] B3  E8  B2 [.something to drink?] B3 E7 E0
+[I don't feel like it] E7 E0 [Give me something hard]
+```
+
+Page 1 is pure lead-in; the caption AND options are on page 2 — and
+the game's FIRST_LINE/LAST_LINE params (1/2 here) index lines OF THE
+DISPLAYED PAGE. The old code flattened all pages into one line list
+and indexed that instead, announcing flat[1] `"How about."` and
+flat[2] `".something to drink?"` as the "options". The per-window
+pixel mirror is ALSO page-relative (it's the highlight's Y inside the
+window), so the flattened list was wrong against both authorities at
+once.
+
+**Fix (hook_ask)**: scan for the LAST page-break byte at decode;
+`ask_lines` = `DecodeLines(raw + last_break)` — page-relative, aligned
+with the opcode params and the mirror. Lead-in pages speak as plain
+narrative at open (no "Choose:", no tone). The choice page's arrival
+is detected POSITIONALLY — the typewriter pointer entering the last
+page's byte range (+2 slack), the same mechanism as v2.30.19's
+positional message paging — and fires the choice tone, "Choose:" +
+the caption (page-relative context lines), and unlocks the OPTION
+CURSOR block, which then queues the highlighted option exactly like a
+single-page ASK's opening. Single-page ASKs behave identically to
+before (the tone moved from the DLGID frame to the PENDING frame —
+one frame later, imperceptible); with speak_choices OFF there is no
+decode to consult, so the tone keeps its old at-open timing there.
+
+**Pathfinder into the bar counter** (same session): route to Tifa
+walks the player into a wall — A* legitimately found a path (the
+access pool connects the counter area; the game-wide dry run proved
+the pool reciprocal), but the game blocks player entry. Hypothesis: a
+triangle-locking overlay (the community-documented mechanism for
+counters/doorways) that A* must learn to treat as walls — scoped
+investigation filed in TODO.txt with the log evidence; the talk-radius
+still reaches across the counter, matching how sighted players
+interact with Tifa without walking behind the bar.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

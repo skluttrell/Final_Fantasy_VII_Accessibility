@@ -506,6 +506,56 @@ VERIFY: hideout replay — Barret's 4-page speech and the TV broadcast
 speak every page; People list has no ghosts (Tifa only when actually
 present); camera/swordc gone; wait tone per page on win=3 dialogs.
 
+[DIALOG] Multi-page ASK: wrong "choices", silent caption, early tone — FIXED v2.30.20 (2026-07-23), awaiting play-test
+------------------------------------------------------------------------
+Player report (Tifa's drink offer, bar): tone flagged the lead-in page
+as a choice; the "choices" spoke as "How about…" / wrong text; the
+caption ("…something to drink?") never spoke. Log: the ASK raw
+contains a PAGE BREAK (0xE8) — page 1 = 'Tifa: "How about."'
+(lead-in only), page 2 = caption + the two real options. The game's
+FIRST_LINE/LAST_LINE (1/2 here) index lines OF THE DISPLAYED PAGE;
+the old code indexed them into the flattened whole-text line list
+(['Tifa:', '"How about."', '".something to drink?"', "I don't feel
+like it", 'Give me something hard'] — announced [1] and [2]).
+FIX: hook_ask scans for the LAST page-break byte; ask_lines is now
+decoded from the choice page only (page-relative, matching both the
+opcode params AND the pixel mirror, which is inherently
+page-relative); lead-in pages speak as plain narrative at open (no
+"Choose:", no tone); the choice page's arrival is detected
+POSITIONALLY (typewriter pointer entering its byte range, same
+mechanism as v2.30.19) and fires the tone + "Choose:" + caption + the
+queued highlighted option, gating the cursor block until then.
+Single-page ASKs unchanged (tone moved from the DLGID frame to the
+PENDING frame — one frame, imperceptible); speak_choices=off keeps
+the old at-open tone (no decode available to know better).
+VERIFY: Tifa drink offer — lead-in speaks at open, tone+caption+
+"I don't feel like it" at the page turn, cursor tracks both options;
+single-page choices (soldiers, Aeris) unchanged.
+
+[NAV] Route leads into a player-blocked area (behind Tifa's bar counter) — INVESTIGATION NEEDED
+------------------------------------------------------------------------
+Player report + screenshot (pf_1.jpg): route to Tifa announced "up and
+left 1 second, then left 1 second, then down and left 1 second" but
+the player cannot move up-left. Log (17:53): Tifa at tri=7 behind the
+bar counter; A* found paths (start=15/11, goal=7, path=6/5 hops) — the
+walkmesh ACCESS pool connects the counter area to the floor (and the
+offline dry run proved the pool 100% reciprocal game-wide), yet the
+game blocks the player from walking in. HYPOTHESIS: FF7 has a
+triangle-LOCKING mechanism (an opcode marks walkmesh triangles
+player-impassable — how the game does counters/doorways generally;
+IDLCK or similar in community docs) that overlays the static access
+pool; NPCs stand on locked triangles, A* must treat locked triangles
+as walls for routing AND the destination-reachability check should
+then report "no walkable path" for targets inside locked regions
+(matching what a sighted player experiences: Tifa is talked to ACROSS
+the counter — the talk radius reaches, walking there doesn't).
+NEXT: static hunt for the triangle-lock opcode handler + the lock
+table address (same execute_opcode_table disasm pattern as
+LINE/LINON/SLINE which are already mapped at 0x6111D8/0x6115AD/
+0x6114D0); then wire the lock table into the A* edge filter. Until
+then the symptom is "directions into a wall" on fields with locked
+counters/barriers — harmless but confusing.
+
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------
 Player bonus test: replayed the No.1 Reactor escape, saved on the
