@@ -4908,6 +4908,9 @@ enum ModelClass : uint8_t {
     MC_SAVE,         // save point icon
     MC_CHEST,        // treasure box (lid state tracked via lastFrame)
     MC_ITEM,         // materia orb / pickup bottle / sparkle / key item
+    MC_SCENERY,      // background prop — not browsable under ANY category
+                     // (v2.30.18: unknown "fieldbg" labels + a small list
+                     // of observed non-fieldbg props; see ClassifyModelLabel)
 };
 
 // Classify a model's speakable label and pick its spoken base name.
@@ -4929,8 +4932,18 @@ static ModelClass ClassifyModelLabel(const std::wstring& lbl,
         *friendly = L"Save point";
         return MC_SAVE;
     }
-    if (lbl.find(L"fieldbg") == std::wstring::npos)
+    if (lbl.find(L"fieldbg") == std::wstring::npos) {
+        // v2.30.18: a few scene props carry NO "fieldbg" prefix but are
+        // clearly not people — observed listed as "People" with no
+        // walkable path in 7th Heaven (player report 2026-07-23):
+        // "camera" (cutscene camera dummy, 1 occurrence game-wide in the
+        // flevel catalog) and "swordc"/"swordc00"/"swordc09" (sword
+        // props, 3 occurrences). Exact/prefix matched deliberately —
+        // this list only grows from played evidence, never guesses.
+        if (lbl == L"camera" || lbl.rfind(L"swordc", 0) == 0)
+            return MC_SCENERY;
         return MC_PERSON;
+    }
     if (lbl.find(L"trb") != std::wstring::npos) {
         *friendly = L"Chest";
         return MC_CHEST;
@@ -4948,7 +4961,16 @@ static ModelClass ClassifyModelLabel(const std::wstring& lbl,
         *friendly = L"Key";
         return MC_ITEM;
     }
-    return MC_PERSON;
+    // v2.30.18: a "fieldbg" label that matched NONE of the interactable
+    // substrings above is background scenery, not a person. The offline
+    // flevel catalog shows dozens of these game-wide (doors "…dr", the
+    // train "kisya", cosmetics "cos"/"props"/"v2"/"zuta"…), and the
+    // 2026-07-23 player report caught three of them listed as unreachable
+    // "People" in 7th Heaven alone (hana = flower vase, cash = register,
+    // pinbl = pinball machine). The pinball elevator's INTERACTION is a
+    // separate line trigger (Triggers category) — the model is just its
+    // picture. Previously fell through to MC_PERSON.
+    return MC_SCENERY;
 }
 
 // Which category (besides All) a model class browses under. One mapping,
@@ -5075,6 +5097,11 @@ static const DevWord kDevWords[] = {
     { L"ifarna", L"Ifalna" }, { L"siera", L"Shera" },
     { L"irena", L"Elena" }, { L"tuon", L"Tseng" },
     { L"zangan", L"Zangan" }, { L"emother", L"Elmyra" },
+    // marine = Marlene (JP name "Marin"); exactly 1 occurrence game-wide
+    // in the flevel model catalog — the 7th Heaven bar (player report
+    // 2026-07-23 listed her raw dev name among the unreachable "people";
+    // she IS a person, standing behind the bar counter off the walkmesh).
+    { L"marine", L"Marlene" }, { L"marin", L"Marlene" },
     { L"cmother", L"Cloud's mother" }, { L"tfather", L"Tifa's father" },
     { L"zacks", L"Zack" }, { L"lzacks", L"Zack" }, { L"szacks", L"Zack" },
     { L"zax", L"Zack" },
@@ -6549,6 +6576,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // drift-risk finding).
             for (uint16_t m = 0; m < 32; ++m) {
                 if (!eligible[m])
+                    continue;
+                // v2.30.18: scenery is browsable NOWHERE — not even All.
+                // A sighted player doesn't "navigate to" the cash register
+                // or the camera dummy; listing them (usually with no
+                // walkable path — they sit inside furniture) is pure noise.
+                if (cls[m] == MC_SCENERY)
                     continue;
                 if (category != CAT_ALL &&
                     category != CategoryForModelClass(cls[m]))

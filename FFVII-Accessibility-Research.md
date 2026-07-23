@@ -3011,6 +3011,39 @@ token bug had sat mislabeled for a week behind a plausible-sounding
 "needs a big investigation" framing that two clean byte dumps
 overturned in minutes.
 
+### v2.30.18 (2026-07-23): scenery props out of the People list; "marine" = Marlene
+
+v2.30.17 PLAY-CONFIRMED ("The dialog fixes are confirmed"). New player
+report from the same bar: the People category listed "swordc, fieldbg
+hana, fieldbg cash, fieldbg pinbl, camera, and marine" — all
+unreachable, none of them people. Almost right: five props and one
+mislabeled person.
+
+**The props**: `ClassifyModelLabel`'s fallthrough sent any "fieldbg"
+label that matched none of the interactable substrings
+(trb/mtra/potion/sparkle/key/saveicn) to MC_PERSON. The offline flevel
+catalog shows dozens of such labels game-wide (doors `…dr`, the train
+`kisya`, `cos`/`props`/`v2`/`zuta`…) — all background scenery: hana =
+flower vase, cash = register, pinbl = the pinball machine (its
+elevator INTERACTION is a separate line trigger under Triggers; the
+model is just its picture). Fix: new `MC_SCENERY` class for unknown
+"fieldbg" labels plus a tight evidence-only list of prefix-free props
+("camera" exact — 1 occurrence game-wide; "swordc*" — 3), excluded
+from every category INCLUDING All. Proximity chirp unaffected (keys on
+talk radius, which props lack).
+
+**The person**: "marine" is Marlene (JP name "Marin") — 1 model + 2
+entity occurrences game-wide, all in the 7th Heaven bar, standing
+behind the counter off the walkmesh (so "no walkable path" was
+CORRECT for her). Added `marine`/`marin` → "Marlene" to the dev-word
+translation table.
+
+LESSON: the "unknown label → person" default was right for v2.15's
+first fields (their unknowns WERE people) but wrong as a fallthrough
+for the "fieldbg" namespace, whose whole point is "not a character" —
+the dev prefix was already carrying the answer; the code just wasn't
+listening once the known-item substrings missed.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

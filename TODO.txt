@@ -433,8 +433,37 @@ since last speak to skip the dialog's own opening 0->1 edge (which
 arrives ~170ms after the PENDING speak and was the v2.30.16
 double-speak). NO -> the old re-talk re-arm (>1500ms guard), kept as
 backup for never-gapping windows. Research §8 v2.30.17. Deployed both
-installs. VERIFY: win=1 multi-page dialogs (Tifa's 3-pager) speak
-every page complete; win=0 multi-page unchanged; no double-speaks.
+installs. PLAY-CONFIRMED 2026-07-23 ("The dialog fixes are confirmed")
+— together with the Barret-name decode fix in the same build.
+
+[NAV] Scenery props listed as unreachable "People" — FIXED v2.30.18 (2026-07-23), awaiting play-test
+------------------------------------------------------------------------
+Player report (7th Heaven bar): People category listed "swordc,
+fieldbg hana, fieldbg cash, fieldbg pinbl, camera, and marine" — all
+with no walkable path, none of them actual people (except one — see
+below). Root cause: ClassifyModelLabel's fallthrough. A "fieldbg"
+label matching none of the known interactable substrings
+(trb/mtra/potion/sparkle/key/saveicn) fell through to MC_PERSON — but
+the offline flevel catalog shows dozens of such labels game-wide
+(doors "…dr", the train "kisya", "cos"/"props"/"v2"/"zuta"…): they are
+background scenery (hana = flower vase, cash = register, pinbl =
+pinball machine — whose ELEVATOR interaction is a separate line
+trigger in the Triggers category; the model is just its picture).
+FIX: new MC_SCENERY class — unknown "fieldbg" labels plus a
+tight, evidence-only list of non-fieldbg props ("camera" exact,
+"swordc*" prefix; 1 and 3 occurrences game-wide respectively) —
+excluded from EVERY category including All (a sighted player doesn't
+navigate to the cash register; unreachable-prop entries are pure list
+noise). The proximity chirp is unaffected (it keys on talk radius,
+which props lack).
+AND: "marine" IS a person — Marlene (JP name "Marin"), standing
+behind the bar counter (off the walkmesh, hence no path — correct).
+Exactly 1 model + 2 entity occurrences game-wide, all the 7th Heaven
+bar. Added marine/marin -> "Marlene" to the dev-name translation
+table, so she now announces by name.
+VERIFY: 7th Heaven People category lists only actual people (Tifa,
+Barret, Marlene by name, patrons); no scenery anywhere including All;
+other fields' People lists unchanged except scenery disappearing.
 
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------
