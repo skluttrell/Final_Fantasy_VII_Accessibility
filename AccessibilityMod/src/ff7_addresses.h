@@ -61,8 +61,12 @@ namespace FF7Addr {
 // Source: ff7_externals.savemap = (savemap*)0xDBFD38 in externals_102_us.h
 constexpr uint32_t SAVEMAP_BASE = 0xDBFD38;
 
-// Global menu objects container. The cursor positions for main menu screens
-// live somewhere in this structure; exact offsets require further RE.
+// Global menu objects container. Kept as a REGION ANCHOR only (the QUIT
+// dialog bytes 0xDC0FA0/0xDC0FB1 sit just before it in the same DC0F
+// menu-state block). The main-menu cursor itself turned out to live
+// elsewhere: MENU_CURSOR 0xDC1154 and the rest of the DC10xx-DC13xx menu
+// cluster — see §4/§14. (2026-07-23 audit: the original "offsets require
+// further RE" note here predated those finds and was stale.)
 // Source: ff7_externals.menu_objects = (menu_objects*)0xDC0FC0
 constexpr uint32_t MENU_OBJECTS = 0xDC0FC0;
 
@@ -1067,15 +1071,22 @@ constexpr uint32_t DISPLAY_BATTLE_ACTION_TEXT = 0x42782A;
 //   get_kernel_text itself uses is EMPTY during battle (menu-module only),
 //   and the documented result pointer 0xDC208C is never written under FFNx
 //   (FFNx replaces the whole consumer path) — neither can be used.
-//   The DLL therefore locates each needed section ONCE by scanning its own
-//   process memory for the section's known first entries (signature), then
-//   validating with the u16[base]==distance rule:
+//   The DLL locates each needed section by scanning its own process memory
+//   for the section's known first entries (signature), then validating with
+//   the u16[base]==distance rule. ⚠ NOT once-per-process (v2.22.1
+//   correction, 2026-07-23 audit fixed this stale comment): the COMMAND
+//   section proved to live in a TRANSIENT battle allocation, so proxy.cpp's
+//   ValidatedSection() re-checks every cached section pointer's head
+//   signature before EVERY use and rescans on mismatch. Signatures:
 //     magic-names:  'Cure'|'Cure2'         (entries 0..55 spells,
 //                                            56..71 summon names,
 //                                            72..95 enemy skills,
 //                                            128+   limit breaks)
 //     item-names:   'Potion'|'Hi-Potion'   (entries 0..127)
 //     weapon-names: 'Buster Sword'          (thrown weapons, idx 128..255)
+//     armor-names:  'Bronze Bangle'         (idx 256..287; v2.31)
+//     accessories:  'Power Wrist'           (idx 288..319; v2.31)
+//     item-descs:   (v2.31, see proxy.cpp)
 //   ENGLISH-ONLY: signatures assume the English kernel2; on other languages
 //   the scan fails cleanly and v2.5 generic labels are used throughout.
 // ---------------------------------------------------------------------------
@@ -1760,6 +1771,13 @@ constexpr uint32_t TRIANGLE_LOCK_BITS = 0x00CC0E3A;
 
 // True when walkmesh triangle `tri` is script-locked (impassable). Same
 // bit test as the game's own movement code at 0x6369E8.
+//
+// CAPACITY (ff7_walkmesh_max_tris.py, 2026-07-23): the game-wide maximum
+// walkmesh is 496 triangles (bugin1c) -> the bitfield never extends past
+// struct offset 0xB2+0x3E = 0xF0, inside the modules_global_object's
+// ~0x138-byte span. Callers only pass tri < the current field's ntris, so
+// reads can never leave the struct in practice; the FWMESH_MAX_TRIS bound
+// below is a pure corruption guard, not a real reachable range.
 inline bool is_triangle_locked(int tri)
 {
     if (tri < 0 || tri >= static_cast<int>(FWMESH_MAX_TRIS)) return false;
