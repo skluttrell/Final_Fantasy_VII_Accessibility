@@ -532,29 +532,35 @@ VERIFY: Tifa drink offer — lead-in speaks at open, tone+caption+
 "I don't feel like it" at the page turn, cursor tracks both options;
 single-page choices (soldiers, Aeris) unchanged.
 
-[NAV] Route leads into a player-blocked area (behind Tifa's bar counter) — INVESTIGATION NEEDED
+[NAV] Route leads into a player-blocked area — ROOT CAUSE FOUND + FIXED v2.30.21 (2026-07-23), awaiting play-test
 ------------------------------------------------------------------------
-Player report + screenshot (pf_1.jpg): route to Tifa announced "up and
-left 1 second, then left 1 second, then down and left 1 second" but
-the player cannot move up-left. Log (17:53): Tifa at tri=7 behind the
-bar counter; A* found paths (start=15/11, goal=7, path=6/5 hops) — the
-walkmesh ACCESS pool connects the counter area to the floor (and the
-offline dry run proved the pool 100% reciprocal game-wide), yet the
-game blocks the player from walking in. HYPOTHESIS: FF7 has a
-triangle-LOCKING mechanism (an opcode marks walkmesh triangles
-player-impassable — how the game does counters/doorways generally;
-IDLCK or similar in community docs) that overlays the static access
-pool; NPCs stand on locked triangles, A* must treat locked triangles
-as walls for routing AND the destination-reachability check should
-then report "no walkable path" for targets inside locked regions
-(matching what a sighted player experiences: Tifa is talked to ACROSS
-the counter — the talk radius reaches, walking there doesn't).
-NEXT: static hunt for the triangle-lock opcode handler + the lock
-table address (same execute_opcode_table disasm pattern as
-LINE/LINON/SLINE which are already mapped at 0x6111D8/0x6115AD/
-0x6114D0); then wire the lock table into the A* edge filter. Until
-then the symptom is "directions into a wall" on fields with locked
-counters/barriers — harmless but confusing.
+Player report + screenshot (pf_1.jpg): route to Tifa walked the player
+into the bar counter. INVESTIGATED AND FIXED same day — the hypothesis
+held exactly: FF7's IDLCK opcode (0x6D) locks walkmesh triangles at
+runtime, overlaying the static access pool the mod's A* reads.
+Three static scripts (ff7_idlck_static/readers/bitmath.py, logs
+20260723_2011xx-2021xx), no live scans needed:
+- IDLCK handler 0x61E29F: u16 triangle + u8 flag -> set/clear bit
+  (tri&7) of byte [0xCBF9D8]+0xB2+(tri>>3).
+- The game's own movement edge-crossing code (0x6369E8/0x636AAF/
+  0x636B76, one branch per edge) reads the neighbor from its parsed
+  access pool (ptr 0xCFF748) and REFUSES the crossing when the same
+  bit — at static 0xCC0E3A = MODULES_GLOBAL_OBJECT+0xB2 — is set.
+  Polarity proven by the game's own branch: 1 = locked/impassable.
+FIX: TRIANGLE_LOCK_BITS + is_triangle_locked() (ff7_addresses.h);
+LoadWalkmesh() cuts every edge INTO a locked triangle (after the
+reciprocity self-guard — locks legitimately make the graph
+asymmetric). Locked-target routes (Tifa) now fail A* and fall back to
+the straight-line + "no walkable path" announce, which walks the
+player TO the counter where the talk radius reaches across. Debug
+line: "NAV walkmesh: N edge(s) cut by triangle locks".
+New §4/§14 rows: TRIANGLE_LOCK_BITS 0xCC0E3A, access-pool ptr
+0xCFF748, handler + crossing-code addresses.
+VERIFY: (a) Tifa route no longer walks into the counter (expect
+straight-line "no walkable path" style announce or a route to the
+counter front); (b) the debug line appears on fields with locks;
+(c) previously "slightly off" routes in other fields (player hunch)
+improve — report any that still thread walls.
 
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------

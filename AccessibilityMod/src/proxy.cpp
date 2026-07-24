@@ -4515,6 +4515,43 @@ static bool LoadWalkmesh(std::vector<WalkTri>& out)
     }
     if (ntris > 1 && (links == 0 || mutual * 10 < links * 9))
         return false;
+
+    // v2.30.21: overlay the IDLCK triangle-lock bitfield (see
+    // TRIANGLE_LOCK_BITS in ff7_addresses.h for the full derivation).
+    // Field scripts mark counters/doorways impassable at runtime; the
+    // static access pool doesn't know, so A* was routing THROUGH them
+    // and walking the player into invisible walls (2026-07-23: the route
+    // to Tifa led into the bar counter — her triangle is mesh-connected
+    // but script-locked). Cut every edge INTO a locked triangle — the
+    // exact test the game's own movement code performs per crossing
+    // (destination-side only, so leaving a locked triangle stays
+    // possible, mirroring the game). Applied AFTER the reciprocity
+    // self-guard above: locks legitimately make the graph asymmetric,
+    // and the guard validates the RAW pool's layout, not the overlay.
+    // A route target standing on a locked triangle (Tifa) becomes
+    // unreachable — A* fails and the caller falls back to the
+    // straight-line announce, which walks the player TO the counter,
+    // where the talk radius already reaches across (matching how a
+    // sighted player interacts).
+    uint32_t locked = 0;
+    for (uint32_t t = 0; t < ntris; ++t) {
+        for (int e = 0; e < 3; ++e) {
+            const uint16_t nb = out[t].nbr[e];
+            if (nb == FF7Addr::FWMESH_NO_NEIGHBOR)
+                continue;
+            if (FF7Addr::is_triangle_locked(nb)) {
+                out[t].nbr[e] = FF7Addr::FWMESH_NO_NEIGHBOR;
+                ++locked;
+            }
+        }
+    }
+    if (locked > 0 && Config::Get().debug_log) {
+        char dbg[96];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] NAV walkmesh: %lu edge(s) cut by triangle locks",
+            static_cast<unsigned long>(locked));
+        Log::Write(dbg);
+    }
     return true;
 }
 

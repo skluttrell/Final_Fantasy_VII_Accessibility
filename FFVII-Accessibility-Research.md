@@ -237,6 +237,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | *(script entity names)* | — | Field-file section 0 header carries char[8] ASCII dev names per entity at **script_ptr + 0x20 + id·8** (header: u16 unknown, u8 nEntities @+2, u8 nModels, u16 wStringOffset, u16 nAkaoOffsets, u16 scale, u8[6] blank, char[8] creator, char[8] field name = 0x20). LIVE-CONFIRMED 2026-07-14: field 120 line owners read 'evb' and 'drE', clean ASCII, ids < nEntities. Names the v2.17 Triggers category (v2.16 trick applied to entities) |
 | `LOCATION_NAME_BUFFER` | `0xDC0C44` | **The friendly location caption** ("Sector 1 Station") the main menu displays — savemap+0xF0C, which is why saves remember it. Written by the MPNAM opcode (0x43) storage callee 0x633691: field text entry decoded token-by-token (char-name tokens via 0x6CB9B8), ≤ 0x17 bytes, 0xFF-terminated. ⚠ bytes past the terminator hold the PREVIOUS caption's tail (live-observed) — always stop at 0xFF. Found statically + LIVE-CONFIRMED 2026-07-16 in one session (ff7_mpnam_static.py / ff7_mpnam_verify.py: "Sector 1 Station" ↔ "Platform" tracking the player's screen changes). A field without MPNAM keeps the previous caption — same persistence the sighted menu shows. v2.24 speaks it in the screen-change announce and the M key |
 | `FIELD_TEXT_BLOCK_PTR` | `0xCC08E8` | Pointer to the current field's dialog-TEXT block: u16 offset table at ptr+2 (entry id → ptr + u16[ptr+2+id·2]). Read by the MPNAM callee 0x633691 (static disasm 2026-07-16); 0 when no field is loaded (the callee's own guard). Complements FIELD_SCRIPT_PTR (0xCBF5E8, section-0 base — same 0xCC08xx field cluster as FIELD_LINE_COUNT 0xCC088C) |
+| `TRIANGLE_LOCK_BITS` | `0x00CC0E3A` | **The IDLCK triangle-lock bitfield** (v2.30.21, static disasm 2026-07-23): one bit per walkmesh triangle id — byte [0xCC0E3A + (tri>>3)], bit (tri&7), **SET = LOCKED/impassable**. Write side: IDLCK handler (opcode 0x6D = 0x61E29F, args u16 tri + u8 flag) via [field_global_object_ptr 0xCBF9D8]+0xB2; read side: the movement edge-crossing code (0x6369E8/0x636AAF/0x636B76, one branch per edge) tests the bit against STATIC 0xCC0E3A and refuses the crossing when set. 0xCC0E3A = MODULES_GLOBAL_OBJECT+0xB2 — proves 0xCBF9D8 points at the static modules block. How scripts make counters/doorways impassable over the static access pool (the Tifa bar-counter route bug); LoadWalkmesh cuts edges into locked triangles |
+| *(game's parsed access-pool ptr)* | `0x00CFF748` | u32 → the engine's own parsed copy of the walkmesh ACCESS pool (stride 3×u16 per triangle, neighbor ids), read by the same movement code above. The mod parses the raw file section instead (equivalent data); recorded as the live-side anchor if a future feature needs the engine's copy |
 | *(walkmesh section)* | — | Raw field file (behind FIELD_FILE_BUFFER 0xCFF594) **section index 4** (offset table entry buf+6+4×4 = the `level_data+0x16` FFNx's renderer reads): u32 size prefix, u32 nTriangles, triangle pool (24B each: 3 × s16 x,y,z,res — same coord space as model_pos>>12), then ACCESS pool (3 × u16 per triangle = neighbor across each edge, 0xFFFF = wall). Triangle layout FFNx-production-confirmed; access pool **CONFIRMED GAME-WIDE OFFLINE 2026-07-16** (ff7_walkmesh_route_dryrun.py: 720/720 fields, 184,358 links, 100% id-valid + geometrically adjacent, 100.00% reciprocal) **and LIVE 2026-07-16** (nmkin_2 parsed in-game with the exact dry-run triangle count, turn-by-turn routes play-confirmed). Source of v2.22 turn-by-turn + v2.23 journeys; constants at ff7_addresses.h SECTION 1h; format detail §5 |
 | *(player/model walkmesh triangle)* | — | field_event_data **+0x78 s16 field_triangle_id** (see offsets row above): the model's live walkmesh triangle — v2.22 uses it as the exact A*/journey endpoint (player and model targets), immune to stacked-layer ambiguity; <0 = off-mesh (the v2.15 People filter) |
 
@@ -3136,6 +3138,51 @@ investigation filed in TODO.txt with the log evidence; the talk-radius
 still reaches across the counter, matching how sighted players
 interact with Tifa without walking behind the bar.
 
+### v2.30.21 (2026-07-23): IDLCK triangle locks — the pathfinder learns the game's own walls
+
+The investigation ran the same day (player: "it might fix other areas
+where the pathfinder seems flawed or slightly off") — three static
+scripts, one evening, zero live scans:
+
+**Phase 1** (`ff7_idlck_static.py`): IDLCK = opcode 0x6D (FFNx enum,
+counted against five already-hooked anchors). Its handler (0x61E29F,
+via the validated execute_opcode_table chain) reads u16 triangle_id +
+u8 flag from the script and sets/clears **bit (tri&7) of byte
+[field_global_object_ptr 0xCBF9D8] + 0xB2 + (tri>>3)** — a
+per-triangle lock bitfield.
+
+**Phase 2** (`ff7_idlck_readers.py`): the exact `[reg+reg+0xB2]`
+access form is unique to the handler — the consumer computes the
+address differently. **Phase 3** (`ff7_idlck_bitmath.py`): scanning
+the field module for the bitfield signature (sar/shr-3 + and-7 + byte
+access) found exactly one non-handler site — the movement
+edge-crossing code at 0x6369E8/0x636AAF/0x636B76 (one branch per
+triangle edge): neighbor id from the game's own parsed access pool
+(ptr 0xCFF748, stride 3×u16 — matching the raw format the mod
+parses), the identical bit math against **static 0xCC0E3A**, and
+`test/jne` REFUSING the crossing when the bit is set. 0xCC0E3A =
+MODULES_GLOBAL_OBJECT (0xCC0D88) + 0xB2 — the address equality proves
+`field_global_object_ptr` points at the static modules block, ties
+both sides to ONE bitfield, and confirms the polarity (1 = locked)
+from the game's own branch.
+
+**Mod change**: `TRIANGLE_LOCK_BITS` + `is_triangle_locked()` in
+ff7_addresses.h; `LoadWalkmesh()` cuts every edge INTO a locked
+triangle after the reciprocity self-guard (locks legitimately make the
+graph asymmetric; the guard validates the raw pool's layout, not the
+overlay). Destination-side only, mirroring the game's own test. A
+target standing on a locked triangle (Tifa behind the counter) now
+fails A* and falls back to the existing straight-line + "no walkable
+path" announce — which walks the player TO the counter, where the
+talk radius reaches across, matching sighted interaction. Debug log
+line: `NAV walkmesh: N edge(s) cut by triangle locks`.
+
+This should fix every field where scripts lock counters, shop desks,
+and doorway thresholds — the player's hunch that the counter bug
+explained other "slightly off" pathfinder behavior is likely right:
+any route that previously threaded a locked region now routes around
+it (or honestly reports no path).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -3477,6 +3524,8 @@ Proven payoffs of cluster reasoning so far:
 | `0x633691` | MPNAM storage callee | decodes field text entry (via FIELD_TEXT_BLOCK_PTR 0xCC08E8) into LOCATION_NAME_BUFFER 0xDC0C44, ≤0x17 bytes; token jump table 0x6338CF handles 0xE2-family expansions; char-name tokens (0xEA+) resolved via CALL 0x6CB9B8 |
 | `0x6CB9B8` | character-name-for-token resolver | returns a pointer to the FF7-encoded live name for dialog char tokens; shared by the MPNAM path (2026-07-16) — candidate anchor if a token ever needs resolving outside dialogs |
 | `0x618A80` | opcode TLKON handler (table[0x7E]) | resolves the executing entity's model via the entity→model map 0xCBFB70 (0xFF = no model) and writes its 1-byte arg raw to field_event_data +0x61 — the talk-disabled byte (scratch disasm + live confirm 2026-07-16, v2.26) |
+| `0x61E29F` | opcode IDLCK handler (table[0x6D]) | args u16 triangle_id + u8 flag; sets/clears bit (tri&7) of byte [0xCBF9D8]+0xB2+(tri>>3) — the triangle-lock bitfield (= static 0xCC0E3A). ff7_idlck_static.py 2026-07-23, v2.30.21 |
+| `0x6369E8` / `0x636AAF` / `0x636B76` | movement edge-crossing lock tests | one branch per triangle edge: neighbor id from the parsed access pool [0xCFF748] (stride 3×u16), then the >>3/&7 bit test against 0xCC0E3A — crossing REFUSED when set. Also writes u16 0xCC1630 (new current triangle?, unconfirmed) (ff7_idlck_bitmath.py 2026-07-23) |
 | `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |
 | `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
 | `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
@@ -3588,6 +3637,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | +0x64 | `0xCC0DEC` | field_id (module copy — distinct from 0xCC15D0) | FFNx label only |
 | +0x68 | `0xCC0DF0` | current_key_input_status (u32) | ✓ live |
 | +0x6C | `0xCC0DF4` | previous_key_input_status | FFNx label only |
+| +0xB2 | `0xCC0E3A` | **TRIANGLE_LOCK_BITS** — IDLCK per-triangle lock bitfield (bit tri&7 of byte tri>>3, SET = impassable). Writer: IDLCK handler 0x61E29F via [0xCBF9D8]+0xB2; reader: movement edge-crossing 0x6369E8/0x636AAF/0x636B76 against this static address — the address equality is what PROVED field_global_object_ptr (0xCBF9D8) → this struct. v2.30.21 A* overlay | ✓ static disasm ×2 |
 
 ### Field statics cluster: 0xCFF3D8 – 0xCFF73E
 
@@ -3600,6 +3650,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file — dialog text (§5), model labels (v2.16), and since v2.22 the WALKMESH (section index 4: triangles + adjacency, the turn-by-turn/journey data source; §4 *(walkmesh section)* row) |
 | `0xCFF738` | FIELD_ANIM_DATA_PTR | → field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
+| `0xCFF748` | game's parsed ACCESS-pool ptr | u32 → the engine's own parsed walkmesh adjacency (3×u16 neighbor ids per triangle), read by the movement edge-crossing code (0x6369E8…) alongside TRIANGLE_LOCK_BITS. Same data the mod re-parses from the raw section; recorded 2026-07-23 (IDLCK investigation bonus) |
 
 ### Shared char-data block: 0xDBA498 – ≈0xDBB158 (3 × 0x440)
 

@@ -1728,6 +1728,47 @@ constexpr uint16_t FWMESH_NO_NEIGHBOR = 0xFFFF;
 constexpr uint32_t FWMESH_MAX_TRIS    = 4096;
 
 // ---------------------------------------------------------------------------
+// TRIANGLE LOCK BITFIELD (v2.30.21, static disasm 2026-07-23 -- logs
+// idlck_static_20260723_201129 + idlck_bitmath_20260723_202147):
+//
+// The runtime overlay the game layers on top of the static access pool --
+// how field scripts make counters/doorways impassable (the IDLCK opcode).
+// One bit per walkmesh triangle id: byte [0xCC0E3A + (tri >> 3)], bit
+// (tri & 7). Bit SET = LOCKED (impassable).
+//
+// WRITE side: the IDLCK handler (execute_opcode_table[0x6D] = 0x61E29F;
+// args u16 triangle_id + u8 flag) ORs the bit in when flag != 0, ANDs it
+// out when 0 -- via [field_global_object_ptr 0xCBF9D8] + 0xB2.
+// READ side: the movement/edge-crossing code (0x6369E8 / 0x636AAF /
+// 0x636B76 -- one branch per triangle edge) reads the neighbor id from the
+// game's own parsed access pool (pointer at 0xCFF748, stride 3xu16 --
+// matching the raw-section format the mod parses), does the identical
+// >>3 / &7 bit math against STATIC 0xCC0E3A, and REFUSES the crossing when
+// the bit is set ("test esi,esi / jne skip"). 0xCC0E3A == 0xCC0D88
+// (MODULES_GLOBAL_OBJECT) + 0xB2, proving field_global_object_ptr points
+// at the static modules block -- both sides describe one bitfield, and the
+// polarity (1 = blocked) is the game's own.
+//
+// WHY THE MOD NEEDS IT: the pathfinder's A* read only the static access
+// pool, so routes crossed locked triangles and walked the player into
+// invisible walls (2026-07-23: route to Tifa led INTO the bar counter --
+// her tri 7 is mesh-connected but script-locked). LoadWalkmesh() now cuts
+// every edge INTO a locked triangle, exactly the test the game itself
+// performs.
+// ---------------------------------------------------------------------------
+constexpr uint32_t TRIANGLE_LOCK_BITS = 0x00CC0E3A;
+
+// True when walkmesh triangle `tri` is script-locked (impassable). Same
+// bit test as the game's own movement code at 0x6369E8.
+inline bool is_triangle_locked(int tri)
+{
+    if (tri < 0 || tri >= static_cast<int>(FWMESH_MAX_TRIS)) return false;
+    const uint8_t b = *reinterpret_cast<const volatile uint8_t*>(
+        TRIANGLE_LOCK_BITS + (tri >> 3));
+    return ((b >> (tri & 7)) & 1) != 0;
+}
+
+// ---------------------------------------------------------------------------
 // Chest open/closed state (v2.18.1) — field_event_data animation fields.
 //
 // FFNx ff7.h names the fields (movement_speed +0x76 anchors the offsets):
