@@ -505,6 +505,11 @@ dialogs).
 VERIFY: hideout replay — Barret's 4-page speech and the TV broadcast
 speak every page; People list has no ghosts (Tifa only when actually
 present); camera/swordc gone; wait tone per page on win=3 dialogs.
+LOG-CONFIRMED 2026-07-25 (morning session): "positional PAGE" lines
+fire throughout — win=3 4-pager spoke 2/4, 3/4, 4/4 (09:51:41-46,
+Barret's speech) plus many 2/2 pages on win=2 and win=3. The
+ASSUMPTION is settled: win=3's rawptr advances like win=1's. Ghost/
+scenery filtering not separately reported on — no complaint either.
 
 [DIALOG] Multi-page ASK: wrong "choices", silent caption, early tone — FIXED v2.30.20 (2026-07-23), awaiting play-test
 ------------------------------------------------------------------------
@@ -531,6 +536,10 @@ the old at-open tone (no decode available to know better).
 VERIFY: Tifa drink offer — lead-in speaks at open, tone+caption+
 "I don't feel like it" at the page turn, cursor tracks both options;
 single-page choices (soldiers, Aeris) unchanged.
+LOG-CONFIRMED 2026-07-25: ASK win=2 id=29 "[PENDING] multi-page:
+choice page at +15, speaking lead-in" -> "choice page reached
+(rel=18)" -> options queued and cursor tracked both directions
+(09:49:17-25). Single-page ASKs (win=1 id=4, 09:47:36) also clean.
 
 [NAV] "Go left" walks into Tifa: solid NPC bodies block like walls — MITIGATED v2.30.22 (2026-07-25), rerouting DEFERRED pending radii
 ------------------------------------------------------------------------
@@ -606,6 +615,10 @@ straight-line "no walkable path" style announce or a route to the
 counter front); (b) the debug line appears on fields with locks;
 (c) previously "slightly off" routes in other fields (player hunch)
 improve — report any that still thread walls.
+PARTIAL LOG-CONFIRM 2026-07-25: (b) confirmed — "N edge(s) cut" fires
+on field 151 (2 edges) and 155 (7 edges; the dry run verified those 7
+cuts equal the field's scripted IDLCK set exactly). (a)/(c) not
+explicitly retested; no walk-into-counter reports this session.
 
 [TIMER] Stale-timer suppression on fresh-launch load — PLAY-CONFIRMED 2026-07-22; unarmed-tick diagnostic added v2.30.14
 ------------------------------------------------------------------------
