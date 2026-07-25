@@ -541,6 +541,29 @@ choice page at +15, speaking lead-in" -> "choice page reached
 (rel=18)" -> options queued and cursor tracked both directions
 (09:49:17-25). Single-page ASKs (win=1 id=4, 09:47:36) also clean.
 
+[NAV] Triggers spoke bare dev names — line-trigger behavior catalog SHIPPED v2.30.23 (2026-07-25), awaiting play-test
+------------------------------------------------------------------------
+Player report: stuck in the hideout wanting to go back upstairs, stood
+on the 'border' trigger ("very close") — nothing happened. Script dump
+(ff7_hideout_exit_script_dump.py) showed border2 = cutscene trigger,
+and the real exit = the 'pinball' line (cross script -> REQSW cloud.s5
+-> MAPJUMP 154, the lift; its [OK] script is empty — walk ACROSS it).
+FIX: game-wide offline catalog (ff7_line_trigger_catalog.py; opcode
+walker with cebix/ff7tools' canonical length/jump tables; 702 fields,
+1,827 line entities, ZERO walk errors; validations vs the hand decode
++ nmkin_2 ladders + the street watchtower climbs all pass) generating
+ff7_line_trigger_catalog.h; the Triggers category now appends what
+each line DOES: ", exit to <place>" / ", exit" (conditional dest) /
+", exit, press OK" / ", climb" / ", press OK" / ", scene" /
+", inactive".
+CAVEAT (by design): suffixes state what the scripts CONTAIN — an exit
+can still be story-gated in the moment (its conditions unmet), and a
+"scene" trigger only fires at its scripted story beats.
+VERIFY: hideout Triggers list says "pinball, exit to <lift/bar name or
+plain exit>", "border, scene", "TV, scene"; ladders in the reactor
+fields say climb/ladder; no suffix nonsense on other fields; names
+stay within the speech (nothing clipped).
+
 [NAV] "Go left" walks into Tifa: solid NPC bodies block like walls — MITIGATED v2.30.22 (2026-07-25), rerouting DEFERRED pending radii
 ------------------------------------------------------------------------
 Player report (7th Heaven hideout, 7h_hidout_1.jpg): "Pathfinder tells

@@ -77,6 +77,8 @@
 #include "log.h"
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
+#include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
+                                      // (exit/climb/OK/scene, v2.30.23)
 #include <string>
 #include <fstream>   // visited-places cache file IO (v2.25)
 #include <cstring>   // memchr/memcmp/memcpy in the kernel2 section scanner
@@ -4445,9 +4447,11 @@ static const wchar_t* DpadSectorName(float deg)
 // LINE trigger zone (v2.17 — script-created lines: ladders, elevators,
 // touch/cross zones — a real segment, exactly like an exit).
 struct NavDest {
-    wchar_t name[48];      // spoken name, e.g. "To Platform" / "shinra
+    wchar_t name[64];      // spoken name, e.g. "To Platform" / "shinra
                            // guard 3, talk disabled" (widened 32→48 in
-                           // v2.26 for the talk suffix on long labels)
+                           // v2.26 for the talk suffix on long labels;
+                           // 48→64 in v2.30.23 for trigger-behavior
+                           // suffixes like ", exit to Seventh Heaven")
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
     int16_t line_z1, line_z2;   // line endpoint HEIGHTS (v2.23) — lets the
                                 // route builder locate the target on the
@@ -7001,6 +7005,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 wchar_t name[24];   // translated entity name (v2.20 —
                                     // widened from 16 for "AVALANCHE
                                     // member"); empty = fallback
+                const FF7LineCatalog::LineInfo* info;  // behavior catalog
+                                    // row (v2.30.23), null = unknown
             } tl[FF7Addr::FLINE_MAX];
             int n_tl = 0;
 
@@ -7019,6 +7025,15 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 t.x2 = v[3]; t.y2 = v[4]; t.z2 = v[5];
                 t.line_idx = static_cast<uint8_t>(i);
                 t.name[0] = L'\0';
+                // v2.30.23: what this line DOES, from the offline script
+                // catalog — keyed by the same (field, owning entity)
+                // identity the engine's own line array carries. A field
+                // mid-transition can briefly pair the OLD array with the
+                // NEW field id; a mismatched key then simply finds no
+                // row (or a same-field stale row for one keypress), the
+                // identical tradeoff the name lookup above accepts.
+                t.info = FF7LineCatalog::Find(
+                    static_cast<uint16_t>(field_id), ent);
 
                 // Name only when the engine's own entity→line-slot map
                 // agrees this slot belongs to that entity (the LINE
@@ -7081,6 +7096,57 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 else
                     _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
                                  L"Trigger %u", tl[a].line_idx + 1u);
+
+                // v2.30.23: behavior suffix from the offline catalog —
+                // the 2026-07-25 hideout lesson (player hunted the way
+                // upstairs on a cutscene 'border' line while the real
+                // exit was the 'pinball' lift line). A sighted player
+                // SEES lift platform vs floor patch; this suffix is that
+                // glance: "pinball, exit to Seventh Heaven" / "border,
+                // scene". Suffixes state only what the SCRIPTS contain —
+                // an exit may still be story-gated at any given moment.
+                if (tl[a].info != nullptr) {
+                    using namespace FF7LineCatalog;
+                    const LineInfo* li = tl[a].info;
+                    std::wstring sfx;
+                    switch (li->kind) {
+                    case LK_EXIT:
+                    case LK_EXIT_OK: {
+                        std::wstring dn;
+                        if (li->dest_field >= 0 &&
+                            DestinationName(li->dest_field, dn)) {
+                            sfx = L", exit to ";
+                            sfx += dn;
+                        } else {
+                            sfx = L", exit";   // multi/unknown destination
+                        }
+                        if (li->kind == LK_EXIT_OK)
+                            sfx += L", press OK";
+                        break;
+                    }
+                    case LK_CLIMB:
+                        // Ladder names already say "ladder up/down"
+                        // (v2.20 translation) — only unnamed/odd climbs
+                        // need the word.
+                        if (wcsstr(d.name, L"ladder") == nullptr)
+                            sfx = L", climb";
+                        break;
+                    case LK_OK:
+                        sfx = L", press OK";
+                        break;
+                    case LK_SCENE:
+                        sfx = L", scene";
+                        break;
+                    case LK_INERT:
+                        sfx = L", inactive";
+                        break;
+                    default:
+                        break;
+                    }
+                    if (!sfx.empty())
+                        wcsncat_s(d.name, _countof(d.name), sfx.c_str(),
+                                  _TRUNCATE);
+                }
                 d.line_x1 = tl[a].x1; d.line_y1 = tl[a].y1;
                 d.line_x2 = tl[a].x2; d.line_y2 = tl[a].y2;
                 d.line_z1 = tl[a].z1; d.line_z2 = tl[a].z2;
@@ -7105,7 +7171,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 TTS::Speak(L"No destinations.", /*interrupt=*/true);
                 return;
             }
-            wchar_t msg[64];
+            wchar_t msg[96];   // name is up to 63 chars since v2.30.23
             if (with_position)
                 _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d of %d.",
                              dests[selection].name, selection + 1, n_dests);

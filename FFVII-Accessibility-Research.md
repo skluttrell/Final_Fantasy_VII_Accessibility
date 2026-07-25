@@ -3241,6 +3241,53 @@ pipeline over the flevel walkmesh:
    winner to §4/§14 and revisit the deferred rerouting. A `WALL body:`
    line also logs each naming event with the measured distance.
 
+### v2.30.23 (2026-07-25): line-trigger behavior catalog — "pinball, exit to Seventh Heaven"
+
+Play report (same day as v2.30.22): trying to leave the hideout, the
+player stood ON the 'border' trigger line ("Pathfinder says I am very
+close") and nothing happened. Hand-decoding the field's script section
+(`investigate/ff7_hideout_exit_script_dump.py`) answered the immediate
+question — 'border2' is a CUTSCENE trigger (a bank-var state machine
+dispatching Tifa/Cloud/Barret scene scripts; its [OK] script is an
+immediate RET), while the actual way up is the 'pinball' line, whose
+cross script REQSWs cloud's script #5 containing `MAPJUMP field=154`
+(the lift). The Triggers category spoke both as bare dev names — no
+way to hear the difference a sighted player sees.
+
+**Generalized the same day** (`investigate/ff7_line_trigger_catalog.py`):
+a real field-script opcode walker (opcode lengths, jump-target math,
+and exit opcodes taken verbatim from cebix/ff7tools `ff7/field.py` —
+the walker independently re-derived the hand-decoded REQSW/MAPJUMP
+chain, validating both). For every entity whose init script declares
+LINE/SLINE, each script slot (line semantics: 1=[OK], 2..6=cross/Go)
+is flow-walked (sequential + branch targets, stop at ret/retto/gmovr)
+with ONE REQ/REQSW/REQEW hop expansion, then classified:
+
+- MAPJUMP reachable → **EXIT** (dest field id kept only when every
+  reachable MAPJUMP agrees — conditional multi-destination exits (50)
+  speak plain "exit" instead of guessing); via-[OK]-only → **EXIT_OK**;
+- else LADER reachable → **CLIMB**;
+- else non-empty [OK] script → **OK**; else non-empty cross scripts →
+  **SCENE**; else **INERT**.
+
+Game-wide results: 702 fields, 1,827 line entities, **zero opcode-walk
+errors** (the length table is correct against every script byte in the
+game); 465 EXIT + 17 EXIT_OK, 151 CLIMB, 202 OK, 964 SCENE, 28 INERT.
+Validation: hideout pinball=EXIT dest=154 / border2=SCENE / TV=SCENE
+(matches the hand decode), nmkin_2 'ladu0'/'ladd0'=CLIMB, and the
+Sector 7 street 'border' lines the 11:02 live log listed classify as
+CLIMB (the watchtower ladders) — three independent cross-checks.
+
+**Mod change**: generated `ff7_line_trigger_catalog.h` ({field id,
+entity id, kind, dest} sorted, binary-search lookup — keyed by the
+same owning-entity id the engine's line array carries at +0x0D). The
+Triggers build appends a behavior suffix: ", exit to <dest>" (v2.25
+DestinationName; plain ", exit" when the destination is conditional),
+", exit …, press OK", ", climb" (skipped when the name already says
+ladder), ", press OK", ", scene", ", inactive". NavDest.name widened
+48→64 for the suffixes. Caveat spoken suffixes state what the SCRIPTS
+contain — a cataloged exit can still be story-gated at any moment.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
