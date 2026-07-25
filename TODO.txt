@@ -608,6 +608,36 @@ VERIFY: (a) bumping into Tifa/any NPC says who it is; (b) the Barret
 route says "...Tifa is in the way" while she stands in the aisle;
 (c) log shows rc6E/rc70/rc72 values (report them); (d) no spurious
 "in the way" cautions on clear routes.
+RESOLVED SAME DAY — (a)/(b) play-confirmed ("works much better";
+Barret and Jessie named in the log), and (c) needed NO extra session:
+the 11:02-11:09 log already carried the dump. +0x72 = collision
+radius (Tifa 30 / Barret 48 / trio 34; both contact anchors fit
+player≈32 + npc; rc6E/rc70 rejected; DYNAMIC — scripts set it, 0 =
+intangible). The deferred rerouting shipped as v2.30.24 (next entry).
+
+[NAV] Body-aware rerouting — SHIPPED v2.30.24 (2026-07-25), awaiting play-test
+------------------------------------------------------------------------
+Built on the confirmed +0x72 collision radius (see previous entry).
+Route legs are tested against every solid body's LIVE contact circle
+(player_r + npc_r + 6); when blocked, triangles overlapped by the
+blocking bodies' circles are temp-avoided (start/goal exempt, same
+overlay shape as the IDLCK lock cut) and A* re-runs. The reroute is
+adopted only if its funnel is clear of ALL bodies — otherwise the
+old route + "X is in the way" caution stands (clear route or honest
+truth, never a guess). Bump naming + route caution now use real
+radii too (search = contact+26 in the ±60° cone; ray = contact+8).
+Radius 0 (script-set intangible, e.g. Marlene reads 0) = no body.
+KNOWN LIMIT (accepted): triangle granularity — a body in a large
+doorway triangle seals that corridor even when a foot-width squeeze
+exists (hideout Tifa in the top-strip doorway → falls back to the
+caution; a sighted player shimmies that gap too).
+VERIFY: (a) route to Barret with someone in the aisle either detours
+("rerouted around N bodies" in the log, instructions differ from the
+straight route) or says "X is in the way" — never silently walks
+into a body; (b) clear routes unchanged, no spurious cautions;
+(c) "col=" values in NAV person lines look sane across fields
+(people ~24-48; 0 for parked/scene-intangible models);
+(d) bump naming still fires (now radius-scaled).
 
 [NAV] Route leads into a player-blocked area — ROOT CAUSE FOUND + FIXED v2.30.21 (2026-07-23), awaiting play-test
 ------------------------------------------------------------------------

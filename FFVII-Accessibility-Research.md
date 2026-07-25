@@ -222,7 +222,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
 | *(control_direction semantics)* | — | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180, a PURE ROTATION — left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124→174.4°; Up motion 5.6°, Down −174.4°. First guess world − control was 180° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
-| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled — handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1/v2.26) |
+| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled — handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), **+0x72 s16 COLLISION RADIUS** (CONFIRMED 2026-07-25 v2.30.24: the v2.30.22 rc-candidate dump showed per-model radius-like values — Tifa 30, Barret 48, AVALANCHE trio 34 — and body-block rest distances fit player_r+npc_r with Cloud ≈32 on two independent anchors, 64 vs Tifa and 81 vs Barret; +0x6E ≡ 0 and +0x70 flaps 0/1, both rejected. ⚠ DYNAMIC — scripts change it (SLIDR family): 0 = intangible right now, Tifa read 20 in a hideout scene state, a prop briefly 120 — always read LIVE, never cache), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1/v2.26/v2.30.24) |
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
@@ -3287,6 +3287,44 @@ DestinationName; plain ", exit" when the destination is conditional),
 ladder), ", press OK", ", scene", ", inactive". NavDest.name widened
 48→64 for the suffixes. Caveat spoken suffixes state what the SCRIPTS
 contain — a cataloged exit can still be story-gated at any moment.
+
+### v2.30.24 (2026-07-25): collision radius confirmed → body-aware rerouting
+
+The v2.30.22 diagnostic paid off in ONE session — no extra play needed.
+The same morning's log held the whole answer:
+
+- **+0x72 IS the collision radius** (rc6E ≡ 0, rc70 flaps 0/1 — both
+  rejected): Tifa 30, Barret 48, Biggs/Wedge/Jessie 34, generic NPCs
+  30/34. Cross-checked against BOTH behavioral anchors from the same
+  log: frozen vs Tifa at 64.0 and vs Barret at 81.0 — one rule
+  (player_r + npc_r, Cloud ≈ 32) fits both within one movement step.
+- **The radius is DYNAMIC**: scripts set it per state (Tifa 30 in the
+  bar, 20 in a hideout scene pose; parked models 0 = intangible; the
+  pinball prop briefly 120). This resolves cleanly: read it LIVE per
+  use — 0 means "cannot block right now", exactly when a body should
+  not be routed around or named.
+
+**Mod changes** (all proxy.cpp + the promoted constant):
+
+1. `FIELD_EVENT_COLLISION_RADIUS` (0x72) replaces the rc candidates;
+   `CollectBodies` carries each body's live radius (≤0 = skip;
+   >200 clamps to 30) and `PlayerCollisionRadius()` reads the player's
+   own (sane 8..120, else 32 — the solved-for value).
+2. Every body test is now radius-true: bump naming searches to
+   contact+26 slack in the ±60° cone; the route caution's ray width is
+   contact+8 per body (was a flat 56).
+3. **Body-aware rerouting** (the deferred v2.30.22 design, now
+   unblocked): after the funnel, route legs are tested against every
+   body's contact circle (+6 margin). If blocked, the triangles each
+   blocking body's circle overlaps are temp-avoided (start/goal
+   exempt — same overlay shape as the IDLCK cut) and A* re-runs; the
+   reroute is adopted ONLY if its own funnel comes back clear of ALL
+   bodies, else the original route stands and the caution names the
+   blocker. Debug line: "NAV route: rerouted around N bodies". Known
+   limit (accepted): triangle granularity — a body in a large doorway
+   triangle seals that corridor even when a foot-width squeeze exists
+   (the hideout Tifa case falls back to the caution, correct for a gap
+   the player must shimmy through anyway).
 
 ---
 

@@ -1525,12 +1525,23 @@ constexpr uint32_t FIELD_EVENT_TRIANGLE_ID = 0x78; // s16, walkmesh triangle the
 // radius is unmapped. The three words between character_id (+0x6C..+0x6D)
 // and talk_radius (+0x74) are the natural suspects; the NAV person debug
 // line dumps them per model so one play session's log picks the offset
-// (expect ~32 in the winner for ordinary people). Once confirmed, promote
-// the winner to a real named constant + research doc §4/§14 rows, and
-// revisit the deferred body-aware rerouting (TODO.txt).
-constexpr uint32_t FIELD_EVENT_RADIUS_CAND_6E = 0x6E;
-constexpr uint32_t FIELD_EVENT_RADIUS_CAND_70 = 0x70;
-constexpr uint32_t FIELD_EVENT_RADIUS_CAND_72 = 0x72;
+// (expect ~32 in the winner for ordinary people).
+// CONFIRMED 2026-07-25 (v2.30.24) by that very dump against TWO
+// independent behavioral anchors from the same day's play:
+//   - +0x72 varies per model in radius-like units: Tifa 30, Barret 48,
+//     AVALANCHE trio 34, generic NPCs 30/34;
+//   - body-block distances match player_r + npc_r with Cloud ~32:
+//     frozen vs Tifa at 64.0 (32+30, one step above contact), vs Barret
+//     at 81.0 (32+48 = 80) — one rule, two bodies, both fit;
+//   - +0x6E reads constant 0 and +0x70 flaps 0/1 per frame (some flag):
+//     both REJECTED as radius.
+// DYNAMIC: scripts change it at runtime (the SLIDR opcode family) — the
+// same log shows Tifa 30 in the bar but 20 during a hideout scene state,
+// parked models 0, the pinball prop briefly 120. Consumers must read it
+// LIVE per use, never cache per field; 0 = no collision right now
+// (intangible — e.g. parked models), which is exactly when a body
+// should NOT block routing or be named as a blocker.
+constexpr uint32_t FIELD_EVENT_COLLISION_RADIUS = 0x72; // s16, walkmesh units
 
 // Talk-enabled byte (v2.26): the TLKON opcode (0x7E, handler 0x618A80 —
 // static disasm 2026-07-16) writes its 1-byte arg RAW to +0x61 of the

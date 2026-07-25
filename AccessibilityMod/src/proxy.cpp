@@ -3939,22 +3939,44 @@ targeting_check:
 // stands in the held direction, and the directions announce appends the
 // same caution when the first leg's quantized ray passes through a body.
 //
-// Constants (conservative until the radius diagnostic lands):
-//   BODY_SEARCH_DIST  90: naming search range — resting contact is ~64,
-//     plus slack for radii up to ~45 per model. Beyond that a frozen
-//     player is a wall problem, not a body problem.
+// v2.30.24: per-model collision radii are now REAL — the v2.30.22
+// candidate dump confirmed FIELD_EVENT_COLLISION_RADIUS (+0x72; see
+// ff7_addresses.h for the two-anchor derivation). Every body test below
+// uses live radii: contact = player_radius + body_radius, plus a purpose-
+// sized margin. The radius is DYNAMIC (scripts set it; 0 = intangible),
+// so it is read fresh per call, never cached.
+//
+// Constants:
 //   BODY_CONE_MIN_COS 0.5 (±60°): at rest ON a body, any direction within
 //     90° of the body bearing freezes; ±60° covers every case observed in
 //     the hideout log while excluding bodies clearly off to the side.
-//   BODY_CONTACT_DIST 56: route-caution ray width — the flood fill's
-//     "certainly matters" threshold (56 sealed nothing, 64 sealed the
-//     room), so a caution never fires for a body the player could
-//     actually slip past at distance.
+//   kBodyNameSlack  26: naming search reaches contact + slack — a frozen
+//     player rests up to one step OUTSIDE contact, and naming a body a
+//     half-body away is still the right answer; farther = a wall problem.
+//   kBodyRayMargin   8: route-caution ray width beyond contact — warn
+//     only about bodies that will actually stop the walk.
+//   kBodyRouteMargin 6: reroute leg test beyond contact — a leg passing
+//     within a step of contact is treated as blocked so the reroute
+//     doesn't thread the needle.
 // ---------------------------------------------------------------------------
-constexpr float BODY_SEARCH_DIST  = 90.0f;
 constexpr float BODY_CONE_MIN_COS = 0.5f;
-constexpr float BODY_CONTACT_DIST = 56.0f;
+constexpr float kBodyNameSlack    = 26.0f;
+constexpr float kBodyRayMargin    = 8.0f;
+constexpr float kBodyRouteMargin  = 6.0f;
 static bool IsReadableSpan(const void* p, size_t len);
+
+// One placed person-class model with a live body. name = translated dev
+// label (no dedup ordinal — "shinra guard is in the way" is enough to
+// explain a bump; the browser distinguishes guard 2 from guard 3).
+struct BodyInfo {
+    float        x, y;
+    float        radius;   // live +0x72 (DYNAMIC; intangible models are
+                           // not collected at all)
+    int          slot;
+    std::wstring name;
+};
+static size_t CollectBodies(int exclude_slot, BodyInfo out[32]);
+static float  PlayerCollisionRadius();
 static bool BodyInDirection(float px, float py, float world_deg,
                             int exclude_slot, std::wstring& out_name,
                             float* out_dist);
@@ -4684,6 +4706,27 @@ static float Tri2(float ax, float ay, float bx, float by, float cx, float cy)
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 }
 
+// Distance from a point to a walkmesh triangle: 0 inside, else nearest
+// edge distance. Used by the v2.30.24 body-aware reroute to find the
+// triangles a body's contact circle overlaps.
+static float TriangleDistance(const struct WalkTri& w, float x, float y)
+{
+    const float s0 = Tri2(w.vx[0], w.vy[0], w.vx[1], w.vy[1], x, y);
+    const float s1 = Tri2(w.vx[1], w.vy[1], w.vx[2], w.vy[2], x, y);
+    const float s2 = Tri2(w.vx[2], w.vy[2], w.vx[0], w.vy[0], x, y);
+    if ((s0 >= 0.0f && s1 >= 0.0f && s2 >= 0.0f) ||
+        (s0 <= 0.0f && s1 <= 0.0f && s2 <= 0.0f))
+        return 0.0f;   // inside (either winding — field meshes vary)
+    float best = FLT_MAX;
+    for (int e = 0; e < 3; ++e) {
+        const int f = (e + 1) % 3;
+        const float d2 = PointSegDist2(x, y, w.vx[e], w.vy[e],
+                                       w.vx[f], w.vy[f]);
+        if (d2 < best) best = d2;
+    }
+    return sqrtf(best);
+}
+
 // Triangle for point (x,y,z): the one whose XY projection contains the
 // point (or whose boundary is nearest — target points sit exactly ON
 // portal edges; point targets can be a hair off-mesh), with the HEIGHT
@@ -4732,8 +4775,13 @@ static int WalkmeshLocate(const std::vector<WalkTri>& m,
 // triangle sequence start..goal, or false when the goal is in a region
 // the graph cannot reach (locked-off area, different layer group).
 static bool WalkmeshAStar(const std::vector<WalkTri>& m, int start, int goal,
-                          std::vector<uint16_t>& out_path)
+                          std::vector<uint16_t>& out_path,
+                          const std::vector<uint8_t>* avoid = nullptr)
 {
+    // avoid (v2.30.24): optional per-triangle mask — crossings INTO
+    // masked triangles are refused, the same overlay shape as the IDLCK
+    // lock cut. Used by the body-aware reroute; never set for the
+    // start/goal triangles.
     const size_t n = m.size();
     std::vector<float>   g(n, FLT_MAX);      // best known cost from start
     std::vector<float>   f(n, FLT_MAX);      // g + heuristic
@@ -4760,6 +4808,8 @@ static bool WalkmeshAStar(const std::vector<WalkTri>& m, int start, int goal,
         for (int e = 0; e < 3; ++e) {
             const uint16_t nb = m[cur].nbr[e];
             if (nb == FF7Addr::FWMESH_NO_NEIGHBOR || st[nb] == 2)
+                continue;
+            if (avoid != nullptr && (*avoid)[nb])
                 continue;
             const float dx = m[nb].cx - m[cur].cx;
             const float dy = m[nb].cy - m[cur].cy;
@@ -4996,10 +5046,14 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                                          float tx, float ty, float tz,
                                          int goal_hint,
                                          float control_deg,
+                                         int exclude_model_slot,
                                          std::wstring& out_route,
                                          int* out_first_sector = nullptr,
                                          float* out_first_len = nullptr)
 {
+    // exclude_model_slot (v2.30.24): the destination's own model when
+    // routing to a person — their body always sits at the route's end
+    // and must not count as a blocker.
     std::vector<WalkTri> mesh;
     if (!LoadWalkmesh(mesh)) {
         Log::Write("[FF7Access] NAV route: walkmesh unavailable, "
@@ -5029,6 +5083,80 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
             corners.push_back({ (p.lx + p.rx) * 0.5f, (p.ly + p.ry) * 0.5f });
         corners.push_back({ tx, ty });
     }
+
+    // ---- body-aware reroute (v2.30.24) --------------------------------
+    // Solid people block movement exactly like walls (v2.30.22), and the
+    // collision radii are now live-readable, so the route can be tested
+    // against bodies and REROUTED around them when another corridor
+    // exists. Method (validated offline in the 2026-07-25 dry run):
+    // temp-avoid every triangle a blocking body's contact circle
+    // overlaps (start/goal exempt — pinning the player or target inside
+    // an avoided triangle would only manufacture failure) and re-run A*.
+    // The reroute is adopted ONLY if its own funnel comes back clear of
+    // ALL bodies; otherwise the original route stands and the v2.30.22
+    // caution names the blocker — a clear route or the honest truth,
+    // never a guess. Triangle granularity is a known limit: a body in a
+    // large doorway triangle can seal a corridor a foot-width gap would
+    // technically allow (the hideout's Tifa case) — that outcome is the
+    // caution, which is correct enough for a squeeze a player must
+    // shimmy through anyway.
+    {
+        BodyInfo bodies[32];
+        const size_t nb = CollectBodies(exclude_model_slot, bodies);
+        const float pr = PlayerCollisionRadius();
+        const auto blocked_by = [&](const std::vector<NavPt>& cs) {
+            // indices of bodies whose contact circle some leg enters
+            std::vector<int> hits;
+            for (size_t b = 0; b < nb; ++b) {
+                const float rr = pr + bodies[b].radius + kBodyRouteMargin;
+                float ax = px, ay = py;
+                for (const NavPt& c : cs) {
+                    if (PointSegDist2(bodies[b].x, bodies[b].y,
+                                      ax, ay, c.x, c.y) < rr * rr) {
+                        hits.push_back(static_cast<int>(b));
+                        break;
+                    }
+                    ax = c.x; ay = c.y;
+                }
+            }
+            return hits;
+        };
+        const std::vector<int> hits = blocked_by(corners);
+        if (!hits.empty()) {
+            std::vector<uint8_t> avoid(n, 0);
+            for (int b : hits) {
+                const float rr = pr + bodies[b].radius;
+                for (int t = 0; t < n; ++t) {
+                    if (t == start || t == goal)
+                        continue;
+                    if (TriangleDistance(mesh[t], bodies[b].x,
+                                         bodies[b].y) < rr)
+                        avoid[t] = 1;
+                }
+            }
+            std::vector<uint16_t> path2;
+            if (WalkmeshAStar(mesh, start, goal, path2, &avoid)) {
+                std::vector<PathPortal> portals2;
+                BuildPortals(mesh, path2, portals2);
+                std::vector<NavPt> corners2;
+                FunnelPath(px, py, tx, ty, portals2, corners2);
+                if (!corners2.empty() && blocked_by(corners2).empty()) {
+                    corners.swap(corners2);
+                    path.swap(path2);
+                    if (Config::Get().debug_log) {
+                        char dbg[128];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] NAV route: rerouted around %u "
+                            "bod%s (player_r=%.0f)",
+                            static_cast<unsigned>(hits.size()),
+                            hits.size() == 1 ? "y" : "ies", pr);
+                        Log::Write(dbg);
+                    }
+                }
+            }
+        }
+    }
+
     out_route = RouteToSpeech(px, py, corners, control_deg,
                               out_first_sector, out_first_len);
 
@@ -5594,20 +5722,13 @@ static float HeldDirInputDeg(uint32_t keys)
     return -1.0f;
 }
 
-// One placed person-class model. name = translated dev label (no dedup
-// ordinal — "shinra guard is in the way" is enough to explain a bump; the
-// browser remains the tool that distinguishes guard 2 from guard 3).
-struct BodyInfo {
-    float        x, y;
-    int          slot;
-    std::wstring name;
-};
-
 // Fill out[] with every placed MC_PERSON model except the player and
 // exclude_slot. Same filters as the destination-list build: the parked
 // signature (tri==0 AND pos==(0,0), v2.30.19) is skipped, but OFF-mesh
 // models (tri<0) are kept — Marlene behind the bar counter is off-mesh
-// yet very much a solid body.
+// yet very much a solid body. v2.30.24: each body carries its LIVE
+// collision radius; a radius of 0 (script-set intangible) or negative
+// means the model cannot block anything right now and is not collected.
 static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
 {
     const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
@@ -5649,40 +5770,69 @@ static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
         const int32_t my = mpos[1] >> 12;
         if (tri == 0 && mx == 0 && my == 0)
             continue;                       // parked (v2.30.19)
+        // Live collision radius (v2.30.24). <=0 = intangible right now
+        // (script-cleared) — no body to block or name. Implausibly large
+        // values (torn read) clamp to the common default 30.
+        const int16_t rr = *reinterpret_cast<const int16_t*>(
+            me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+        if (rr <= 0)
+            continue;
         std::wstring lbl;
         if (!FieldModelLabel(m, fname, lbl))
             continue;
         const wchar_t* friendly = nullptr;
         if (ClassifyModelLabel(lbl, &friendly) != MC_PERSON)
             continue;                       // props/chests never named here
-        out[cnt].x    = static_cast<float>(mx);
-        out[cnt].y    = static_cast<float>(my);
-        out[cnt].slot = m;
-        out[cnt].name = TranslateDevLabel(lbl);
+        out[cnt].x      = static_cast<float>(mx);
+        out[cnt].y      = static_cast<float>(my);
+        out[cnt].radius = (rr > 200) ? 30.0f : static_cast<float>(rr);
+        out[cnt].slot   = m;
+        out[cnt].name   = TranslateDevLabel(lbl);
         ++cnt;
     }
     return cnt;
 }
 
-// Nearest person within BODY_SEARCH_DIST whose bearing lies within the
-// blocking cone of the given world direction. The d<1 case (standing
-// literally on the body's coordinates — scripted overlaps) counts as a hit
-// regardless of bearing.
+// The player's own live collision radius (same +0x72 field on the player's
+// element). Falls back to 32 — the value both 2026-07-25 contact anchors
+// solved for — when the element is unreadable or the value implausible.
+static float PlayerCollisionRadius()
+{
+    const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_EVENT_DATA_PTR);
+    const uint16_t pmid = *reinterpret_cast<const volatile uint16_t*>(
+        FF7Addr::FIELD_PLAYER_MODEL_ID);
+    if (arr < 0x401000 || pmid > 0x20)
+        return 32.0f;
+    const uint8_t* me = reinterpret_cast<const uint8_t*>(
+        arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+    if (!IsReadableSpan(me, FF7Addr::FIELD_EVENT_DATA_STRIDE))
+        return 32.0f;
+    const int16_t rr = *reinterpret_cast<const int16_t*>(
+        me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+    return (rr >= 8 && rr <= 120) ? static_cast<float>(rr) : 32.0f;
+}
+
+// Nearest person within its contact distance (+ naming slack) whose
+// bearing lies within the blocking cone of the given world direction.
+// The d<1 case (standing literally on the body's coordinates — scripted
+// overlaps) counts as a hit regardless of bearing.
 static bool BodyInDirection(float px, float py, float world_deg,
                             int exclude_slot, std::wstring& out_name,
                             float* out_dist)
 {
     BodyInfo bodies[32];
     const size_t n = CollectBodies(exclude_slot, bodies);
+    const float pr = PlayerCollisionRadius();
     const float rad = world_deg * (3.14159265f / 180.0f);
     const float ux = sinf(rad), uy = cosf(rad);
-    float best = BODY_SEARCH_DIST;
+    float best = FLT_MAX;
     bool  hit  = false;
     for (size_t i = 0; i < n; ++i) {
         const float dx = bodies[i].x - px;
         const float dy = bodies[i].y - py;
         const float d  = sqrtf(dx * dx + dy * dy);
-        if (d >= best)
+        if (d >= pr + bodies[i].radius + kBodyNameSlack || d >= best)
             continue;
         if (d >= 1.0f && (dx * ux + dy * uy) / d < BODY_CONE_MIN_COS)
             continue;
@@ -5695,14 +5845,15 @@ static bool BodyInDirection(float px, float py, float world_deg,
     return hit;
 }
 
-// First person (smallest advance along the ray) whose center lies within
-// BODY_CONTACT_DIST of the segment from (px,py) of the given length —
-// "will walking this quantized leg run into somebody?"
+// First person (smallest advance along the ray) whose contact circle the
+// segment from (px,py) of the given length enters — "will walking this
+// quantized leg run into somebody?"
 static bool BodyOnRay(float px, float py, float world_deg, float length,
                       int exclude_slot, std::wstring& out_name)
 {
     BodyInfo bodies[32];
     const size_t n = CollectBodies(exclude_slot, bodies);
+    const float pr = PlayerCollisionRadius();
     const float rad = world_deg * (3.14159265f / 180.0f);
     const float ux = sinf(rad), uy = cosf(rad);
     float best_t = FLT_MAX;
@@ -5714,7 +5865,8 @@ static bool BodyOnRay(float px, float py, float world_deg, float length,
         const float tc = (t < 0.0f) ? 0.0f : (t > length ? length : t);
         const float cx = px + ux * tc - bodies[i].x;
         const float cy = py + uy * tc - bodies[i].y;
-        if (cx * cx + cy * cy >= BODY_CONTACT_DIST * BODY_CONTACT_DIST)
+        const float rr = pr + bodies[i].radius + kBodyRayMargin;
+        if (cx * cx + cy * cy >= rr * rr)
             continue;
         if (tc < best_t) {
             best_t   = tc;
@@ -6813,21 +6965,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const bool have_lbl = FieldModelLabel(m, fname, lbl);
 
                 if (Config::Get().debug_log) {
-                    // rc6E/rc70/rc72: collision-radius candidate words
-                    // (v2.30.22) — see FIELD_EVENT_RADIUS_CAND_* for the
-                    // hunt. Expect the real one to read ~32 for people.
+                    // col = live collision radius (+0x72, confirmed
+                    // v2.30.24 — the rc6E/rc70 candidates are retired,
+                    // both rejected by the 2026-07-25 dump).
                     char dbg[224];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] NAV person m=%u tri=%d ent=%u talk=%d "
-                        "pos=(%ld,%ld) label='%ls' rc6E=%d rc70=%d rc72=%d",
+                        "col=%d pos=(%ld,%ld) label='%ls'",
                         m, tri,
                         *reinterpret_cast<const uint8_t*>(me + FF7Addr::FIELD_EVENT_ENTITY_ID),
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_TALK_RADIUS),
+                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS),
                         static_cast<long>(mx), static_cast<long>(my),
-                        have_lbl ? lbl.c_str() : L"(none)",
-                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_RADIUS_CAND_6E),
-                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_RADIUS_CAND_70),
-                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_RADIUS_CAND_72));
+                        have_lbl ? lbl.c_str() : L"(none)");
                     Log::Write(dbg);
                 }
 
@@ -7279,7 +7429,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             float first_len    = 0.0f;
             const RouteOutcome ro = BuildTurnByTurnRoute(
                 fpx, fpy, fpz, player_tri, ftx, fty, ftz,
-                d.target_tri, control_deg, route,
+                d.target_tri, control_deg, d.model_slot, route,
                 &first_sector, &first_len);
             if (ro == RouteOutcome::SPOKEN_ROUTE) {
                 std::wstring rmsg(d.name);
