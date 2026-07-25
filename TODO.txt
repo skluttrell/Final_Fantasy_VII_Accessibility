@@ -532,6 +532,51 @@ VERIFY: Tifa drink offer — lead-in speaks at open, tone+caption+
 "I don't feel like it" at the page turn, cursor tracks both options;
 single-page choices (soldiers, Aeris) unchanged.
 
+[NAV] "Go left" walks into Tifa: solid NPC bodies block like walls — MITIGATED v2.30.22 (2026-07-25), rerouting DEFERRED pending radii
+------------------------------------------------------------------------
+Player report (7th Heaven hideout, 7h_hidout_1.jpg): "Pathfinder tells
+me to get to Barret I need to go left 1 second then down and left 1
+second, but if I try to go left I get the wall sound... facing the
+right character is proving difficult."
+DIAGNOSIS (fully offline, ff7_hideout_firstleg_dryrun.py, logs
+20260725_10xx — the dry-run replica reproduced the live route EXACTLY,
+path/corners/speech, IDLCK locks included, before any conclusion was
+drawn):
+  - The walkmesh route was CORRECT; the exact bearing walks clean.
+  - The 8-way QUANTIZED "left" the player must hold passes through
+    Tifa, who stood in the aisle doorway. The live log shows the
+    player pinned at EXACTLY 64.0 units from her center for 3.5
+    minutes: FF7 models hard-block each other (no body slide; walls
+    do slide), 64 = 32+32 collision radii. A body is
+    indistinguishable from a wall in every signal the mod reads.
+  - Flood fill: at 64-unit contact the hideout's aisles seal
+    completely (Barret unreachable) yet 56 opens them — per-model
+    radii differ, and the room was playable sighted, so the real
+    values are unknown. Arc-bypass detour prototypes produced zigzag
+    corners that fold into fictional legs ("right 3 seconds") —
+    quantized speech cannot express tight body slaloms.
+SHIPPED v2.30.22 (the honest layer, no guessed physics in routing):
+  - Wall-bump tone now speaks "<Name> is in the way." once per
+    contact episode when a person stands within 90u / ±60° of the
+    held direction — a body-bump no longer masquerades as a wall.
+  - Directions announces (both turn-by-turn and straight-line) append
+    the same caution when the first QUANTIZED leg's ray passes within
+    56u of a person (destination excluded — routes to a person always
+    end at their body).
+  - NAV person debug line dumps rc6E/rc70/rc72 (the unmapped words
+    between character_id +0x6C and talk_radius +0x74) — the collision
+    radius lives in one of them; expect ~32 for people. WALL body:
+    log line records each naming event with measured distance.
+DEFERRED (needs the radii from the next session's log): body-aware
+routing — temp-avoid triangles overlapped by body circles + re-A*
+(the dry run's Experiment 1/3 shows the bottom-of-table route works
+when radii are known), and only then a followable-legs validator.
+Promote the confirmed radius offset to §4/§14 when the log lands.
+VERIFY: (a) bumping into Tifa/any NPC says who it is; (b) the Barret
+route says "...Tifa is in the way" while she stands in the aisle;
+(c) log shows rc6E/rc70/rc72 values (report them); (d) no spurious
+"in the way" cautions on clear routes.
+
 [NAV] Route leads into a player-blocked area — ROOT CAUSE FOUND + FIXED v2.30.21 (2026-07-23), awaiting play-test
 ------------------------------------------------------------------------
 Player report + screenshot (pf_1.jpg): route to Tifa walked the player

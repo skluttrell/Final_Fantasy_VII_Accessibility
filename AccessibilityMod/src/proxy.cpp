@@ -3912,6 +3912,57 @@ targeting_check:
 }
 
 // ---------------------------------------------------------------------------
+// Solid-body awareness (v2.30.22).
+//
+// FF7 field models body-block each other: walking into another character
+// stops the player dead, byte-identical (to every signal this mod reads) to
+// walking into a wall. The 2026-07-25 hideout play report proved how
+// disorienting that is: the route to Barret said "left", but Tifa stood in
+// the aisle and the player heard only the wall thud — the log shows them
+// pinned at EXACTLY 64.0 units from her center for 3½ minutes (64 = 32+32,
+// the classic FF7 collision radius pair; any input with a positive
+// component toward her produced zero movement).
+//
+// The offline dry run of that exact scene (investigate/
+// ff7_hideout_firstleg_dryrun.py, logs 20260725_*) established:
+//   - the walkmesh route and its quantized directions were CORRECT — the
+//     leg was walkable, a body made it unfollowable;
+//   - with 64-unit contact this room's aisles SEAL COMPLETELY (flood fill:
+//     Barret unreachable from anywhere) yet at 56 they open — so per-model
+//     radii differ and body-aware REROUTING is deferred until the real
+//     radii are known (see the rc6E/rc70/rc72 diagnostic below and the
+//     TODO entry).
+// What ships now is the honest layer: NAME the body. The wall-bump thread
+// speaks "<Name> is in the way" once per contact episode when a person
+// stands in the held direction, and the directions announce appends the
+// same caution when the first leg's quantized ray passes through a body.
+//
+// Constants (conservative until the radius diagnostic lands):
+//   BODY_SEARCH_DIST  90: naming search range — resting contact is ~64,
+//     plus slack for radii up to ~45 per model. Beyond that a frozen
+//     player is a wall problem, not a body problem.
+//   BODY_CONE_MIN_COS 0.5 (±60°): at rest ON a body, any direction within
+//     90° of the body bearing freezes; ±60° covers every case observed in
+//     the hideout log while excluding bodies clearly off to the side.
+//   BODY_CONTACT_DIST 56: route-caution ray width — the flood fill's
+//     "certainly matters" threshold (56 sealed nothing, 64 sealed the
+//     room), so a caution never fires for a body the player could
+//     actually slip past at distance.
+// ---------------------------------------------------------------------------
+constexpr float BODY_SEARCH_DIST  = 90.0f;
+constexpr float BODY_CONE_MIN_COS = 0.5f;
+constexpr float BODY_CONTACT_DIST = 56.0f;
+static bool IsReadableSpan(const void* p, size_t len);
+static bool BodyInDirection(float px, float py, float world_deg,
+                            int exclude_slot, std::wstring& out_name,
+                            float* out_dist);
+static bool BodyOnRay(float px, float py, float world_deg, float length,
+                      int exclude_slot, std::wstring& out_name);
+// Held direction bits -> screen/d-pad angle (0=up, 90=right...), or -1
+// when no direction (or a contradictory pair) is held.
+static float HeldDirInputDeg(uint32_t keys);
+
+// ---------------------------------------------------------------------------
 // Wall-bump tone polling thread.
 //
 // Vanilla FF7 has no footstep sounds, so a blind player gets zero audio
@@ -4013,6 +4064,11 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
     // rare "battle ended flush against a wall, direction never released"
     // case — and that clears the moment the player moves.
     bool     armed          = false;
+    // v2.30.22: one body-naming attempt per contact episode. Reset when the
+    // player moves or releases the direction (the natural "bump, hear the
+    // name, adjust" loop); NOT reset by gate closures alone, so a dialog
+    // opening mid-contact can't re-trigger the same name.
+    bool     episode_named  = false;
     // Packed snapshot of the gate values from the previous poll, logged on
     // change (debug_log only). Live testing is the only way to validate gate
     // behavior across battles/FMVs/cutscenes, and this trail lets a bug
@@ -4173,6 +4229,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             blocked_streak++;
         } else {
             blocked_streak = 0;
+            episode_named  = false;   // v2.30.22: contact episode over
         }
 
         // One line at the moment a would-be tone is swallowed (== not >=,
@@ -4188,6 +4245,46 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             // One-time log per contact episode would require more state; log
             // nothing here — at 3+ beeps/second even debug logging would spam.
             Beep(kBeepFreqHz, kBeepDurMs);
+
+            // v2.30.22: if a PERSON stands in the held direction, this
+            // "wall" is a body — say who, once per contact episode (see the
+            // solid-body block above WallBumpThread for the derivation).
+            // interrupt=false: queue behind any route announcement in
+            // progress rather than clobbering it.
+            if (!episode_named) {
+                episode_named = true;
+                const float held_input = HeldDirInputDeg(keys);
+                const uint32_t hdr = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::FIELD_TRIGGERS_HEADER_PTR);
+                if (held_input >= 0.0f && hdr >= 0x401000 &&
+                    IsReadableSpan(reinterpret_cast<const void*>(hdr),
+                                   FF7Addr::FTRIG_OFF_CONTROL_DIR + 1)) {
+                    const uint8_t control_dir = *reinterpret_cast<const uint8_t*>(
+                        hdr + FF7Addr::FTRIG_OFF_CONTROL_DIR);
+                    // input = world + control - 180  =>  world = input - control + 180
+                    const float world = held_input -
+                        control_dir * (360.0f / 256.0f) + 180.0f;
+                    std::wstring bname;
+                    float bdist = 0.0f;
+                    if (BodyInDirection(static_cast<float>(x >> 12),
+                                        static_cast<float>(y >> 12),
+                                        world, /*exclude_slot=*/-1,
+                                        bname, &bdist)) {
+                        std::wstring msg = bname + L" is in the way.";
+                        TTS::Speak(msg, /*interrupt=*/false);
+                        if (Config::Get().debug_log) {
+                            char dbg[160];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] WALL body: '%ls' dist=%.1f "
+                                "held_input=%.0f world=%.1f player=(%ld,%ld)",
+                                bname.c_str(), bdist, held_input, world,
+                                static_cast<long>(x >> 12),
+                                static_cast<long>(y >> 12));
+                            Log::Write(dbg);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -4810,8 +4907,15 @@ static void FunnelPath(float sx, float sy, float endx, float endy,
 // three); a longer tail is summarized so the message stays holdable.
 static std::wstring RouteToSpeech(float sx, float sy,
                                   const std::vector<NavPt>& corners,
-                                  float control_deg)
+                                  float control_deg,
+                                  int* out_first_sector = nullptr,
+                                  float* out_first_len = nullptr)
 {
+    // v2.30.22: callers may ask for the first FOLDED leg (the move the
+    // player will actually make) so the body-caution check can test the
+    // exact quantized ray that gets spoken. -1 = no leg ("very close").
+    if (out_first_sector) *out_first_sector = -1;
+    if (out_first_len)    *out_first_len    = 0.0f;
     struct Seg { int sector; float len; };
     std::vector<Seg> segs;
     float cx = sx, cy = sy;
@@ -4848,6 +4952,11 @@ static std::wstring RouteToSpeech(float sx, float sy,
     if (total < FF7Addr::WALKMESH_UNITS_PER_SEC * 0.5f)
         return L"very close";
 
+    if (!folded.empty()) {
+        if (out_first_sector) *out_first_sector = folded[0].sector;
+        if (out_first_len)    *out_first_len    = folded[0].len;
+    }
+
     std::wstring out;
     constexpr size_t kMaxSpoken = 5;
     for (size_t i = 0; i < folded.size() && i < kMaxSpoken; ++i) {
@@ -4883,7 +4992,9 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                                          float tx, float ty, float tz,
                                          int goal_hint,
                                          float control_deg,
-                                         std::wstring& out_route)
+                                         std::wstring& out_route,
+                                         int* out_first_sector = nullptr,
+                                         float* out_first_len = nullptr)
 {
     std::vector<WalkTri> mesh;
     if (!LoadWalkmesh(mesh)) {
@@ -4914,7 +5025,8 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
             corners.push_back({ (p.lx + p.rx) * 0.5f, (p.ly + p.ry) * 0.5f });
         corners.push_back({ tx, ty });
     }
-    out_route = RouteToSpeech(px, py, corners, control_deg);
+    out_route = RouteToSpeech(px, py, corners, control_deg,
+                              out_first_sector, out_first_len);
 
     if (Config::Get().debug_log) {
         char dbg[224];
@@ -5451,6 +5563,162 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
         }
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Solid-body helpers (v2.30.22) — implementations for the declarations
+// above WallBumpThread; the derivation and constants live in that block.
+//
+// All of this is self-contained reading (event array, triggers header,
+// model-loader labels) so it can be called from BOTH the wall-bump thread
+// and the pathfinder thread without shared state: FieldModelLabel /
+// ClassifyModelLabel / TranslateDevLabel are pure per-call parsers over
+// the (engine-owned, read-only to us) field file buffer. Cost is one
+// section-2 parse per model per call — called once per contact episode or
+// once per directions keypress, both far off any hot path.
+// ---------------------------------------------------------------------------
+static float HeldDirInputDeg(uint32_t keys)
+{
+    const bool u = (keys & FF7Addr::KEY_DIR_UP)    != 0;
+    const bool r = (keys & FF7Addr::KEY_DIR_RIGHT) != 0;
+    const bool d = (keys & FF7Addr::KEY_DIR_DOWN)  != 0;
+    const bool l = (keys & FF7Addr::KEY_DIR_LEFT)  != 0;
+    if (u && !d) return r ? 45.0f  : (l ? 315.0f : 0.0f);
+    if (d && !u) return r ? 135.0f : (l ? 225.0f : 180.0f);
+    if (r && !l) return 90.0f;
+    if (l && !r) return 270.0f;
+    return -1.0f;
+}
+
+// One placed person-class model. name = translated dev label (no dedup
+// ordinal — "shinra guard is in the way" is enough to explain a bump; the
+// browser remains the tool that distinguishes guard 2 from guard 3).
+struct BodyInfo {
+    float        x, y;
+    int          slot;
+    std::wstring name;
+};
+
+// Fill out[] with every placed MC_PERSON model except the player and
+// exclude_slot. Same filters as the destination-list build: the parked
+// signature (tri==0 AND pos==(0,0), v2.30.19) is skipped, but OFF-mesh
+// models (tri<0) are kept — Marlene behind the bar counter is off-mesh
+// yet very much a solid body.
+static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
+{
+    const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_EVENT_DATA_PTR);
+    const uint16_t pmid = *reinterpret_cast<const volatile uint16_t*>(
+        FF7Addr::FIELD_PLAYER_MODEL_ID);
+    const uint16_t nmod = *reinterpret_cast<const volatile uint16_t*>(
+        FF7Addr::FIELD_N_MODELS);
+    if (arr < 0x401000 || pmid > 0x20)
+        return 0;
+    const uint32_t n = (nmod < 32u) ? nmod : 32u;
+    if (!IsReadableSpan(reinterpret_cast<const void*>(arr),
+                        n * FF7Addr::FIELD_EVENT_DATA_STRIDE))
+        return 0;
+
+    // Field name for the label lookup (same sanitize as the nav thread).
+    const uint32_t hdr = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_TRIGGERS_HEADER_PTR);
+    if (hdr < 0x401000 ||
+        !IsReadableSpan(reinterpret_cast<const void*>(hdr), 10))
+        return 0;
+    char fname[10] = {};
+    memcpy(fname, reinterpret_cast<const void*>(
+        hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
+    for (char& c : fname)
+        if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
+
+    size_t cnt = 0;
+    for (uint16_t m = 0; m < n && cnt < 32; ++m) {
+        if (m == pmid || static_cast<int>(m) == exclude_slot)
+            continue;
+        const uint8_t* me = reinterpret_cast<const uint8_t*>(
+            arr + m * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+        const int32_t* mpos = reinterpret_cast<const int32_t*>(
+            me + FF7Addr::FIELD_EVENT_MODEL_POS);
+        const int16_t tri = *reinterpret_cast<const int16_t*>(
+            me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
+        const int32_t mx = mpos[0] >> 12;
+        const int32_t my = mpos[1] >> 12;
+        if (tri == 0 && mx == 0 && my == 0)
+            continue;                       // parked (v2.30.19)
+        std::wstring lbl;
+        if (!FieldModelLabel(m, fname, lbl))
+            continue;
+        const wchar_t* friendly = nullptr;
+        if (ClassifyModelLabel(lbl, &friendly) != MC_PERSON)
+            continue;                       // props/chests never named here
+        out[cnt].x    = static_cast<float>(mx);
+        out[cnt].y    = static_cast<float>(my);
+        out[cnt].slot = m;
+        out[cnt].name = TranslateDevLabel(lbl);
+        ++cnt;
+    }
+    return cnt;
+}
+
+// Nearest person within BODY_SEARCH_DIST whose bearing lies within the
+// blocking cone of the given world direction. The d<1 case (standing
+// literally on the body's coordinates — scripted overlaps) counts as a hit
+// regardless of bearing.
+static bool BodyInDirection(float px, float py, float world_deg,
+                            int exclude_slot, std::wstring& out_name,
+                            float* out_dist)
+{
+    BodyInfo bodies[32];
+    const size_t n = CollectBodies(exclude_slot, bodies);
+    const float rad = world_deg * (3.14159265f / 180.0f);
+    const float ux = sinf(rad), uy = cosf(rad);
+    float best = BODY_SEARCH_DIST;
+    bool  hit  = false;
+    for (size_t i = 0; i < n; ++i) {
+        const float dx = bodies[i].x - px;
+        const float dy = bodies[i].y - py;
+        const float d  = sqrtf(dx * dx + dy * dy);
+        if (d >= best)
+            continue;
+        if (d >= 1.0f && (dx * ux + dy * uy) / d < BODY_CONE_MIN_COS)
+            continue;
+        best     = d;
+        hit      = true;
+        out_name = bodies[i].name;
+    }
+    if (hit && out_dist)
+        *out_dist = best;
+    return hit;
+}
+
+// First person (smallest advance along the ray) whose center lies within
+// BODY_CONTACT_DIST of the segment from (px,py) of the given length —
+// "will walking this quantized leg run into somebody?"
+static bool BodyOnRay(float px, float py, float world_deg, float length,
+                      int exclude_slot, std::wstring& out_name)
+{
+    BodyInfo bodies[32];
+    const size_t n = CollectBodies(exclude_slot, bodies);
+    const float rad = world_deg * (3.14159265f / 180.0f);
+    const float ux = sinf(rad), uy = cosf(rad);
+    float best_t = FLT_MAX;
+    bool  hit    = false;
+    for (size_t i = 0; i < n; ++i) {
+        const float dx = bodies[i].x - px;
+        const float dy = bodies[i].y - py;
+        const float t  = dx * ux + dy * uy;        // advance along the ray
+        const float tc = (t < 0.0f) ? 0.0f : (t > length ? length : t);
+        const float cx = px + ux * tc - bodies[i].x;
+        const float cy = py + uy * tc - bodies[i].y;
+        if (cx * cx + cy * cy >= BODY_CONTACT_DIST * BODY_CONTACT_DIST)
+            continue;
+        if (tc < best_t) {
+            best_t   = tc;
+            hit      = true;
+            out_name = bodies[i].name;
+        }
+    }
+    return hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -6541,15 +6809,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const bool have_lbl = FieldModelLabel(m, fname, lbl);
 
                 if (Config::Get().debug_log) {
-                    char dbg[192];
+                    // rc6E/rc70/rc72: collision-radius candidate words
+                    // (v2.30.22) — see FIELD_EVENT_RADIUS_CAND_* for the
+                    // hunt. Expect the real one to read ~32 for people.
+                    char dbg[224];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] NAV person m=%u tri=%d ent=%u talk=%d "
-                        "pos=(%ld,%ld) label='%ls'",
+                        "pos=(%ld,%ld) label='%ls' rc6E=%d rc70=%d rc72=%d",
                         m, tri,
                         *reinterpret_cast<const uint8_t*>(me + FF7Addr::FIELD_EVENT_ENTITY_ID),
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_TALK_RADIUS),
                         static_cast<long>(mx), static_cast<long>(my),
-                        have_lbl ? lbl.c_str() : L"(none)");
+                        have_lbl ? lbl.c_str() : L"(none)",
+                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_RADIUS_CAND_6E),
+                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_RADIUS_CAND_70),
+                        *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_RADIUS_CAND_72));
                     Log::Write(dbg);
                 }
 
@@ -6935,14 +7209,35 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             const float fty = fpy + dy;
             const float ftz = d.line_z1 + t * (d.line_z2 - d.line_z1);
             std::wstring route;
+            int   first_sector = -1;
+            float first_len    = 0.0f;
             const RouteOutcome ro = BuildTurnByTurnRoute(
                 fpx, fpy, fpz, player_tri, ftx, fty, ftz,
-                d.target_tri, control_deg, route);
+                d.target_tri, control_deg, route,
+                &first_sector, &first_len);
             if (ro == RouteOutcome::SPOKEN_ROUTE) {
                 std::wstring rmsg(d.name);
                 rmsg += L": ";
                 rmsg += route;
                 rmsg += L'.';
+                // v2.30.22 body caution: the route is walkmesh-correct,
+                // but a solid PERSON standing on the first quantized leg
+                // stops the player exactly like a wall (the 2026-07-25
+                // hideout report — Tifa in the aisle to Barret). Warn in
+                // the same utterance so "left 1 second" comes with the
+                // reason it may thud. The destination model itself is
+                // excluded — routes TO a person always end at their body.
+                if (first_sector >= 0) {
+                    const float ray_world = first_sector * 45.0f
+                                            - control_deg + 180.0f;
+                    std::wstring bname;
+                    if (BodyOnRay(fpx, fpy, ray_world, first_len + 40.0f,
+                                  d.model_slot, bname)) {
+                        rmsg += L' ';
+                        rmsg += bname;
+                        rmsg += L" is in the way.";
+                    }
+                }
                 TTS::Speak(rmsg, /*interrupt=*/true);
                 spoke_route = true;
             } else if (ro == RouteOutcome::NO_PATH) {
@@ -6960,7 +7255,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
         // ---- straight-line announcement (style "line", and the fallback) --
         if (!spoke_route) {
-            wchar_t msg[128];
+            wchar_t msg[192];
             const int secs = static_cast<int>(
                 dist / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
             if (secs < 1)
@@ -6972,6 +7267,22 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                              L"%ls%ls: %ls, %d %ls.",
                              fallback_prefix, d.name, DpadSectorName(input_deg),
                              secs, secs == 1 ? L"second" : L"seconds");
+            // v2.30.22 body caution, straight-line flavor: test the
+            // QUANTIZED direction the announcement names (not the exact
+            // bearing — the player walks the d-pad word they heard),
+            // over the first ~2 seconds of travel.
+            {
+                const float ray_world =
+                    DpadSectorIndex(input_deg) * 45.0f - control_deg + 180.0f;
+                const float ray_len = (dist < 320.0f ? dist : 320.0f) + 40.0f;
+                std::wstring bname;
+                if (BodyOnRay(static_cast<float>(px), static_cast<float>(py),
+                              ray_world, ray_len, d.model_slot, bname)) {
+                    wcsncat_s(msg, _countof(msg), L" ", _TRUNCATE);
+                    wcsncat_s(msg, _countof(msg), bname.c_str(), _TRUNCATE);
+                    wcsncat_s(msg, _countof(msg), L" is in the way.", _TRUNCATE);
+                }
+            }
             TTS::Speak(msg, /*interrupt=*/true);
         }
         // Wandering cue on the directions query too — a moving target's

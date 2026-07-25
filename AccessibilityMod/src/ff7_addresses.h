@@ -1518,6 +1518,20 @@ constexpr uint32_t FIELD_EVENT_TALK_RADIUS = 0x74; // s16, talk interaction radi
 constexpr uint32_t FIELD_EVENT_TRIANGLE_ID = 0x78; // s16, walkmesh triangle the
                                                    // model stands on (<0 = off-mesh)
 
+// COLLISION-RADIUS CANDIDATES (v2.30.22, diagnostics only -- NOT confirmed,
+// do not consume in logic). The 2026-07-25 hideout log proved model bodies
+// hard-block movement (player pinned at exactly 64.0 units from Tifa = a
+// 32+32 radius pair) but the struct offset holding each model's collision
+// radius is unmapped. The three words between character_id (+0x6C..+0x6D)
+// and talk_radius (+0x74) are the natural suspects; the NAV person debug
+// line dumps them per model so one play session's log picks the offset
+// (expect ~32 in the winner for ordinary people). Once confirmed, promote
+// the winner to a real named constant + research doc §4/§14 rows, and
+// revisit the deferred body-aware rerouting (TODO.txt).
+constexpr uint32_t FIELD_EVENT_RADIUS_CAND_6E = 0x6E;
+constexpr uint32_t FIELD_EVENT_RADIUS_CAND_70 = 0x70;
+constexpr uint32_t FIELD_EVENT_RADIUS_CAND_72 = 0x72;
+
 // Talk-enabled byte (v2.26): the TLKON opcode (0x7E, handler 0x618A80 —
 // static disasm 2026-07-16) writes its 1-byte arg RAW to +0x61 of the
 // entity's model record: 0 = talkable (the memset default), 1 = talk

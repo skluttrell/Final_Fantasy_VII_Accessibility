@@ -3185,6 +3185,62 @@ explained other "slightly off" pathfinder behavior is likely right:
 any route that previously threaded a locked region now routes around
 it (or honestly reports no path).
 
+### v2.30.22 (2026-07-25): solid NPC bodies — "Tifa is in the way"
+
+Play report (7th Heaven hideout, mds7pb_2 = field 155, screenshot
+7h_hidout_1.jpg): route to Barret said "left 1 second, then down and
+left 1 second", but pressing left produced only the wall thud. The
+whole diagnosis ran OFFLINE the same morning
+(`investigate/ff7_hideout_firstleg_dryrun.py`, logs
+`hideout_firstleg_dryrun_20260725_*`), replicating the shipped
+pipeline over the flevel walkmesh:
+
+- **Exact reproduction first**: same A* path (10 tris), same 4 funnel
+  corners, same spoken text — including the IDLCK lock set, recovered
+  from the field script bytes (tris 22/23/26; both flag polarities
+  give the log's exact "7 edge(s) cut"). The v2.30.21 lock overlay is
+  play-validated by the same log (locked-field cut lines on three
+  fields, sane routes).
+- **The route was RIGHT and unfollowable at once**: the exact
+  first-leg bearing (input 282.5°) walks its full 108 units clean;
+  the quantized "left" (270°) ray is what the player actually walks,
+  and **Tifa stood on it**. The live log shows the player pinned at
+  EXACTLY 64.0 units from her center for 3½ minutes, zero movement
+  on any input with a positive component toward her: **FF7 models
+  hard-block each other, radii ≈ 32+32, no slide around bodies**
+  (walls DO slide — the calib deflections in the same log). To every
+  signal the mod reads, a body is byte-identical to a wall.
+- **Rerouting needs real radii**: a flood fill over the mesh shows
+  64-unit contact SEALS this room completely (Barret unreachable from
+  anywhere — yet the room is playable sighted), while 56 opens it.
+  So per-model radii differ and any body-aware A*/funnel work would
+  be guessing. Arc-bypass detour prototypes also showed quantized
+  8-way speech degrades badly on tight detours (zigzag corners fold
+  into fictional long legs). DEFERRED until radii are mapped
+  (TODO.txt entry has the full experiment log).
+
+**Shipped instead — the honest layer** (all proxy.cpp):
+
+1. **Bump naming**: when the wall tone fires and a person-class model
+   stands within 90 units inside ±60° of the held direction, speak
+   "<Name> is in the way." once per contact episode (reset on
+   movement/release). Names via the same label→translate pipeline as
+   the browser (`CollectBodies`/`BodyInDirection`; FieldModelLabel is
+   a pure parser, safe from the wall thread).
+2. **Route caution**: the directions announce appends the same
+   sentence when the FIRST quantized leg's ray (the d-pad word the
+   player will actually hold — `RouteToSpeech` now returns the first
+   folded segment) passes within 56 units of a body
+   (`BodyOnRay`; 56 = the flood fill's "certainly matters"
+   threshold). Straight-line style gets the equivalent check on its
+   quantized bearing. The destination model itself is excluded.
+3. **Radius hunt diagnostics**: the `NAV person` debug line now dumps
+   the three unmapped words between character_id and talk_radius
+   (`rc6E/rc70/rc72`, FIELD_EVENT_RADIUS_CAND_*) — one session's log
+   should show ~32 in the real collision-radius slot; promote the
+   winner to §4/§14 and revisit the deferred rerouting. A `WALL body:`
+   line also logs each naming event with the measured distance.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
