@@ -3326,6 +3326,51 @@ The same morning's log held the whole answer:
    (the hideout Tifa case falls back to the caution, correct for a gap
    the player must shimmy through anyway).
 
+### v2.30.25 (2026-07-25): stale triangle hints + routes to off-floor targets
+
+Play report (evening, hideout): routes to Biggs made no sense ("up and
+right 1 second, then left 2 seconds" from the bottom-left corner; "left
+2 seconds. Barret is in the way." while standing in the open). The log's
+smoking gun: `NAV route start=0 goal=0 path=1 'left 2 seconds'` — the
+player STOOD on triangle 0 while Biggs' live triangle field (+0x78)
+ALSO read 0, yet he stands at (-191,46), a different corner of the room.
+**Scripted idle models never update their triangle field** — the same
+stale-0 signature the v2.30.19 parked-ghost work saw (aval/avaw/avafat
+all read tri=0 with real positions). Every route to Biggs/Jessie aimed
+at the wrong triangle, then the funnel appended the true position as a
+final straight leg THROUGH walls, and Barret (who really stands near
+that fictional line) triggered the caution.
+
+Fixes (offline-validated against the exact failing positions before
+deploying — the replica reproduced tri-72 unreachability and the fixed
+speech):
+
+1. **ResolveTriHint**: a model's triangle id is only a HINT — trusted
+   only when the hinted triangle actually contains the model's 2D
+   position (slack 8); otherwise WalkmeshLocate from the position.
+   Applied to start+goal in both the route builder and the journey
+   planner.
+2. **Nearest-reachable routing** (`to_nearest`): with the hint fixed,
+   Biggs' position locates to tri 72 — which is UNREACHABLE: he sits ON
+   the crates, off the walkable floor (same class as Tifa behind the
+   locked counter). Instead of the bare "No walkable path found" +
+   straight line, the NO_PATH fallback now (after the journey planner
+   declines) floods the player's component, picks the reachable
+   triangle nearest the target, aims the funnel at its closest point,
+   and speaks "<Name>, off the walkable area: <route>". For Biggs the
+   stand point is 6 units from him — talk radius trivially covers it;
+   spoken result from the failing position: "up and left 1 second".
+3. **target_reach**: body tests and both cautions stop at the target's
+   TALK RADIUS (live read, floor 20/cap 90; exits/lines keep 0) — the
+   walk only needs to END within reach, so a companion shoulder-to-
+   shoulder with the target (Barret 73u from Biggs) is no longer a
+   blocker or a spurious "in the way".
+
+Bonus log confirmations same session: v2.30.23 suffixes live ("border,
+exit" in the lift field, "pinball, exit to 7th Heaven" — destination
+naming through the v2.25 cache working), v2.30.22 naming firing
+(Tifa/Jessie), col= radius values sane everywhere.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

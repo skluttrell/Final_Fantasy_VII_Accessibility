@@ -4737,6 +4737,32 @@ static float TriangleDistance(const struct WalkTri& w, float x, float y)
 // height difference²: zero for "inside, same height", and a triangle
 // directly underfoot always beats the same spot on another layer.
 static int WalkmeshLocate(const std::vector<WalkTri>& m,
+                          float x, float y, float z);
+
+// A model's live triangle id (+0x78) is only a HINT (v2.30.25): scripted
+// idle models never update it — the hideout's Biggs stood at (-191,46)
+// while his field still read triangle 0 from the bottom corridor, so
+// every route to him planned to the wrong corner and then "spoke" a
+// straight line through walls (the 2026-07-25 evening log's
+// `start=0 goal=0 'left 2 seconds'` line is the smoking gun; Jessie's
+// routes carried the same stale 0). Trust a hint ONLY when the hinted
+// triangle actually contains (within a small slack) the position it
+// claims to locate; otherwise geometry-locate from the position, which
+// also handles off-mesh targets (nearest triangle + height score).
+// Known residual: on STACKED layers a stale hint that happens to name
+// the other layer's triangle under the same 2D point would pass — a
+// far smaller lie than the cross-room one this catches, and the
+// height-aware locate still corrects the no-hint path.
+static int ResolveTriHint(const std::vector<WalkTri>& m, int hint,
+                          float x, float y, float z)
+{
+    const int n = static_cast<int>(m.size());
+    if (hint >= 0 && hint < n && TriangleDistance(m[hint], x, y) <= 8.0f)
+        return hint;
+    return WalkmeshLocate(m, x, y, z);
+}
+
+static int WalkmeshLocate(const std::vector<WalkTri>& m,
                           float x, float y, float z)
 {
     int   best = -1;
@@ -5047,13 +5073,27 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                                          int goal_hint,
                                          float control_deg,
                                          int exclude_model_slot,
+                                         float target_reach,
                                          std::wstring& out_route,
                                          int* out_first_sector = nullptr,
-                                         float* out_first_len = nullptr)
+                                         float* out_first_len = nullptr,
+                                         bool to_nearest = false)
 {
+    // to_nearest (v2.30.25): when the target is graph-unreachable
+    // (off the walkable floor — Biggs sitting on the hideout crates,
+    // Tifa behind the locked bar counter), route to the REACHABLE
+    // triangle nearest the target instead of giving up, aiming the walk
+    // at that triangle's closest point. The caller words the result as
+    // "off the walkable area" and the talk radius covers the last gap.
     // exclude_model_slot (v2.30.24): the destination's own model when
     // routing to a person — their body always sits at the route's end
     // and must not count as a blocker.
+    // target_reach (v2.30.25): how far short of the target the walk may
+    // END and still succeed — a person is "reached" at their talk
+    // radius. Body tests ignore the final reach-length of the route, so
+    // a companion standing shoulder-to-shoulder with the target (Barret
+    // 73 units from Biggs) neither blocks the route nor triggers a
+    // reroute the room can't satisfy.
     std::vector<WalkTri> mesh;
     if (!LoadWalkmesh(mesh)) {
         Log::Write("[FF7Access] NAV route: walkmesh unavailable, "
@@ -5061,16 +5101,82 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
         return RouteOutcome::UNAVAILABLE;
     }
     const int n = static_cast<int>(mesh.size());
-    const int start = (start_hint >= 0 && start_hint < n)
-                          ? start_hint : WalkmeshLocate(mesh, px, py, pz);
-    const int goal  = (goal_hint >= 0 && goal_hint < n)
-                          ? goal_hint : WalkmeshLocate(mesh, tx, ty, tz);
+    // v2.30.25: hints validated against their positions (stale-triangle
+    // fix — see ResolveTriHint).
+    const int start = ResolveTriHint(mesh, start_hint, px, py, pz);
+    int       goal  = ResolveTriHint(mesh, goal_hint, tx, ty, tz);
     if (start < 0 || goal < 0)
         return RouteOutcome::UNAVAILABLE;
 
     std::vector<uint16_t> path;
-    if (!WalkmeshAStar(mesh, start, goal, path))
-        return RouteOutcome::NO_PATH;
+    if (!WalkmeshAStar(mesh, start, goal, path)) {
+        if (!to_nearest)
+            return RouteOutcome::NO_PATH;
+        // Nearest-reachable recovery: flood the start's component over
+        // the (lock-cut) graph, pick the triangle nearest the target,
+        // and aim the walk at its closest point to the target. Offline-
+        // validated 2026-07-25: Biggs on the crates resolves to a stand
+        // point 6 units from him — well inside talk radius.
+        std::vector<uint8_t> comp(n, 0);
+        std::vector<int> bfs{ start };
+        comp[start] = 1;
+        while (!bfs.empty()) {
+            const int t = bfs.back();
+            bfs.pop_back();
+            for (int e = 0; e < 3; ++e) {
+                const uint16_t nb = mesh[t].nbr[e];
+                if (nb != FF7Addr::FWMESH_NO_NEIGHBOR && !comp[nb]) {
+                    comp[nb] = 1;
+                    bfs.push_back(nb);
+                }
+            }
+        }
+        int   best   = -1;
+        float best_d = FLT_MAX;
+        for (int t = 0; t < n; ++t) {
+            if (!comp[t])
+                continue;
+            const float dd = TriangleDistance(mesh[t], tx, ty);
+            if (dd < best_d) {
+                best_d = dd;
+                best   = t;
+            }
+        }
+        if (best < 0)
+            return RouteOutcome::NO_PATH;
+        if (best_d > 0.0f) {
+            // redirect the walk endpoint to the best triangle's closest
+            // point (tx/ty are by-value — safe to overwrite)
+            float bpd = FLT_MAX, bx = tx, by = ty;
+            for (int e = 0; e < 3; ++e) {
+                const int f = (e + 1) % 3;
+                const float ex = mesh[best].vx[f] - mesh[best].vx[e];
+                const float ey = mesh[best].vy[f] - mesh[best].vy[e];
+                const float l2 = ex * ex + ey * ey;
+                float t2 = (l2 > 0.0f)
+                    ? ((tx - mesh[best].vx[e]) * ex +
+                       (ty - mesh[best].vy[e]) * ey) / l2
+                    : 0.0f;
+                if (t2 < 0.0f) t2 = 0.0f;
+                if (t2 > 1.0f) t2 = 1.0f;
+                const float cx2 = mesh[best].vx[e] + t2 * ex;
+                const float cy2 = mesh[best].vy[e] + t2 * ey;
+                const float d2  = (cx2 - tx) * (cx2 - tx) +
+                                  (cy2 - ty) * (cy2 - ty);
+                if (d2 < bpd) {
+                    bpd = d2;
+                    bx  = cx2;
+                    by  = cy2;
+                }
+            }
+            tx = bx;
+            ty = by;
+        }
+        goal = best;
+        path.clear();
+        if (!WalkmeshAStar(mesh, start, goal, path))
+            return RouteOutcome::NO_PATH;   // cannot happen (same comp)
+    }
 
     std::vector<PathPortal> portals;
     BuildPortals(mesh, path, portals);
@@ -5104,8 +5210,30 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
         BodyInfo bodies[32];
         const size_t nb = CollectBodies(exclude_model_slot, bodies);
         const float pr = PlayerCollisionRadius();
-        const auto blocked_by = [&](const std::vector<NavPt>& cs) {
+        // Pull the route's END back by target_reach before testing (the
+        // v2.30.25 rule above): walk backward along the corners removing
+        // reach-length of polyline.
+        const auto truncate_reach = [&](std::vector<NavPt> cs) {
+            float cut = target_reach;
+            while (cut > 0.0f && !cs.empty()) {
+                const NavPt prev = (cs.size() >= 2)
+                                       ? cs[cs.size() - 2] : NavPt{ px, py };
+                const float lx = cs.back().x - prev.x;
+                const float ly = cs.back().y - prev.y;
+                const float len = sqrtf(lx * lx + ly * ly);
+                if (len > cut && len > 0.0f) {
+                    cs.back().x -= lx / len * cut;
+                    cs.back().y -= ly / len * cut;
+                    break;
+                }
+                cut -= len;
+                cs.pop_back();
+            }
+            return cs;
+        };
+        const auto blocked_by = [&](const std::vector<NavPt>& corners_in) {
             // indices of bodies whose contact circle some leg enters
+            const std::vector<NavPt> cs = truncate_reach(corners_in);
             std::vector<int> hits;
             for (size_t b = 0; b < nb; ++b) {
                 const float rr = pr + bodies[b].radius + kBodyRouteMargin;
@@ -6038,10 +6166,8 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
     if (!LoadWalkmesh(mesh))
         return false;
     const int n = static_cast<int>(mesh.size());
-    const int start = (start_hint >= 0 && start_hint < n)
-                          ? start_hint : WalkmeshLocate(mesh, px, py, pz);
-    const int goal  = (goal_hint >= 0 && goal_hint < n)
-                          ? goal_hint : WalkmeshLocate(mesh, tx, ty, tz);
+    const int start = ResolveTriHint(mesh, start_hint, px, py, pz);
+    const int goal  = ResolveTriHint(mesh, goal_hint, tx, ty, tz);
     if (start < 0 || goal < 0)
         return false;
 
@@ -7415,6 +7541,24 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         //                  prefix (the FF4 mod's out-of-range behavior);
         //   UNAVAILABLE  — mesh unreadable or failed its self-guards:
         //                  silent straight-line fallback.
+        // v2.30.25: how far short of the target the walk may stop — a
+        // person is reached at their TALK RADIUS (read live; floor 20 so
+        // talk=0/1 models still get approached, cap 90). Exits/lines
+        // keep 0: those must be stepped on. Used by the route builder's
+        // body tests AND both cautions below.
+        float target_reach = 0.0f;
+        if (d.model_slot >= 0) {
+            int16_t tr = 40;
+            const uint8_t* tme = reinterpret_cast<const uint8_t*>(
+                arr + d.model_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+            if (IsReadableSpan(tme, FF7Addr::FIELD_EVENT_DATA_STRIDE))
+                tr = *reinterpret_cast<const int16_t*>(
+                    tme + FF7Addr::FIELD_EVENT_TALK_RADIUS);
+            if (tr < 20) tr = 20;
+            if (tr > 90) tr = 90;
+            target_reach = static_cast<float>(tr);
+        }
+
         const wchar_t* fallback_prefix = L"";
         bool spoke_route = false;
         if (Config::Get().turn_by_turn) {
@@ -7429,8 +7573,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             float first_len    = 0.0f;
             const RouteOutcome ro = BuildTurnByTurnRoute(
                 fpx, fpy, fpz, player_tri, ftx, fty, ftz,
-                d.target_tri, control_deg, d.model_slot, route,
-                &first_sector, &first_len);
+                d.target_tri, control_deg, d.model_slot, target_reach,
+                route, &first_sector, &first_len);
             if (ro == RouteOutcome::SPOKEN_ROUTE) {
                 std::wstring rmsg(d.name);
                 rmsg += L": ";
@@ -7446,8 +7590,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 if (first_sector >= 0) {
                     const float ray_world = first_sector * 45.0f
                                             - control_deg + 180.0f;
+                    // v2.30.25: never probe INSIDE the target's reach
+                    // bubble — a companion standing next to the target
+                    // is not "in the way" of a walk that stops at talk
+                    // range. dist = straight-line distance to target.
+                    float clen = first_len + 40.0f;
+                    const float cap = dist - target_reach + 40.0f;
+                    if (clen > cap) clen = cap;
                     std::wstring bname;
-                    if (BodyOnRay(fpx, fpy, ray_world, first_len + 40.0f,
+                    if (clen > 0.0f &&
+                        BodyOnRay(fpx, fpy, ray_world, clen,
                                   d.model_slot, bname)) {
                         rmsg += L' ';
                         rmsg += bname;
@@ -7464,7 +7616,43 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     TTS::Speak(jmsg, /*interrupt=*/true);
                     spoke_route = true;
                 } else {
-                    fallback_prefix = L"No walkable path found. ";
+                    // v2.30.25: no journey either — the target stands
+                    // OFF the walkable floor (Biggs on the crates, Tifa
+                    // behind the locked counter). Route to the nearest
+                    // reachable point instead of a bare straight-line
+                    // shrug; the talk radius covers the last gap.
+                    std::wstring nroute;
+                    int   nsec = -1;
+                    float nlen = 0.0f;
+                    if (BuildTurnByTurnRoute(fpx, fpy, fpz, player_tri,
+                            ftx, fty, ftz, d.target_tri, control_deg,
+                            d.model_slot, target_reach, nroute,
+                            &nsec, &nlen, /*to_nearest=*/true)
+                        == RouteOutcome::SPOKEN_ROUTE) {
+                        std::wstring rmsg(d.name);
+                        rmsg += L", off the walkable area: ";
+                        rmsg += nroute;
+                        rmsg += L'.';
+                        if (nsec >= 0) {   // same caution + reach cap
+                            const float ray_world = nsec * 45.0f
+                                                    - control_deg + 180.0f;
+                            float clen = nlen + 40.0f;
+                            const float cap = dist - target_reach + 40.0f;
+                            if (clen > cap) clen = cap;
+                            std::wstring bname;
+                            if (clen > 0.0f &&
+                                BodyOnRay(fpx, fpy, ray_world, clen,
+                                          d.model_slot, bname)) {
+                                rmsg += L' ';
+                                rmsg += bname;
+                                rmsg += L" is in the way.";
+                            }
+                        }
+                        TTS::Speak(rmsg, /*interrupt=*/true);
+                        spoke_route = true;
+                    } else {
+                        fallback_prefix = L"No walkable path found. ";
+                    }
                 }
             }
         }
@@ -7490,9 +7678,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             {
                 const float ray_world =
                     DpadSectorIndex(input_deg) * 45.0f - control_deg + 180.0f;
-                const float ray_len = (dist < 320.0f ? dist : 320.0f) + 40.0f;
+                // v2.30.25: capped at the target's reach bubble, same
+                // rule as the turn-by-turn caution.
+                float ray_len = (dist < 320.0f ? dist : 320.0f) + 40.0f;
+                const float cap = dist - target_reach + 40.0f;
+                if (ray_len > cap) ray_len = cap;
                 std::wstring bname;
-                if (BodyOnRay(static_cast<float>(px), static_cast<float>(py),
+                if (ray_len > 0.0f &&
+                    BodyOnRay(static_cast<float>(px), static_cast<float>(py),
                               ray_world, ray_len, d.model_slot, bname)) {
                     wcsncat_s(msg, _countof(msg), L" ", _TRUNCATE);
                     wcsncat_s(msg, _countof(msg), bname.c_str(), _TRUNCATE);

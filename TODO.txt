@@ -541,6 +541,36 @@ choice page at +15, speaking lead-in" -> "choice page reached
 (rel=18)" -> options queued and cursor tracked both directions
 (09:49:17-25). Single-page ASKs (win=1 id=4, 09:47:36) also clean.
 
+[NAV] Nonsense routes to Biggs: stale triangle hints + off-floor targets — FIXED v2.30.25 (2026-07-25), awaiting play-test
+------------------------------------------------------------------------
+Player report (evening): "Biggs: up and right 1 second, then left 2
+seconds" from the bottom-left corner; then "Biggs: left 2 seconds.
+Barret is in the way." — never reached him. Log smoking gun:
+"NAV route start=0 goal=0 path=1 'left 2 seconds'" — Biggs' live
+triangle field reads a stale 0 (scripted idle models never update
++0x78; same signature as the v2.30.19 parked-ghost finding), so every
+route aimed at the wrong triangle and the funnel appended a fake
+straight leg through walls (which genuinely passed near Barret —
+hence the caution).
+FIXES (offline-validated against the failing positions first):
+  - ResolveTriHint: trust a model's triangle hint only if that
+    triangle CONTAINS the model's position; else geometry-locate.
+    Applied in the route builder AND journey planner.
+  - Nearest-reachable routing: Biggs actually sits ON the crates
+    (off-floor; his position locates to an unreachable sliver tri).
+    NO_PATH now falls back (after the journey planner) to a real
+    route to the nearest reachable point — "Biggs, off the walkable
+    area: up and left 1 second." Stand point is 6u from him; talk
+    radius covers it. Also upgrades Tifa-behind-counter class fields.
+  - target_reach: body tests + cautions stop at the target's talk
+    radius (live, floor 20 cap 90) — a companion standing beside the
+    target no longer blocks or warns.
+VERIFY: (a) Biggs route speaks a sane left-side route with no phantom
+"Barret is in the way", ends in talk range (chirp) — talk to him;
+(b) Jessie/Wedge routes sane (same stale-hint class); (c) counter/
+crate NPCs elsewhere say "off the walkable area: <route>" instead of
+"No walkable path found"; (d) routes to normal walking NPCs unchanged.
+
 [NAV] Triggers spoke bare dev names — line-trigger behavior catalog SHIPPED v2.30.23 (2026-07-25), awaiting play-test
 ------------------------------------------------------------------------
 Player report: stuck in the hideout wanting to go back upstairs, stood
