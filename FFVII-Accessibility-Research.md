@@ -3624,6 +3624,31 @@ has no evidence about. Discrete terminal values {4,6,14} keep their fast
 80ms path. The tone log now prints ptrstill/chg so the next report
 distinguishes which path fired or failed.
 
+### v2.30.32 (2026-07-26): shop's false "Save" + the short-dialog chime hole
+
+Two same-day play reports on the fresh builds:
+
+**1. "Says save when it's on Buy the first time" (shop open).** The shop
+raises MENU_OPEN while every main-menu byte stays STALE — and the
+player's last main-menu visit had ended on the Save row, so MENU_CURSOR
+was parked at 9: MenuCursorThread's open-re-announce spoke row 9's label
+("Save") over the shop greeting. Same failure class as the naming
+screen's false "Item" (v2.8.3), now generalized: MenuModuleForeignScreen
+(GAME_MODE 6 name entry / 7 PHS / 8 shop) stands down ALL six main-menu-
+family threads — cursor, config, save (whose whole mode gate is
+"MENU_CURSOR frozen at 9", i.e. EXACTLY this stale signature), item,
+order, status. The exclusion list stays narrow and live-evidenced.
+
+**2. "Talked to a kid, single short box, no chime."** v2.30.31's
+pointer-liveness test required ≥3 pointer changes — but a short message
+can render in as little as ONE pointer jump (open buffer swap + whole-
+page write = 2 changes), so the pointer was declared dead and the {1,2}
+blacklist muted the wait again. Liveness is now proven by POSITION as
+well: the live pointer sitting PAST the decoded message's start
+(msg_base, the v2.30.19 capture) proves consumption no matter how few
+steps it took; dead pointers sit AT the start forever. The tone log
+gains rel= alongside ptrstill=/chg=.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

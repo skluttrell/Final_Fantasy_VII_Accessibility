@@ -754,6 +754,12 @@ constexpr uint32_t SAVEMAP_CHAR_EXPNEXT_OFF = 0x80;
 // the menu PARAM word 0xCC0D8A -> copied to SHOP_ID by the shop init
 // (0x719D7A disasm).
 constexpr uint8_t  GAME_MODE_SHOP  = 8;
+constexpr uint8_t  GAME_MODE_PHS   = 7;   // same jump-table decode; the PHS
+                                          // screen from field scripts. Not
+                                          // yet hooked — known only so the
+                                          // main-menu threads can stand down
+                                          // (their MENU_OPEN/cursor bytes go
+                                          // stale-but-raised there too).
 constexpr uint32_t MENU_PARAM_WORD = 0x00CC0D8A;  // s16 opcode param (shop id)
 
 // The shop loop (0x71AAA3) is a switch on SHOP_STATE (jump table 0x71E193,

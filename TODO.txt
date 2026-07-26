@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[SHOP+DIALOG] False "Save" on shop open + short-dialog chime hole — FIXED v2.30.32 (2026-07-26)
+------------------------------------------------------------------------
+(1) Shop open spoke "Save": stale MENU_CURSOR (row 9) + shop's
+MENU_OPEN → MenuCursorThread announced over the greeting. All six
+main-menu threads now stand down on foreign menu screens (name entry
+6 / PHS 7 / shop 8) via MenuModuleForeignScreen. VERIFY: shop open
+speaks greeting then "Buy, Sell, or Exit. Buy." with no stray menu
+row; main menu itself still announces normally after a shop visit.
+(2) Short single-box dialog had no chime: a message rendered in one
+pointer jump failed the >=3-changes liveness test → blacklist muted
+it. Liveness now also proven by pointer POSITION past the message
+start. VERIFY: short one-box NPC lines (the kid) chime; log line
+shows rel= on each tone. Research §8 v2.30.32.
+
 [DIALOG] Wait tone muted on some pages — FIXED v2.30.31 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 Player report: some dialogs don't chime at the continue wait, no

@@ -1199,7 +1199,23 @@ static int __cdecl hook_message()
             // the pure value-tier behavior — no new false-fire surface.
             const DWORD ptr_still_ms =
                 GetTickCount() - s_window[window_id].rawptr_change_tick;
+            // v2.30.32: liveness by POSITION, not just change count. A
+            // short message can render in as little as ONE pointer jump
+            // (open swap + whole-page write = 2 changes), so the >=3
+            // change test declared the pointer dead and the {1,2}
+            // blacklist muted the wait — the 2026-07-26 "talked to a kid,
+            // single short box, no chime" report. The pointer sitting
+            // PAST the decoded message's start (msg_base, captured at
+            // PENDING) proves this dialog's pointer consumes text no
+            // matter how few steps it took; dead pointers sit AT the
+            // start forever (rel 0) and keep the change-count test as
+            // their only (still-safe) route.
+            const ptrdiff_t ptr_rel =
+                (s_window[window_id].msg_base != nullptr)
+                    ? raw_text - s_window[window_id].msg_base
+                    : static_cast<ptrdiff_t>(0);
             const bool pointer_live =
+                (ptr_rel > 0 && ptr_rel < 4096) ||
                 s_window[window_id].rawptr_changes >= 3;
             const bool typewriter_parked =
                 pointer_live && ptr_still_ms >= kFallbackDebounceMs;
@@ -1230,14 +1246,15 @@ static int __cdecl hook_message()
                     // v2.30.31 adds the pointer-stillness numbers so the
                     // NEXT missing-chime report can tell which path fired
                     // (or which one failed to).
-                    char tone_log[128];
+                    char tone_log[144];
                     _snprintf_s(tone_log, sizeof(tone_log), _TRUNCATE,
                         "[FF7Access] MSG win=%u wait tone (state=%u held=%lums "
-                        "ptrstill=%lums chg=%u)",
+                        "ptrstill=%lums chg=%u rel=%ld)",
                         window_id, current_state,
                         static_cast<unsigned long>(held_ms),
                         static_cast<unsigned long>(ptr_still_ms),
-                        static_cast<unsigned>(s_window[window_id].rawptr_changes));
+                        static_cast<unsigned>(s_window[window_id].rawptr_changes),
+                        static_cast<long>(ptr_rel));
                     Log::Write(tone_log);
                 }
             } else {

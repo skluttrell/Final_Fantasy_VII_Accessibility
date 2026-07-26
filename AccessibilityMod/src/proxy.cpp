@@ -492,6 +492,25 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 //
 // Gated by Config::Get().speak_menus.
 // ---------------------------------------------------------------------------
+// v2.30.32: TRUE while the menu module is running a top-level screen that
+// is NOT the main-menu family — name entry (GAME_MODE 6), PHS (7), shop
+// (8). All three raise MENU_OPEN while every main-menu byte (MENU_CURSOR,
+// the dispatch index, FOCUS_MODE, the save-mode frozen-row signature)
+// stays STALE at its last value, so every thread keyed on those bytes
+// must stand down or it narrates a menu that is not on screen. Play-
+// proven twice: the naming screen's false "Item" (v2.8.3) and the shop's
+// false "Save" (2026-07-26 report — MENU_CURSOR was parked on row 9 from
+// the player's last save, and the shop's MENU_OPEN let the row announce
+// talk over the shop greeting).
+static bool MenuModuleForeignScreen()
+{
+    const uint8_t m =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+    return m == FF7Addr::GAME_MODE_NAME_ENTRY ||
+           m == FF7Addr::GAME_MODE_PHS ||
+           m == FF7Addr::GAME_MODE_SHOP;
+}
+
 static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 {
     // Map cursor index → spoken label. nullptr entries are unlockable options
@@ -555,16 +574,12 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         // The NAMING SCREEN also sets MENU_OPEN=1 while FIELD_ID stays
         // non-zero (player-reported 2026-07-12: a false "Item" announce —
         // MENU_CURSOR's stale value — talked over NameEntryThread's own
-        // screen-open announcement). GAME_MODE==6 identifies the naming
-        // screen; that screen's TTS belongs to NameEntryThread, so stand
-        // down completely while it is active. (Deliberately a narrow !=6
-        // exclusion rather than requiring GAME_MODE==9: 9=menu is live-
-        // confirmed for the field main menu, but other MENU_OPEN contexts
-        // haven't been mode-sampled yet, and this project only trusts
-        // live-observed GAME_MODE values.)
-        const uint8_t menu_game_mode =
-            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
-        if (menu_game_mode == FF7Addr::GAME_MODE_NAME_ENTRY) {
+        // screen-open announcement). v2.30.32 widened the same stand-down
+        // to the shop and PHS screens after the shop's false "Save"
+        // (MenuModuleForeignScreen — the exclusion list stays narrow and
+        // live-evidenced rather than requiring GAME_MODE==9, because
+        // other MENU_OPEN contexts haven't been mode-sampled).
+        if (MenuModuleForeignScreen()) {
             last_cursor      = 0xFF;
             last_menu_open   = 0;
             last_quit_cursor = 0xFF;
@@ -774,6 +789,11 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
             break;
 
         if (!Config::Get().speak_menus) continue;
+
+        // v2.30.32: MENU_CURSOR is stale on the menu module's foreign
+        // screens (shop/PHS/name entry) — the ==7 Config-row proxy below
+        // would trust it (see MenuModuleForeignScreen).
+        if (MenuModuleForeignScreen()) continue;
 
         // Field must be active — config sub-menu only reachable from a field map.
         const int16_t field_id =
@@ -1141,6 +1161,17 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
             break;
 
         if (!Config::Get().speak_menus) {
+            last_phase = last_grid = last_slot = 0xFF;
+            in_confirm = false;
+            last_yesno = 0xFF;
+            continue;
+        }
+
+        // v2.30.32: the save-mode gate below is "MENU_OPEN + MENU_CURSOR
+        // frozen at 9" — EXACTLY the stale signature a shop shows when the
+        // player's last main-menu visit ended on the Save row (the
+        // 2026-07-26 false-"Save" report). Stand down on foreign screens.
+        if (MenuModuleForeignScreen()) {
             last_phase = last_grid = last_slot = 0xFF;
             in_confirm = false;
             last_yesno = 0xFF;
@@ -2890,6 +2921,13 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             continue;
         }
 
+        // v2.30.32: the dispatch index is stale on foreign menu screens
+        // (shop/PHS/name entry) — a leftover 1 would fake "item screen".
+        if (MenuModuleForeignScreen()) {
+            was_open = false;
+            continue;
+        }
+
         // Gate: main menu open, in field, and the dispatcher is running the
         // ITEM sub-screen. The dispatch index is the menu module's own
         // "which screen" variable (see ff7_addresses.h) — but its value on
@@ -3137,6 +3175,13 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
             break;
 
         if (!Config::Get().speak_menus) {
+            last_focus = 0xFF;
+            continue;
+        }
+
+        // v2.30.32: MENU_FOCUS_MODE and the Order-pane bytes are stale on
+        // foreign menu screens (shop/PHS/name entry) — stand down.
+        if (MenuModuleForeignScreen()) {
             last_focus = 0xFF;
             continue;
         }
@@ -3811,6 +3856,13 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             break;
 
         if (!Config::Get().speak_menus) {
+            was_open = false;
+            continue;
+        }
+
+        // v2.30.32: stale dispatch index on foreign menu screens — see
+        // the ItemMenuThread gate.
+        if (MenuModuleForeignScreen()) {
             was_open = false;
             continue;
         }
