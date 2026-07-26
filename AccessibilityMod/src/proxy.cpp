@@ -599,7 +599,17 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             // clear the flag and cut whatever narration is still queued
             // (the player has moved on; finishing the lesson into the
             // field would talk over gameplay).
-            if (Hooks::TutorialActive()) {
+            // v2.30.36: only a genuine open->closed EDGE counts
+            // (last_menu_open != 0 — set at the bottom of the open path,
+            // so it is nonzero here exactly when the previous poll saw
+            // the menu open). TUTOR fires on the FIELD side a beat
+            // before the menu module opens — the request gap the latch
+            // comment in hooks.cpp explicitly says it must cover — and
+            // this branch also runs during that gap: the old
+            // level-triggered clear killed the suppression before the
+            // menu ever opened (cursor-sweep chatter over the lesson)
+            // and cut in-flight speech with a spurious Silence().
+            if (Hooks::TutorialActive() && last_menu_open != 0) {
                 Hooks::ClearTutorialActive();
                 TTS::Silence();
                 Log::Write("[FF7Access] TUTOR: menu closed, tutorial "
@@ -3425,7 +3435,28 @@ static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
         // No game loaded -> the savemap is zeroed and "0 gil" would be a
         // lie about a game that doesn't exist yet. The naming screen gets
         // typed letters — G there is text entry, not a query.
-        if (g_edge && field_id != 0 &&
+        //
+        // v2.30.36: FIELD_ID != 0 was the wrong "game loaded" test — it
+        // really means "standing on a field": the WORLD MAP also reads 0
+        // (this file's own FIELD_ID comments), so G was silently dead
+        // there despite a fully valid savemap ("can I afford the inn?"
+        // is exactly a world-map question). "A game is loaded" is now
+        // proven by the savemap's location caption (LOCATION_NAME_BUFFER,
+        // savemap+0xF0C): every started game has one (MPNAM persists it
+        // through saves — including world-map saves, since it IS savemap
+        // state), while the fresh-boot title screen's zeroed savemap
+        // reads 0x00 there (no caption ever starts with byte 0x00 — FF7
+        // text starts captions with letter glyphs, and BSS zero-init is
+        // what a never-loaded savemap holds). Residual, accepted: after
+        // a quit-to-title the stale savemap may keep its caption, so G
+        // on the title screen can speak the just-quit game's gil — a
+        // cosmetic slip, chosen over a functionally dead key on the
+        // world map.
+        const uint8_t caption0 = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::LOCATION_NAME_BUFFER);
+        const bool game_loaded =
+            (field_id != 0) || (caption0 != 0x00 && caption0 != 0xFF);
+        if (g_edge && game_loaded &&
             game_mode != FF7Addr::GAME_MODE_NAME_ENTRY) {
             const uint32_t gil = *reinterpret_cast<const volatile uint32_t*>(
                 FF7Addr::SAVEMAP_GIL);
@@ -3564,6 +3595,9 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
     bool     was_running = false;
     uint32_t last_text   = 0;       // text ptr of the last SPOKEN window
     bool     first_slide = false;   // next slide gets the "Tutorial." prefix
+    // v2.30.36: deferred latch release (see the finished-edge below).
+    bool     release_pending = false;
+    DWORD    release_tick    = 0;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
@@ -3587,10 +3621,32 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
             // difference between "lesson over, menus are yours again" and
             // the silence the play report described.
             TTS::Speak(L"Tutorial finished.", /*interrupt=*/false);
-            Hooks::ClearTutorialActive();
-            Log::Write("[FF7Access] TUTORIAL finished (engine flag down)");
+            // v2.30.36: DEFER the latch release. Clearing it in this same
+            // poll let whichever menu screen-thread matched the still-open
+            // menu see a "fresh open" on its very next 50ms poll (its
+            // open-latch had been reset every poll by the TutorialActive
+            // gate) and speak its opening announce with interrupt=true —
+            // wiping the just-queued cue before it could play. The player
+            // never heard it. While the latch holds, those threads keep
+            // tracking silently, so nothing is lost: their announce lands
+            // right after the release, AFTER the cue has had time to
+            // speak.
+            release_pending = true;
+            release_tick    = GetTickCount();
+            Log::Write("[FF7Access] TUTORIAL finished (engine flag down), "
+                       "latch release deferred");
         }
         was_running = running;
+
+        // v2.30.36: a new lesson starting during the grace keeps the
+        // suppression up — cancel the pending release.
+        if (running)
+            release_pending = false;
+        if (release_pending && (GetTickCount() - release_tick) >= 1500) {
+            release_pending = false;
+            Hooks::ClearTutorialActive();
+            Log::Write("[FF7Access] TUTORIAL latch released");
+        }
 
         // One announcement per window SHOWING. last_text re-arms when the
         // window fully closes, so the compare-to-last is both the "spoke

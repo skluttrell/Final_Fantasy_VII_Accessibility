@@ -951,8 +951,17 @@ static int __cdecl hook_message()
         // s_old_message() hasn't run yet (called at the bottom of this hook).
         // We defer reading until next frame when rawptr is guaranteed fresh.
         // ------------------------------------------------------------------
-        if (dialog_id != s_window[window_id].last_dialog_id &&
-            Config::Get().speak_dialog) {
+        // v2.30.36: NOT gated on speak_dialog. This branch owns the
+        // per-dialog reset of the wait tone's pointer-liveness evidence
+        // (msg_base / rawptr_changes / rawptr_change_tick), and the wait
+        // tone explicitly serves the voice-acting-mod configuration where
+        // speak_dialog is OFF. With the old gate, that configuration
+        // never reset the evidence: msg_base stayed null (so the
+        // v2.30.32 position liveness never applied — the short-dialog
+        // muted chime came right back) and rawptr_changes accumulated
+        // across dialogs (stale liveness in the other direction). Only
+        // the SPEECH is config-gated now (inside PENDING below).
+        if (dialog_id != s_window[window_id].last_dialog_id) {
             log_field_header_if_changed();
             s_window[window_id].pending_speak  = true;
             s_window[window_id].last_dialog_id = dialog_id;
@@ -1009,20 +1018,33 @@ static int __cdecl hook_message()
         // attempt) went silent on dialogs that soft-wrap with no such byte
         // present (player report 2026-07-20).
         // ------------------------------------------------------------------
-        else if (s_window[window_id].pending_speak && Config::Get().speak_dialog) {
+        else if (s_window[window_id].pending_speak) {
             if (is_valid_dialog_rawptr(raw_text)) {
-                s_window[window_id].pages = FF7Text::DecodeMessagePages(
-                    raw_text, &s_window[window_id].page_offsets);
+                // v2.30.36: msg_base is captured for BOTH configurations —
+                // it anchors the wait tone's position-liveness test
+                // (v2.30.32), which must work with dialog TTS off. Only
+                // the decode + speak below stay behind speak_dialog.
                 s_window[window_id].msg_base = raw_text;   // v2.30.19
-                char dbg[80];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)",
-                    window_id, s_window[window_id].last_dialog_id,
-                    s_window[window_id].pages.size());
-                Log::Write(dbg);
-                log_raw_bytes("PENDING", raw_text);
-                log_lines("MSG PAGE", s_window[window_id].pages);
-                speak_page(s_window[window_id], /*interrupt=*/true);
+                if (Config::Get().speak_dialog) {
+                    s_window[window_id].pages = FF7Text::DecodeMessagePages(
+                        raw_text, &s_window[window_id].page_offsets);
+                    char dbg[80];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)",
+                        window_id, s_window[window_id].last_dialog_id,
+                        s_window[window_id].pages.size());
+                    Log::Write(dbg);
+                    log_raw_bytes("PENDING", raw_text);
+                    log_lines("MSG PAGE", s_window[window_id].pages);
+                    speak_page(s_window[window_id], /*interrupt=*/true);
+                } else {
+                    char dbg[80];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] MSG win=%u id=%u [PENDING] tracked "
+                        "(speech off)", window_id,
+                        s_window[window_id].last_dialog_id);
+                    Log::Write(dbg);
+                }
                 s_window[window_id].pending_speak = false;
                 s_window[window_id].last_speak_tick = GetTickCount(); // v2.30.16
             }
@@ -1055,6 +1077,19 @@ static int __cdecl hook_message()
             s_window[window_id].pages.clear();          // v2.30.4
             s_window[window_id].next_page = 0;
             s_window[window_id].wait_tone_armed = false; // v2.30.5
+            // v2.30.36: also drop the pointer-liveness evidence. Leaving
+            // msg_base set kept ptr_rel > 0 through the close animation,
+            // and the typewriter pointer has been still since the final
+            // page finished typing — so the v2.30.31 stillness fallback
+            // re-armed and re-fired the wait tone on the very frame after
+            // this CLOSE (a spurious "press OK" cue right AFTER the
+            // player dismissed the dialog). The state-7 exclusion in the
+            // WAIT TONE gate below is the belt; this is the suspenders
+            // (a fresh dialog re-derives all of it in DLGID anyway).
+            s_window[window_id].msg_base           = nullptr;
+            s_window[window_id].last_rawptr        = nullptr;
+            s_window[window_id].rawptr_change_tick = GetTickCount();
+            s_window[window_id].rawptr_changes     = 0;
             s_window[window_id].close_handled = true;    // v2.30.15: once per stay at 7
             char close_log[64];
             _snprintf_s(close_log, sizeof(close_log), _TRUNCATE,
@@ -1178,7 +1213,14 @@ static int __cdecl hook_message()
         // Edge-triggered via wait_tone_armed. Independent of speak_dialog
         // (voice-acting-mod players get no other "ready for input" cue).
         // ------------------------------------------------------------------
-        if (Config::Get().dialog_wait_tone && has_dialog_text && !was_pending) {
+        // v2.30.36: current_state != 7 — state 7 is the close hold (the
+        // player already pressed OK; there is nothing to wait FOR). The
+        // pointer-stillness fallback otherwise fired here instantly on
+        // the CLOSE-commit frame (see the closing branch's evidence
+        // reset), and no legitimate wait ever happens at 7: the observed
+        // pre-close waits use 6 (win=0) or the fallback tier values.
+        if (Config::Get().dialog_wait_tone && has_dialog_text && !was_pending &&
+            current_state != 7) {
             constexpr DWORD kWaitConfirmMs     = 80;   // ~2-3 polls
             constexpr DWORD kFallbackDebounceMs = 300; // longer than any
                                                         // observed per-poll
@@ -1219,9 +1261,23 @@ static int __cdecl hook_message()
                 s_window[window_id].rawptr_changes >= 3;
             const bool typewriter_parked =
                 pointer_live && ptr_still_ms >= kFallbackDebounceMs;
+            // v2.30.36: the {1,2} override needs a LONGER stillness than
+            // the generic 300ms. Those values are documented ACTIVELY-
+            // TYPING states for win=0; v2.30.31's override exists for
+            // counter windows that SETTLE on a data-dependent 1/2 — but
+            // a live-pointer window stalled mid-page at 1/2 (a scripted
+            // typing pause, an engine hitch) parks the pointer past
+            // 300ms too, and a chime there invites the player to press
+            // OK on a page they were never read. A settled page's wait
+            // is indefinite, so the longer debounce only delays the
+            // legitimate chime by ~600ms; a mid-page stall has to last
+            // 3x longer before it can false-fire.
+            constexpr DWORD kNeverWaitStillMs = 900;
+            const bool typewriter_parked_long =
+                pointer_live && ptr_still_ms >= kNeverWaitStillMs;
 
             const bool should_fire =
-                is_never_wait_state ? typewriter_parked :
+                is_never_wait_state ? typewriter_parked_long :
                 is_wait_state       ? (held_ms >= kWaitConfirmMs) :
                 // Fallback tier: when the pointer is live, pointer
                 // stillness REPLACES the bare state-hold — a held state
@@ -1367,8 +1423,22 @@ static int __cdecl hook_ask(int unk)
         // hook_message re-arm comment for the full reasoning, including
         // the v2.30.16 last-speak-age guard (double-speak protection) and
         // why the gap re-arm above is now the primary reopen detector.
+        // v2.30.36: mid-flight guard — hook_message's v2.30.17 lesson,
+        // ported. A counter-style window (win=1) re-runs its whole state
+        // cycle per PAGE, so during a multi-page ASK whose choice page
+        // hasn't been reached yet this from-idle edge is that page rerun,
+        // NOT a re-talk. Re-arming here re-pended the same dialog and
+        // re-decoded the rawptr MID-CONSUMPTION (the typewriter pointer
+        // is already eating page 2) — a garbled duplicate lead-in with
+        // misaligned option lines. The positional CHOICE PAGE REACHED
+        // block below owns page advance for ASKs; re-talk detection
+        // stays covered by the gap re-arm (primary) plus this edge once
+        // the ASK has fully presented (lines cleared at close, or
+        // choices shown).
         if (last_state == 0 && current_state != 0 && current_state != 7 &&
             !s_window[window_id].pending_speak &&
+            (s_window[window_id].ask_lines.empty() ||
+             s_window[window_id].ask_choices_shown) &&
             (GetTickCount() - s_window[window_id].last_speak_tick) > 1500) {
             s_window[window_id].last_dialog_id = 0xFF;
         }
@@ -1391,6 +1461,14 @@ static int __cdecl hook_ask(int unk)
         if (is_new_ask_dialog && Config::Get().dialog_choice_tone &&
             !Config::Get().speak_choices) {
             InterlockedExchange(&s_dialog_choice_pending, 1);
+            // v2.30.36: CONSUME the edge. With speak_choices OFF the
+            // DLGID branch below (which normally records the id) never
+            // runs, so nothing updated last_dialog_id and
+            // is_new_ask_dialog stayed true on EVERY frame of the open
+            // window — the tone re-queued ~30x/second for the whole
+            // choice (a continuous machine-gun double-tone, in the exact
+            // voice-mod configuration this tone exists to serve).
+            s_window[window_id].last_dialog_id = dialog_id;
         }
 
         // NEW DIALOG: set pending flag. Same one-frame delay as hook_message —
@@ -1599,14 +1677,57 @@ static int __cdecl hook_ask(int unk)
             !s_window[window_id].ask_lines.empty() &&
             is_valid_dialog_rawptr(raw_text)) {
             const ptrdiff_t rel = raw_text - s_window[window_id].msg_base;
-            if (rel >= static_cast<ptrdiff_t>(
-                    s_window[window_id].ask_page_start) + 2 &&
-                rel < 4096) {
+            bool        reached = (rel >= static_cast<ptrdiff_t>(
+                                       s_window[window_id].ask_page_start) + 2 &&
+                                   rel < 4096);
+            const char* how     = "positional";
+            // Fires the caption with interrupt=true on a real page turn
+            // (the lead-in is stale the moment the display advanced);
+            // the timeout fallback QUEUES instead — see below.
+            bool        cut     = true;
+            // v2.30.36: dead-pointer fallbacks. Positional detection is
+            // blind on windows whose DIALOG_TEXT_PTRS slot never advances
+            // (the v2.30.32 dead-pointer class: rel parks at 0 forever) —
+            // such an ASK previously kept its tone, caption, and every
+            // option announce suppressed for the window's whole life. A
+            // parked rel of 0 is also the discriminator that keeps these
+            // fallbacks OFF live-pointer windows (their rel goes positive
+            // while typing, and the positional path serves them).
+            if (!reached && rel == 0) {
+                // Fallback 1 — the cursor mirror woke up: the per-window
+                // pixel mirror is rewritten every frame a choice ACCEPTS
+                // INPUT (v2.30.12), so a fresh valid value different from
+                // the stale PENDING-frame baseline proves the choice page
+                // is on screen no matter what the text pointer does.
+                const int mopt = FF7Addr::get_ask_cursor_line(window_id);
+                if (mopt >= 0 &&
+                    mopt != s_window[window_id].ask_mirror_baseline &&
+                    static_cast<size_t>(mopt) <
+                        s_window[window_id].ask_lines.size()) {
+                    reached = true;
+                    how     = "mirror";
+                }
+                // Fallback 2 — timeout floor: if the mirror is ALSO blind
+                // (baseline coincidentally equals the live cursor), a
+                // pointer parked at 0 for 3s after the lead-in spoke can
+                // never be detected positionally — announce late rather
+                // than never. Queued (interrupt=false): last_speak_tick
+                // is when the lead-in STARTED speaking, so a long lead-in
+                // may still be mid-utterance at the 3s mark and must not
+                // be cut off by its own follow-up.
+                else if ((GetTickCount() -
+                          s_window[window_id].last_speak_tick) > 3000) {
+                    reached = true;
+                    how     = "timeout";
+                    cut     = false;
+                }
+            }
+            if (reached) {
                 s_window[window_id].ask_choices_shown = true;
                 char pg[96];
                 _snprintf_s(pg, sizeof(pg), _TRUNCATE,
-                    "[FF7Access] ASK win=%u choice page reached (rel=%ld)",
-                    window_id, static_cast<long>(rel));
+                    "[FF7Access] ASK win=%u choice page reached (rel=%ld, %s)",
+                    window_id, static_cast<long>(rel), how);
                 Log::Write(pg);
                 if (Config::Get().dialog_choice_tone)
                     InterlockedExchange(&s_dialog_choice_pending, 1);
@@ -1621,7 +1742,7 @@ static int __cdecl hook_ask(int unk)
                         announcement += L' ';
                         announcement += s_window[window_id].ask_lines[i];
                     }
-                    TTS::Speak(announcement, /*interrupt=*/true);
+                    TTS::Speak(announcement, cut);
                     s_window[window_id].last_speak_tick = GetTickCount();
                 }
             }

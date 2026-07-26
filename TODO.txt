@@ -5,6 +5,24 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[REVIEW] v2.30.36 review-sweep fixes (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Nine fixes from the multi-agent code review (research §8 v2.30.36 has
+the full write-ups). VERIFY: (1) NO spurious wait chime right after
+dismissing a dialog (the close re-fire); (2) voice-mod config
+(speak_dialog/speak_choices off): short dialogs chime at the wait, ONE
+double-tone per choice window (was machine-gunning); (3) multi-page
+ASKs on counter windows don't re-speak a garbled lead-in mid-choice;
+(4) "Tutorial finished." is actually HEARD before the menu re-announce
+(~1.5s gap); (5) tutorial suppression survives the field→menu request
+gap (no cursor chatter over the lesson start); (6) G speaks gil on the
+WORLD MAP; title screen G stays silent on a fresh boot (stale-caption
+G after quit-to-title = known cosmetic residual). Log markers:
+"CLOSE committed", "PENDING tracked (speech off)", "choice page
+reached (rel=N, positional|mirror|timeout)", "latch release deferred".
+SKIPPED (deliberate): fieldbg unknowns stay MC_SCENERY — future
+offline catalog pass to whitelist talk-scripted fieldbg variants.
+
 [LIMIT] Limit menu — SHIPPED v2.30.35 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 Dispatch index 7. Speaks: "Limit. Cloud. Limit level 1" entry;

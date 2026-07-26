@@ -3748,6 +3748,81 @@ Restores HP|" to dodge the item-desc collision); the Aeris/Tifa block
 swap should be EAR-VERIFIED the first time Tifa's or Aeris' limit
 screen is opened.
 
+### v2.30.36 (2026-07-26): review sweep — nine fixes from a workflow code review
+
+A high-effort multi-agent code review of the whole unpushed branch
+(v2.30.23–.35) surfaced 10 verified findings; 9 fixed, 1 skipped. NO new
+addresses — every fix is mod-side logic. All static reasoning; awaiting
+play-test alongside the features they harden.
+
+**Dialog wait tone** (hooks.cpp, three fixes): (1) the CLOSE-commit
+frame re-fired the tone — closing cleared `wait_tone_armed` but left
+`msg_base`, so the v2.30.31 stillness fallback saw a live, long-parked
+pointer at state 7 and chimed right after the player dismissed the
+dialog; close now drops all pointer-liveness evidence AND the tone gate
+excludes state 7 outright (nothing to wait for during a close hold).
+(2) The per-dialog evidence reset (DLGID) was gated on `speak_dialog`,
+so the voice-acting-mod configuration the tone explicitly serves never
+set `msg_base` (v2.30.32's position liveness silently inert — the
+short-dialog muted chime it claimed to fix was still live there) and
+never reset `rawptr_changes` (stale cross-dialog liveness); tracking is
+now unconditional, only the speech stays config-gated. (3) The {1,2}
+never-wait override now needs 900ms of pointer stillness instead of
+300ms — those are documented actively-typing values, and a scripted
+mid-page pause parks the pointer past 300ms easily; a settled page's
+wait is indefinite, so the legit chime just lands ~600ms later.
+
+**ASK hook** (three fixes): (1) with `speak_choices` off, nothing wrote
+`last_dialog_id`, so the choice tone's new-dialog test was true EVERY
+frame — a ~30/s machine-gun double-tone for the life of every choice
+window in the voice-mod config; the tone branch now consumes the edge.
+(2) The from-idle re-arm lacked hook_message's v2.30.17 pages-remaining
+guard: a counter window's per-page state rerun during a multi-page ASK
+re-pended and re-decoded the mid-consumption typewriter pointer
+(garbled duplicate lead-in); re-arm now requires the ASK to have fully
+presented (`ask_lines` empty or choices shown). (3) Multi-page choice
+detection was positional-only — a dead-pointer window (rel parked at 0,
+the v2.30.32 class) never fired the tone/caption/option announces at
+all; two fallbacks added, both gated on rel==0 so live windows are
+untouched: the v2.30.12 cursor mirror waking to a non-baseline value
+(choice is accepting input ⇒ page is up), and a 3s timeout floor that
+QUEUES the caption (interrupt=false — last_speak_tick marks when the
+lead-in STARTED, it may still be mid-utterance).
+
+**Tutorial suppression** (proxy.cpp, two fixes): (1) "Tutorial
+finished." was queued (interrupt=false) and the latch cleared in the
+same poll — whichever menu thread matched the still-open menu then
+spoke its fresh-open announce with interrupt=true within 50ms, wiping
+the cue every time; the latch release is now deferred 1.5s (threads
+keep tracking silently, their announce lands after the cue). (2)
+MenuCursorThread's MENU_OPEN==0 branch cleared the latch level-
+triggered — but TUTOR fires field-side BEFORE the menu opens (the
+request gap the latch exists to cover), so a poll in the gap killed
+the suppression and Silence()d in-flight speech; the clear is now
+edge-gated on `last_menu_open != 0` (a genuine open→closed
+transition).
+
+**G key** (proxy.cpp): `FIELD_ID != 0` was the wrong "game loaded"
+test — the world map also reads 0, so G was silently dead exactly
+where "can I afford the inn?" matters. Game-loaded is now proven by
+the savemap caption (LOCATION_NAME_BUFFER first byte ∉ {0x00, 0xFF} —
+a fresh-boot title screen's zeroed savemap fails it, and world-map
+saves pass because the caption IS savemap state). Accepted residual:
+after quit-to-title a stale caption can let G speak the just-quit
+game's gil on the title screen — cosmetic, chosen over a dead key.
+
+**Skipped (1 of 10)**: the fieldbg→MC_SCENERY fallback (unknown props
+vanish from every browser category). Deliberate v2.30.18 decision from
+a play report ("no scenery in People"); re-admitting unknowns would
+resurrect that complaint on every field for a so-far-hypothetical
+progress-blocking prop. The right fix is offline: extend the flevel
+catalog to enumerate fieldbg variants whose entities carry talk/OK
+scripts and whitelist those — queued as a future investigation.
+
+**Verification**: review = 4 finder angles + 30 independent verifiers
+(2 candidates refuted); fixes compiled clean and deployed to both
+installs hash-verified. No addresses touched, so no §4/§14 changes.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
