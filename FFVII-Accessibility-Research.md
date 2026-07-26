@@ -4096,6 +4096,12 @@ Proven payoffs of cluster reasoning so far:
 | `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |
 | `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
 | `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
+| `0x6CDA83` | menu-TYPE dispatcher | switch on GAME_MODE byte 0xCC0D89 — jump table decoded offline (index bytes 0x6CDBE4, targets 0x6CDBC4): 6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19=further screens; both live-confirmed values (6, 9) match the decode (ff7_shop_static.py, v2.30.28) |
+| `0x71AAA3` | shop loop (FFNx menu_shop_loop) | switch on SHOP_STATE 0x92565C via jump table 0x71E193; shop init 0x719D7A fills SHOP_ID/NAME_IDX/TEXT_IDX from the catalog; generic list-widget ctor 0x6F4D30 (+0 col/+4 row/+0x14 scroll) builds every shop cursor; get_materia_gil 0x71FCF9 = the sell-price function (mastered → base·70) (v2.30.28) |
+| `0x6CB620` | menu start_tutorial | sets TUTORIAL_RUNNING 0xDBFD30; tutorial VM opcode jump table 0x7185C7 (0x02-0x0D = key INJECTION); menu input refresh 0x7186C8 → 0x71826E overwrites the pressed/held digests 0x9A85E0/0x9A85D4 with VM output while a tutorial runs — real input never reaches menu nav (ff7_tutorial_static.py, v2.30.29) |
+| `0x70CF0B` | materia menu sub (menu_subs_call_table[3]) | mode jump table 0x70E246 (12 cases on MATMENU_MODE 0x920FA0); equip-list commit 0x70DC80..0x70DD0C = the materia[200] index formula row+scroll (v2.30.33) |
+| `0x705D16` | equip menu sub (table[4] = FFNx menu_sub_705D16; table[15] dupes it) | category ±1-wrap at 0x707079/0x7070C0 (what settled 0xDCA4A4 as a cursor); candidate-list builder 0x708640; OK-commit reads u8[0xDCA6A8][row+scroll] at 0x707350..0x70735E (v2.30.34) |
+| `0x70212A` | limit menu sub (table[7]) | draw switch 0x70313A on LIMITMENU_MODE 0x9204D8; resolves char via SAVEMAP_PARTY_IDS + the id→record table 0x919928 (0x70216A..0x702186); learned-mask bit test (imul 3/shl) at 0x702190 (v2.30.35) |
 | `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
 
 Pattern: field module code sits in 0x60xxxx–0x6Exxxx, world map in 0x75xxxx,
@@ -4120,7 +4126,12 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0x9A8E9C` | BATTLE_ENEMY_RECORDS | 3 × 0xB8 scene.bin enemy records (ends 0x9A90C4); name = bytes 0–0x1F, possibly unterminated. Sits between the formation/per-actor block and ENEMY_ATTACK_NAME_TABLE 0x9A9484 — one contiguous loaded-scene cluster 0x9A87xx–0x9A98xx (2026-07-13, v2.10) |
 | `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13). Region 0x9AAD70–0x9AB070 (0x300 bytes) is cleared as one block by the battle-init memset |
 | `0x9AB0A0` | battle_ai_context (FFNx battle_context) | = u32 operand at 0x41CCB2+0x5F (FFNx's own chain; sub_41CCB2 = battle-init memset, clears 0x253 dwords from here). Header 0x3C bytes (10 flag bytes + 23 u16 masks + u32 partyGil), then **actor_vars[10] at 0x9AB0DC = BATTLE_ACTOR_VARS**, stride 0x68: +0x04 stateFlags (the 0x9AB0E0 read from the v2.10 disasm), +0x24 formationID, +0x28/+0x2A cur/max MP u16, +0x2C/+0x30 cur/max HP i32 (+0x30 low word = the 0x9AB10C read). Array ends 0x9AB4EC (v2.11, 2026-07-13) |
+| `0x919928` | char-id → savemap-record map | static u32 table the game itself uses to map character IDs to record indices (Young Cloud 9→6, Sephiroth 10→7); read by the row-toggle code (v2.32) and the limit menu's char resolution 0x70216A (v2.30.35) |
+| `0x91AB98` | menu_subs_call_table | uint32[16] sub-screen handlers the main-menu dispatcher calls by MENU_DISPATCH_INDEX 0xDC12EC: [1]=item (live), [3]=materia 0x70CF0B, [4]=equip 0x705D16 ([15] dupes it), [7]=limit 0x70212A, [8]=config, [10]=save/load (v2.31; identities settled v2.30.33-.35) |
+| `0x9204D8` | LIMITMENU_MODE | u32 limit-menu state 0..4 (draw switch 0x70313A; 0=Set/Check bar, 1-4=grid/confirm — per-value map rides the debug log; v2.30.35). Same 0x92 state band |
+| `0x920FA0` | MATMENU_MODE | u32 materia-menu state machine, 12 cases (jump table 0x70E246; full map in §4; v2.30.33). Fourth confirmation of the 0x91E–0x925 per-screen state-machine cluster |
 | `0x92565C` | SHOP_STATE | u32 shop screen state 0..6 — the shop loop's own switch variable (v2.30.28 static; full state map in §4). Menu-module .data, same neighborhood as BATTLE_MENU_STATE/NAME_ENTRY_PANE_FLAG — third confirmation that per-screen menu state machines live in this 0x91E–0x925 band |
+| `0x9A85D4` / `0x9A85E0` | menu held / pressed input digests | the menu module's own digested-input words; OVERWRITTEN with VM output by the tutorial input refresh (0x7186C8→0x71826E) while a tutorial runs — the reason real presses never reach menu nav during demos (v2.30.29) |
 | `0x922D00–0x923416` | shop caption strings | FF7-encoded exe statics: "Buy"/"Sell"/"Exit"/"Owned"/"Equipped"/"Gil remaining"/"Price through AP"/"Price for Master" captions (0x922Dxx), shop TITLES at 0x922FC8 + idx·0x14, shopkeeper GREETING/PROMPT sets at 0x923080 + set·0x1CC (v2.30.28) |
 | `0x923418` | SHOP_CATALOG | shop records, stride 0x54 (name idx, greeting-set idx, ware count, ware[10]{type,id}) — the complete what-every-shop-sells table, indexable offline (v2.30.28) |
 | `0x9AD1E0` / `0x9AD9E0` | SCENE_MSG_BASE / SCENE_MSG_OFFSETS | current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0+(idx−0x100)·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD → 0x41D2E5). v2.36 scene-message reader |
@@ -4264,7 +4275,7 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC0C44` | LOCATION_NAME_BUFFER | savemap+0xF0C: the friendly menu caption ("Sector 1 Station"), FF7-encoded, ≤0x17 bytes, 0xFF-terminated, written by MPNAM's callee 0x633691 — live-confirmed 2026-07-16, spoken by v2.24. Persisting in the savemap is WHY save files remember the caption |
 | `0xDC0E10–0xDC0E24` | CONFIG_* value bytes | **these sit INSIDE the savemap range** — FF7 persists config in the save header region, which is why the sliders live here and not with the menu cursors |
 
-### Menu module block: 0xDC0FA0 – 0xDCA028
+### Menu module block: 0xDC0FA0 – 0xDCA810
 
 | Address | Symbol | Notes |
 |---------|--------|-------|
@@ -4301,6 +4312,30 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index — the v2.7 flash-message source |
 | `0xDCA028` | SAVEMENU_WIDGET_STATE | save-menu widget state machine: 0=file grid, 1=slot list, 7=save-confirm dialog (v2.29.5; only 7 acted on) |
+| `0xDCA198/9C` + `0xDCA208/0C` | LIMITMENU Set/Check grid col/row | two instances of the 2×2 LEVEL grid widget (×0x124/×0x89 px draw); limit level = row·2+col (v2.30.35) |
+| `0xDCA1D0` | LIMITMENU bar cursor | 0=Set 1=Check (×0x50 px highlight) (v2.30.35) |
+| `0xDCA3C8` | LIMITMENU party slot | 0..2; char resolved via SAVEMAP_PARTY_IDS + id→record table 0x919928 (v2.30.35) |
+| `0xDCA4A4` | EQMENU_CATEGORY | u32 0=Weapon 1=Armor 2=Accessory (±1-wrap disasm settled it as a cursor, not a mode) (v2.30.34) |
+| `0xDCA5F8` (+4/+0x14) | equip candidate-list widget | EQMENU_LIST_ROW 0xDCA5FC + SCROLL 0xDCA60C (v2.30.34) |
+| `0xDCA6A0` | EQMENU_LIST_OPEN | pane flag: 0=category rows, 1=candidate list (set 0x7071C3, cleared 0x707346/0x707601) (v2.30.34) |
+| `0xDCA6A8` | EQMENU candidate bytes | u8[] category-relative kernel gear indices, 0xFF terminator; candidate = [row+scroll] (the OK-commit's own read) (v2.30.34) |
+| `0xDCA7EC` | EQMENU_LIST_COUNT | candidate count from the list builder 0x708640 (v2.30.34) |
+| `0xDCA810` | MATMENU_CHARREC_PTR | u32 → viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was the materia screen's state all along (v2.30.33) |
+
+### Materia menu cursor block: 0xDD12BC – 0xDD1638 (v2.30.33, all static)
+
+Same menu-module BSS band as the item menu block just past it — the cluster
+rule again. All from one annotated-disasm session (mode jump table 0x70E246).
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDD12BC` | MATMENU bar cursor | 0=Check 1=Arrange |
+| `0xDD12F0/F4` | MATMENU slot idx/row | row 0=weapon 1=armor; OK on a slot → equip list |
+| `0xDD1364/74` | MATMENU equip-list row/scroll | **materia[200] index = row+scroll** (commit math 0x70DC80) |
+| `0xDD1398/9C` | MATMENU Check-mode widget col/row | mode 4 |
+| `0xDD147C` | MATMENU popup row | Arrange popup 0..3 (Arrange/Exchange/Remove all/Trash) |
+| `0xDD14B4/C4` | MATMENU arrange-list row/scroll | modes 9/10 |
+| `0xDD1638` | MATMENU party slot | 0..2, ×0x440 = shared char-data index (weapon slot count byte at chardata+0x21) |
 
 ### Item menu block: 0xDD19C8 – 0xDD1A8C
 
