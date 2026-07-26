@@ -6709,8 +6709,22 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // A sighted player SEES the person/chest/ladder as they pass it;
         // this chirp is that glance: it fires once when the player enters
         // an object's interaction range and re-arms after they leave.
-        // Ranges are the game's own: the model's talk_radius (the exact
-        // circle the OK button tests) or a short reach to a trigger LINE.
+        // Ranges: the model's talk_radius OR body contact, whichever is
+        // larger (v2.30.26). ⚠ The original "talk_radius = the exact
+        // circle the OK button tests" reading is WRONG for large-bodied
+        // models: Barret's talk radius is 70 but his collision radius is
+        // 48 — the player's center bottoms out at ~80 from his and can
+        // NEVER enter the 70 circle, yet talking at contact works (the
+        // 2026-07-25 street scene: blocked at 81, talk ushered the
+        // player into the bar; play report: "it does not beep when I
+        // get near him"). The engine-side check reader was hunted
+        // statically (ff7_talk_range_static.py — found the TALKR/TLKR2
+        // handlers 0x618253/0x6182DF and the scale-based defaults
+        // col=30·s>>9 / talk=80·s>>9, but not the reader), so the rule
+        // shipped is the behaviorally PROVEN one: body contact always
+        // suffices to interact → chirp at
+        //   max(talk_radius, player_col + model_col + one step).
+        // Unchanged for default-sized NPCs (talk 70 > contact ~62).
         // Skips talk-disabled people (the +0x61 byte — the Jessie lesson:
         // no ping for someone who won't respond), off-mesh models, and
         // anything on another LAYER (z gate — a walkway overhead must not
@@ -6744,6 +6758,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 reinterpret_cast<const void*>(arr),
                 n_prox * FF7Addr::FIELD_EVENT_DATA_STRIDE);
             const int32_t pzv = pos[2] >> 12;
+            // Player's collision radius for the contact term (v2.30.26).
+            const int16_t pcr = *reinterpret_cast<const int16_t*>(
+                elem + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+            const float player_col = (pcr >= 8 && pcr <= 120)
+                                         ? static_cast<float>(pcr) : 32.0f;
             for (uint16_t m = 0; prox_ok && m < n_prox; ++m) {
                 if (m == pmid)
                     continue;
@@ -6757,19 +6776,30 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     me + FF7Addr::FIELD_EVENT_TALK_RADIUS);
                 const bool talk_off = *reinterpret_cast<const uint8_t*>(
                     me + FF7Addr::FIELD_EVENT_TALK_OFF) != 0;
+                // v2.30.26: effective range = max(talk radius, body
+                // contact + one step) — see the header comment above.
+                // A script-cleared collision radius (<=0, intangible)
+                // contributes nothing, leaving the plain talk circle.
+                const int16_t mcr = *reinterpret_cast<const int16_t*>(
+                    me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+                const float mcol = (mcr > 0 && mcr <= 200)
+                                       ? static_cast<float>(mcr) : 0.0f;
+                float eff = static_cast<float>(radius);
+                if (mcol > 0.0f && player_col + mcol + 8.0f > eff)
+                    eff = player_col + mcol + 8.0f;
                 const float dx = static_cast<float>((mp[0] >> 12) - px);
                 const float dy = static_cast<float>((mp[1] >> 12) - py);
                 const float dist = sqrtf(dx * dx + dy * dy);
                 const int32_t dz = (mp[2] >> 12) - pzv;
                 const bool reachable = tri >= 0 && radius > 0 && !talk_off &&
                                        dz > -PROX_Z_GATE && dz < PROX_Z_GATE;
-                if (reachable && dist <= static_cast<float>(radius)) {
+                if (reachable && dist <= eff) {
                     if (prox_armed_m[m]) {
                         prox_armed_m[m] = false;
                         try_beep();
                     }
                 } else if (!reachable ||
-                           dist > static_cast<float>(radius) + PROX_REARM_SLACK) {
+                           dist > eff + PROX_REARM_SLACK) {
                     prox_armed_m[m] = true;
                 }
             }
@@ -7543,20 +7573,33 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         //                  silent straight-line fallback.
         // v2.30.25: how far short of the target the walk may stop — a
         // person is reached at their TALK RADIUS (read live; floor 20 so
-        // talk=0/1 models still get approached, cap 90). Exits/lines
-        // keep 0: those must be stepped on. Used by the route builder's
-        // body tests AND both cautions below.
+        // talk=0/1 models still get approached, cap 90). v2.30.26: OR at
+        // body contact, whichever is larger — the same behaviorally
+        // proven rule as the proximity chirp (Barret: contact 80 > talk
+        // 70, and talking at contact works). Exits/lines keep 0: those
+        // must be stepped on. Used by the route builder's body tests AND
+        // both cautions below.
         float target_reach = 0.0f;
         if (d.model_slot >= 0) {
             int16_t tr = 40;
+            int16_t mc = 0;
             const uint8_t* tme = reinterpret_cast<const uint8_t*>(
                 arr + d.model_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-            if (IsReadableSpan(tme, FF7Addr::FIELD_EVENT_DATA_STRIDE))
+            if (IsReadableSpan(tme, FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
                 tr = *reinterpret_cast<const int16_t*>(
                     tme + FF7Addr::FIELD_EVENT_TALK_RADIUS);
+                mc = *reinterpret_cast<const int16_t*>(
+                    tme + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+            }
             if (tr < 20) tr = 20;
             if (tr > 90) tr = 90;
             target_reach = static_cast<float>(tr);
+            if (mc > 0 && mc <= 200) {
+                const float contact = PlayerCollisionRadius()
+                                      + static_cast<float>(mc) + 8.0f;
+                if (contact > target_reach)
+                    target_reach = contact;
+            }
         }
 
         const wchar_t* fallback_prefix = L"";

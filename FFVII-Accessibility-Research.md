@@ -3371,6 +3371,39 @@ exit" in the lift field, "pinball, exit to 7th Heaven" — destination
 naming through the v2.25 cache working), v2.30.22 naming firing
 (Tifa/Jessie), col= radius values sane everywhere.
 
+### v2.30.26 (2026-07-25): proximity chirp vs large bodies — contact counts as "in range"
+
+Play report: no chirp near Barret waiting outside 7th Heaven. Root
+cause is arithmetic, not a bug in the chirp: his talk radius is 70 but
+his collision radius is 48 — the player's center bottoms out at ~80
+from his (48+32) and can NEVER enter the 70-unit circle the v2.27
+chirp tests. Yet talking at contact works (same log, hours earlier:
+blocked at dist 81, the talk ushered the player inside) — so the
+engine's own OK test cannot be center-distance ≤ talk_radius, which
+v2.27 had assumed ("the exact circle the OK button tests" — WRONG for
+big bodies).
+
+Static hunt (`ff7_talk_range_static.py`, 3 passes: field-range +0x74
+loads, game-wide word loads with a restartable sweep, +0x61 consumers):
+found the WRITERS — talkR/tlkR2 handlers 0x618253/0x6182DF (arg ×
+field_scale >> 9 → +0x74) and the model-init defaults (+0x72 = 30·s>>9,
++0x74 = 80·s>>9, explaining the ubiquitous 70s at scale 448) — but not
+the reader. Rather than guess the engine formula, shipped the
+behaviorally PROVEN rule: **body contact always suffices to interact**,
+so effective interaction range = max(talk_radius,
+player_col + model_col + 8). Applied to:
+
+1. the proximity chirp (unchanged for default NPCs — talk 70 > contact
+   ~62; Barret now chirps at ~88);
+2. the pathfinder's target_reach (routes to big-bodied people stop
+   appropriately short; companions beside them stay non-blockers).
+
+Intangible models (collision 0) contribute no contact term — the plain
+talk circle remains. If a future play report shows chirps at clearly
+un-talkable distances, revisit with the reader hunt (the engine may add
+only the MODEL's radius, not the player's — one anchor cannot split
+118 vs 150 and both cover every observed case).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -3712,6 +3745,8 @@ Proven payoffs of cluster reasoning so far:
 | `0x633691` | MPNAM storage callee | decodes field text entry (via FIELD_TEXT_BLOCK_PTR 0xCC08E8) into LOCATION_NAME_BUFFER 0xDC0C44, ≤0x17 bytes; token jump table 0x6338CF handles 0xE2-family expansions; char-name tokens (0xEA+) resolved via CALL 0x6CB9B8 |
 | `0x6CB9B8` | character-name-for-token resolver | returns a pointer to the FF7-encoded live name for dialog char tokens; shared by the MPNAM path (2026-07-16) — candidate anchor if a token ever needs resolving outside dialogs |
 | `0x618A80` | opcode TLKON handler (table[0x7E]) | resolves the executing entity's model via the entity→model map 0xCBFB70 (0xFF = no model) and writes its 1-byte arg raw to field_event_data +0x61 — the talk-disabled byte (scratch disasm + live confirm 2026-07-16, v2.26) |
+| `0x618253` / `0x6182DF` | opcode talkR (0xC5) / tlkR2 (0xD6) handlers | both scale their radius arg by the field scale word ([0xCBF9D8]+0x10): value = arg × scale >> 9, written to field_event_data +0x74 (talk radius). Found by the v2.30.26 talk-range hunt (ff7_talk_range_static.py) |
+| `0x60C3A8`-region | field model init | sets the scale-based DEFAULTS: +0x72 collision = 30·scale>>9, +0x74 talk = 80·scale>>9 (e.g. scale 448 → col 26, talk 70 — why most talk radii read 70). Same v2.30.26 hunt. ⚠ the talk-check READER of +0x74 was NOT found in three scan passes (word loads game-wide, +0x61 consumers) — the chirp/reach formula is behaviorally derived instead (see §8 v2.30.26) |
 | `0x61E29F` | opcode IDLCK handler (table[0x6D]) | args u16 triangle_id + u8 flag; sets/clears bit (tri&7) of byte [0xCBF9D8]+0xB2+(tri>>3) — the triangle-lock bitfield (= static 0xCC0E3A). ff7_idlck_static.py 2026-07-23, v2.30.21 |
 | `0x6369E8` / `0x636AAF` / `0x636B76` | movement edge-crossing lock tests | one branch per triangle edge: neighbor id from the parsed access pool [0xCFF748] (stride 3×u16), then the >>3/&7 bit test against 0xCC0E3A — crossing REFUSED when set. Also writes u16 0xCC1630 (new current triangle?, unconfirmed) (ff7_idlck_bitmath.py 2026-07-23) |
 | `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |

@@ -541,6 +541,28 @@ choice page at +15, speaking lead-in" -> "choice page reached
 (rel=18)" -> options queued and cursor tracked both directions
 (09:49:17-25). Single-page ASKs (win=1 id=4, 09:47:36) also clean.
 
+[NAV] No proximity chirp near large-bodied NPCs (Barret) — FIXED v2.30.26 (2026-07-25), awaiting play-test
+------------------------------------------------------------------------
+Player report: "it doesn't always chime when a person I can talk to is
+within range. For example, Barret stands outside the 7th Heaven bar...
+It does not beep when I get near him." Arithmetic root cause: Barret's
+talk radius (70) is SMALLER than the closest the player can get to his
+center (48+32=80 body contact) — the v2.27 chirp condition
+(center dist <= talk radius) is unsatisfiable for big bodies, yet
+talking at contact demonstrably works (the same log shows it).
+Static hunt (ff7_talk_range_static.py) found the talkR/tlkR2 handlers
+(0x618253/0x6182DF: arg×scale>>9 -> +0x74) and the init defaults
+(col=30·s>>9, talk=80·s>>9 — why "70" is everywhere at scale 448) but
+NOT the engine's reader — so the shipped rule is the behaviorally
+proven one: effective range = max(talk_radius, player_col + npc_col
++ 8). Chirp + pathfinder target_reach both use it. Intangible models
+(col 0) keep the plain talk circle.
+VERIFY: (a) walking up to Barret outside the bar chirps before/at the
+bump; (b) normal NPCs chirp exactly as before (no new far-away
+chirps); (c) if anything chirps at a clearly un-talkable distance,
+report it — that would mean the engine adds only the NPC's radius,
+not both (revisit with the reader hunt).
+
 [NAV] Nonsense routes to Biggs: stale triangle hints + off-floor targets — FIXED v2.30.25 (2026-07-25), awaiting play-test
 ------------------------------------------------------------------------
 Player report (evening): "Biggs: up and right 1 second, then left 2
