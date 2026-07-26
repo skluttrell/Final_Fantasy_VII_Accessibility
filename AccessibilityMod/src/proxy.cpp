@@ -156,6 +156,7 @@ static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_shopmenu_thread   = nullptr;
 static HANDLE g_materiamenu_thread = nullptr;
+static HANDLE g_equipmenu_thread  = nullptr;
 static HANDLE g_gilkey_thread     = nullptr;
 static HANDLE g_tutorial_thread   = nullptr;
 static HANDLE g_timer_thread      = nullptr;
@@ -2888,6 +2889,250 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
                 }
             }
             TTS::Speak(msg.empty() ? L"No description" : msg.c_str(), true);
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// EQUIP menu TTS (v2.30.34). All state static-derived (ff7_addresses.h
+// EQMENU block / ff7_equip_menu_static.py) — the item/status/materia gate
+// shape. Speaks the three category rows with their equipped gear, the
+// candidate list by name, and I = gear description. Stat deltas (the
+// Attack 14 -> 16 compare pane) are a documented residual: they need the
+// menu's computed-stats scratch, not yet hunted.
+// ---------------------------------------------------------------------------
+
+// Savemap record VA for the character the char-select pane committed
+// (CHARSEL_CHOSEN party slot), with the same leader/alias guards as
+// AppendPartyHpMp. 0 = layout check failed (speak nothing wrong).
+static uint32_t CharRecFromCharselSlot()
+{
+    const uint32_t sel = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::CHARSEL_CHOSEN);
+    if (sel > 2)
+        return 0;
+    const uint8_t leader_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::PARTY_LEADER);
+    const uint8_t slot0_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS);
+    const uint8_t char_id =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::SAVEMAP_PARTY_IDS + sel);
+    if (slot0_id != leader_id || char_id == 0xFF)
+        return 0;
+    uint8_t rec = char_id;
+    if (char_id == 9)  rec = 6;
+    if (char_id == 10) rec = 7;
+    if (rec > 8)
+        return 0;
+    return FF7Addr::SAVEMAP_CHAR_RECORDS + rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE;
+}
+
+// "Weapon: Gatling Gun" for one equip category row (0/1/2), from the
+// record's equipment id bytes. Gear id namespaces per v2.31's inventory
+// split: weapons 128+, armor 256+, accessories 288+ (0xFF byte = none).
+static void EquipCategoryLine(uint32_t cat, std::wstring& out)
+{
+    static const wchar_t* const kCat[3] = { L"Weapon", L"Armor", L"Accessory" };
+    out = kCat[cat < 3 ? cat : 0];
+    out += L": ";
+    const uint32_t rec = CharRecFromCharselSlot();
+    if (!rec)
+        return;
+    static const uint32_t kOff[3]  = { FF7Addr::SAVEMAP_CHAR_WEAPON_OFF,
+                                       FF7Addr::SAVEMAP_CHAR_ARMOR_OFF,
+                                       FF7Addr::SAVEMAP_CHAR_ACCESS_OFF };
+    static const uint32_t kBase[3] = { 128, 256, 288 };
+    const uint8_t id = *reinterpret_cast<const volatile uint8_t*>(
+        rec + kOff[cat < 3 ? cat : 0]);
+    if (id == 0xFF) {
+        out += L"nothing equipped";
+        return;
+    }
+    std::wstring name;
+    if (InventoryEntryName(kBase[cat < 3 ? cat : 0] + id, name))
+        out += name;
+    else {
+        wchar_t buf[32];
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"gear %u",
+                     static_cast<unsigned>(id));
+        out += buf;
+    }
+}
+
+// Candidate gear id (full 0-319 namespace) under the equip list cursor.
+// Returns false past the candidate count or on the 0xFF terminator.
+static bool EquipListCandidate(uint32_t cat, uint32_t& full_id)
+{
+    const uint32_t idx =
+        *reinterpret_cast<const volatile uint32_t*>(FF7Addr::EQMENU_LIST_ROW) +
+        *reinterpret_cast<const volatile uint32_t*>(FF7Addr::EQMENU_LIST_SCROLL);
+    const uint32_t count = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::EQMENU_LIST_COUNT);
+    if (cat > 2 || idx >= count || idx >= 64)
+        return false;
+    const uint8_t b = *reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::EQMENU_LIST_BYTES + idx);
+    if (b == 0xFF)
+        return false;
+    static const uint32_t kBase[3] = { 128, 256, 288 };
+    full_id = kBase[cat] + b;
+    return true;
+}
+
+static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
+{
+    bool     was_open  = false;
+    uint32_t last_cat  = 0xFFFFFFFF;
+    uint32_t last_pane = 0xFFFFFFFF;
+    uint32_t last_idx  = 0xFFFFFFFF;
+    uint32_t last_gear = 0xFFFFFFFF;  // equipped id under the category row
+                                      // (equipping rewrites it in place)
+    uint32_t last_sel  = 0xFFFFFFFF;  // character (char-flip re-announce)
+    bool     i_was_down = false;
+    ULONGLONG next_scan_tick = 0;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
+            Hooks::TutorialActive()) {
+            was_open = false;
+            continue;
+        }
+        const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
+            FF7Addr::FIELD_ID);
+        const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::MENU_OPEN);
+        const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::MENU_DISPATCH_INDEX);
+        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::BATTLE_END_MODE);
+        if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
+            (screen != FF7Addr::EQMENU_SCREEN_INDEX && screen != 15)) {
+            was_open = false;
+            continue;
+        }
+
+        if ((!g_k2.weapon || !g_k2.armor) && GetTickCount64() >= next_scan_tick) {
+            next_scan_tick = GetTickCount64() + 3000;
+            ScanKernel2Sections();
+        }
+
+        const uint32_t cat = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::EQMENU_CATEGORY);
+        const uint32_t pane = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::EQMENU_LIST_OPEN);
+        const uint32_t sel = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::CHARSEL_CHOSEN);
+
+        bool fresh = false;
+        if (!was_open) {
+            was_open = true;
+            fresh = true;
+            last_cat = last_pane = last_idx = last_gear = 0xFFFFFFFF;
+            last_sel = sel;
+            i_was_down = true;
+            wchar_t who[32];
+            PartySlotLabel(static_cast<uint8_t>(sel <= 2 ? sel : 0),
+                           who, _countof(who));
+            std::wstring msg = L"Equip. ";
+            msg += who;
+            TTS::Speak(msg.c_str(), true);
+        } else if (sel != last_sel && sel <= 2) {
+            last_sel = sel;
+            wchar_t who[32];
+            PartySlotLabel(static_cast<uint8_t>(sel), who, _countof(who));
+            TTS::Speak(who, true);
+            last_cat = last_idx = last_gear = 0xFFFFFFFF;
+        }
+
+        if (pane != last_pane) {
+            char dbg[80];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] EQUIP pane %lu -> %lu (cat=%lu)",
+                static_cast<unsigned long>(last_pane),
+                static_cast<unsigned long>(pane),
+                static_cast<unsigned long>(cat));
+            Log::Write(dbg);
+            last_pane = pane;
+            last_cat = last_idx = last_gear = 0xFFFFFFFF;
+        }
+
+        if (pane == 0) {
+            // Category rows: announce on row move OR when the equipped id
+            // under the parked cursor changes (an equip just committed).
+            uint32_t gear = 0xFFFFFFFE;
+            const uint32_t rec = CharRecFromCharselSlot();
+            if (rec && cat < 3) {
+                static const uint32_t kOff[3] = {
+                    FF7Addr::SAVEMAP_CHAR_WEAPON_OFF,
+                    FF7Addr::SAVEMAP_CHAR_ARMOR_OFF,
+                    FF7Addr::SAVEMAP_CHAR_ACCESS_OFF };
+                gear = *reinterpret_cast<const volatile uint8_t*>(rec + kOff[cat]);
+            }
+            if (cat < 3 && (cat != last_cat || gear != last_gear)) {
+                last_cat  = cat;
+                last_gear = gear;
+                std::wstring line;
+                EquipCategoryLine(cat, line);
+                TTS::Speak(line.c_str(), !fresh);
+            }
+        } else {
+            // Candidate list.
+            const uint32_t idx =
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::EQMENU_LIST_ROW) +
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::EQMENU_LIST_SCROLL);
+            if (idx != last_idx) {
+                last_idx = idx;
+                uint32_t full_id;
+                std::wstring line;
+                if (EquipListCandidate(cat, full_id)) {
+                    if (!InventoryEntryName(full_id, line)) {
+                        wchar_t buf[32];
+                        _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                                     L"gear %lu", static_cast<unsigned long>(full_id));
+                        line = buf;
+                    }
+                } else {
+                    line = L"Empty";
+                }
+                TTS::Speak(line.c_str(), true);
+            }
+        }
+
+        // I key: description of the highlighted gear (list) or the
+        // equipped gear (category rows).
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        const bool focused = (fg_pid == GetCurrentProcessId());
+        const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
+        const bool i_edge  = focused && i_down && !i_was_down;
+        i_was_down = i_down;
+        if (i_edge) {
+            uint32_t full_id = 0xFFFFFFFF;
+            if (pane == 1) {
+                EquipListCandidate(cat, full_id);
+            } else {
+                const uint32_t rec = CharRecFromCharselSlot();
+                if (rec && cat < 3) {
+                    static const uint32_t kOff[3] = {
+                        FF7Addr::SAVEMAP_CHAR_WEAPON_OFF,
+                        FF7Addr::SAVEMAP_CHAR_ARMOR_OFF,
+                        FF7Addr::SAVEMAP_CHAR_ACCESS_OFF };
+                    static const uint32_t kBase[3] = { 128, 256, 288 };
+                    const uint8_t id = *reinterpret_cast<const volatile uint8_t*>(
+                        rec + kOff[cat]);
+                    if (id != 0xFF)
+                        full_id = kBase[cat] + id;
+                }
+            }
+            std::wstring desc;
+            const bool have = full_id != 0xFFFFFFFF &&
+                              InventoryEntryDesc(full_id, desc);
+            TTS::Speak(have ? desc.c_str() : L"No description", true);
         }
     }
 
@@ -9576,6 +9821,16 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start materia menu thread.");
         }
 
+        // Equip menu TTS (v2.30.34). Dispatch index 4 (FFNx
+        // menu_sub_705D16 = table[4]); state static-derived
+        // (ff7_equip_menu_static.py — EQMENU block in ff7_addresses.h).
+        g_equipmenu_thread = CreateThread(nullptr, 0, EquipMenuThread, nullptr, 0, nullptr);
+        if (g_equipmenu_thread) {
+            Log::Write("[FF7Access] Equip menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start equip menu thread.");
+        }
+
         // Announcement keys (FF4-scheme parity): G = current gil
         // (v2.30.28), H = in battle, current character's HP/MP/status
         // (v2.30.30).
@@ -9704,7 +9959,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
             !g_statusmenu_thread && !g_shopmenu_thread &&
-            !g_materiamenu_thread && !g_gilkey_thread &&
+            !g_materiamenu_thread && !g_equipmenu_thread && !g_gilkey_thread &&
             !g_tutorial_thread && !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_dialogtone_thread && !g_fieldnav_thread &&
@@ -9865,6 +10120,11 @@ void Shutdown()
         WaitForSingleObject(g_materiamenu_thread, 500);
         CloseHandle(g_materiamenu_thread);
         g_materiamenu_thread = nullptr;
+    }
+    if (g_equipmenu_thread) {
+        WaitForSingleObject(g_equipmenu_thread, 500);
+        CloseHandle(g_equipmenu_thread);
+        g_equipmenu_thread = nullptr;
     }
     if (g_gilkey_thread) {
         WaitForSingleObject(g_gilkey_thread, 500);

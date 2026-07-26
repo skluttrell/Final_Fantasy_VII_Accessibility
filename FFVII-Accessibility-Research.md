@@ -193,6 +193,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | `MATMENU_MODE` | `0x00920FA0` | u32 materia-menu state machine (jump table 0x70E246, modes 0-0xB, v2.30.33 static): 0=Check/Arrange bar, 1=slot navigation, 3=equip list, 4=Check mode, 5/6/7=transient, 8=Arrange popup (Arrange/Exchange/Remove all/Trash), 9/10=arrange list phases, 2/11=empty. Same .data band as SHOP_STATE/BATTLE_MENU_STATE — fourth confirmation of the per-screen state-machine cluster |
 | `MATMENU_*` cursors | `0xDD12BC/F0/F4, 0xDD1364/74, 0xDD14B4/C4, 0xDD147C, 0xDD1398/9C, 0xDD1638` | bar cursor (0=Check 1=Arrange); slot idx/row (row 0=weapon 1=armor, OK on slot -> equip list); equip-list row/scroll (**materia[200] index = row+scroll**, the commit math at 0x70DC80); arrange-list row/scroll; popup row 0..3; Check-mode widget col/row; party slot 0..2 (×0x440 = shared char-data index; weapon slot count byte at chardata+0x21) |
 | `MATMENU_CHARREC_PTR` | `0x00DCA810` | u32 → the viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was THIS screen's state all along |
+| `EQMENU_CATEGORY` | `0x00DCA4A4` | u32 equip-menu category row 0=Weapon 1=Armor 2=Accessory (±1 wrap code at 0x707079/0x7070C0, v2.30.34 static). ⚠ first read suggested "mode" — the ±1-wrap disasm settled it as the cursor |
+| `EQMENU_LIST_OPEN` / `EQMENU_LIST_ROW/SCROLL/COUNT/BYTES` | `0xDCA6A0 / 0xDCA5FC / 0xDCA60C / 0xDCA7EC / 0xDCA6A8` | candidate-pane flag (0=rows 1=list); list widget @0xDCA5F8 (+4/+0x14); **candidate = u8[0xDCA6A8][row+scroll]** (the OK-commit's own read at 0x707350) — bytes are category-relative kernel gear indices, 0xFF terminator, count from the list builder 0x708640. Equip menu char = CHARSEL_CHOSEN (char page-flip writes it at 0x707148/0x70726E); equipped ids = record +0x1C/1D/1E. Equip sub = table[4] = FFNx menu_sub_705D16 (table[15] dupes it) |
 | `TUTORIAL_RUNNING` | `0x00DBFD30` | u32, 1 while a menu tutorial's byte-code VM runs (set by menu start_tutorial 0x6CB620, cleared by the VM's END opcode 0x7185AC / stop paths). v2.30.29's authoritative tutorial gate + "Tutorial finished." edge (ff7_tutorial_static.py 2026-07-26) |
 | `TUTWIN_STATE` | `0x00DC1310` | u8 tutorial/message window renderer state: 0=closed, 1=opening, 2=TEXT SHOWING, 3=closing (= FFNx's menu_tutorial_window_state, operand at renderer 0x6C49FD+0x9; FFNx's voice hook uses the same 0→1→2→3→0 edges). v2.30.29 speaks each slide on the →2 edge |
 | `TUTWIN_TEXT_PTR` | `0x00DC1214` | u32 → the CURRENT window's FF7-encoded text (= FFNx menu_tutorial_window_text_ptr, operand +0x18). For tutorial slides it points INTO the field buffer (the VM passes its script PC); for the save screens' info popups (same renderer, callers 0x6FFB65-0x6FFEAD/0x721Fxx) it points at exe .data strings — v2.30.29 speaks both |
@@ -3685,6 +3687,32 @@ and "to next level" need the kernel materia-data records' AP thresholds
 — not yet located; linked-slot pairs and slot-count bounds (chardata
 +0x21) not spoken; Exchange's two-phase flow narrated as plain list
 navigation.
+
+### v2.30.34 (2026-07-26): equip menu connected
+
+**User request** (screenshot Menus/Equip/equip_menu_1.jpg). Same-recipe
+static session (ff7_equip_menu_static.py — the materia script cloned
+onto table[4]): the equip menu is menu_subs_call_table[4] = 0x705D16,
+FFNx's own menu_sub_705D16 name AND the row→index pattern agreeing
+(table[15] duplicates the pointer; the gate accepts 4 or 15). The sub
+is mostly a renderer; the input handler at 0x707040..0x7076xx gave the
+real state: category cursor 0xDCA4A4 (±1 wrap 0..2 — Weapon/Armor/
+Accessory), candidate-pane flag 0xDCA6A0, list widget 0xDCA5F8, and
+the commit's own candidate read u8[0xDCA6A8][row+scroll] (category-
+relative kernel gear indices). Character = CHARSEL_CHOSEN, equipped
+ids from the record's +0x1C/1D/1E bytes.
+
+**Mod changes**: EquipMenuThread — entry "Equip. <character>" (+
+re-announce on char page-flips); category rows spoken as "Weapon:
+Gatling Gun" / "Accessory: nothing equipped", with in-place re-announce
+when an equip commits; candidate list by name; I key = gear description
+(weapon descs live via the v2.30.28 kernel2 section; armor descs blank
+by data; accessory via the raw-byte signature).
+
+**Residuals**: stat-compare deltas (Attack 14→16 pane) need the menu's
+computed-stats scratch — not hunted; materia-slot/growth line of the
+highlighted gear unspoken (kernel gear records; future); candidate
+counts (×N owned) unspoken.
 
 ---
 

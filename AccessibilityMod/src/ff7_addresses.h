@@ -892,6 +892,38 @@ constexpr uint32_t SAVEMAP_CHAR_WMATERIA_OFF = 0x40;   // u32[8] id|ap<<8
 constexpr uint32_t SAVEMAP_CHAR_AMATERIA_OFF = 0x60;   // u32[8]
 
 // ---------------------------------------------------------------------------
+// EQUIP menu (v2.30.34, 2026-07-26) — ALL STATIC, one session
+// (investigate/ff7_equip_menu_static.py + targeted writer sweeps; log
+// equip_menu_static_20260726_131256). The equip menu is
+// menu_subs_call_table[4] = 0x705D16 — FFNx's own menu_sub_705D16 name,
+// AND the row->index pattern (Item row0=1 ... Status row4=5 => Equip
+// row3=4). Table[15] holds the same pointer (dupe slot); the gate
+// accepts either index defensively.
+//
+// State (writer sweep + input-handler disasm 0x707040..0x7076xx):
+//   EQMENU_CATEGORY  — Up/Down ±1 with wrap 0..2 (0=Weapon 1=Armor
+//                      2=Accessory; the 0x707079/0x7070C0 ±1 code)
+//   EQMENU_LIST_OPEN — 0 = category rows, 1 = candidate list (set at
+//                      0x7071C3 on OK, cleared at 0x707346/0x707601)
+//   candidate list widget @0xDCA5F8 (generic ctor: +4 row, +0x14
+//   scroll); the OK-commit reads candidate =
+//   BYTES[0xDCA6A8][row+scroll] (0x707350..0x70735E) — bytes are gear
+//   indices WITHIN the current category's kernel namespace, list
+//   terminated 0xFF, count at EQMENU_LIST_COUNT (written by the list
+//   builder 0x708640).
+// Character shown = CHARSEL_CHOSEN (the v2.32 pane commit; the equip
+// sub's char page-flip writes it at 0x707148/0x70726E). Equipped ids
+// live in the savemap record at +0x1C/+0x1D/+0x1E (v2.33 offsets).
+constexpr uint32_t EQMENU_SCREEN_INDEX  = 4;           // (15 = dupe slot)
+constexpr uint32_t EQMENU_CATEGORY     = 0x00DCA4A4;   // u32 0..2
+constexpr uint32_t EQMENU_LIST_OPEN    = 0x00DCA6A0;   // u32 0/1
+constexpr uint32_t EQMENU_LIST_ROW     = 0x00DCA5FC;   // u32
+constexpr uint32_t EQMENU_LIST_SCROLL  = 0x00DCA60C;   // u32; idx=row+scroll
+constexpr uint32_t EQMENU_LIST_COUNT   = 0x00DCA7EC;   // u32 candidates
+constexpr uint32_t EQMENU_LIST_BYTES   = 0x00DCA6A8;   // u8[] gear indices
+                                                       // (category-relative)
+
+// ---------------------------------------------------------------------------
 // MENU TUTORIAL live state (v2.30.29, 2026-07-26) — the per-slide sync the
 // v2.30.27 narrator lacked. ALL STATIC (investigate/ff7_tutorial_static.py,
 // log tutorial_static_20260726_110911 + the writer sweeps in the same

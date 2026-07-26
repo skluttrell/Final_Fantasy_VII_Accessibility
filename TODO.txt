@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[EQUIP] Equip menu — SHIPPED v2.30.34 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Dispatch index 4 (FFNx menu_sub_705D16; table[15] dupe accepted).
+Speaks: "Equip. Barret" entry; "Weapon: Gatling Gun" category rows
+(re-announced when an equip commits under the parked cursor);
+candidate list names; I = gear description; char page-flip
+re-announces. VERIFY: entry once; Up/Down over Weapon/Armor/Accessory
+rows; OK opens list ("[FF7Access] EQUIP pane 0 -> 1" in log) and rows
+speak; equipping returns to rows and speaks the NEW gear; armor
+descriptions are BLANK by game data (I says "No description" — not a
+bug); accessory descriptions work. RESIDUALS: stat compare deltas
+(Attack 14->16) unspoken (needs the computed-stats scratch); slot/
+growth line unspoken; owned-count suffix unspoken.
+
 [MATERIA] Materia menu — SHIPPED v2.30.33 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 Dispatch index 3 (= the v2.31 "table[3]" mystery screen). Speaks:
