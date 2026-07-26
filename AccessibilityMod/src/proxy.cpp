@@ -155,6 +155,7 @@ static HANDLE g_itemmenu_thread   = nullptr;
 static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_shopmenu_thread   = nullptr;
+static HANDLE g_materiamenu_thread = nullptr;
 static HANDLE g_gilkey_thread     = nullptr;
 static HANDLE g_tutorial_thread   = nullptr;
 static HANDLE g_timer_thread      = nullptr;
@@ -2592,6 +2593,301 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
                 }
             }
             TTS::Speak(have ? desc.c_str() : L"No description", true);
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// MATERIA menu TTS (v2.30.33). All addresses static-derived in one session
+// (provenance: ff7_addresses.h MATMENU block / ff7_materia_menu_static.py).
+// Gate: MENU_OPEN + dispatch index 3 — the same shape as the Item (index 1)
+// and Status (index 5) screens, with the same victory-screen and
+// foreign-screen stand-downs. Mode semantics are static-derived; the mode
+// change debug line is the live-confirm channel (the v2.32 FOCUS_MODE
+// precedent).
+// ---------------------------------------------------------------------------
+
+// "<name> materia" (+ ", mastered") for one materia word; "Empty" for an
+// empty slot/list entry.
+static void MateriaWordLine(uint32_t w, std::wstring& out)
+{
+    out.clear();
+    if (w == 0xFFFFFFFF || (w & 0xFF) == 0xFF) {
+        out = L"Empty";
+        return;
+    }
+    wchar_t buf[48];
+    if (!MateriaName(static_cast<uint8_t>(w & 0xFF), out)) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"materia %u",
+                     static_cast<unsigned>(w & 0xFF));
+        out = buf;
+    }
+    out += L" materia";
+    if ((w >> 8) == 0xFFFFFF)
+        out += L", mastered";
+}
+
+// The materia word under the equipment-slot cursor (modes 1 and 4). Returns
+// false when the char-record pointer fails its layout check — the reader
+// then speaks position-only, never wrong contents.
+static bool MateriaSlotWord(uint32_t row, uint32_t slot, uint32_t& w)
+{
+    const uint32_t rec = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::MATMENU_CHARREC_PTR);
+    // Must be one of the 9 savemap char records, exactly on stride.
+    if (rec < FF7Addr::SAVEMAP_CHAR_RECORDS ||
+        rec >= FF7Addr::SAVEMAP_CHAR_RECORDS + 9 * FF7Addr::SAVEMAP_CHAR_REC_SIZE ||
+        (rec - FF7Addr::SAVEMAP_CHAR_RECORDS) % FF7Addr::SAVEMAP_CHAR_REC_SIZE != 0)
+        return false;
+    if (row > 1 || slot > 7)
+        return false;
+    const uint32_t off = (row == 0) ? FF7Addr::SAVEMAP_CHAR_WMATERIA_OFF
+                                    : FF7Addr::SAVEMAP_CHAR_AMATERIA_OFF;
+    w = *reinterpret_cast<const volatile uint32_t*>(rec + off + slot * 4);
+    return true;
+}
+
+// "Weapon slot 3: Lightning materia" for the current slot cursor.
+static void MateriaSlotLine(uint32_t row, uint32_t slot, std::wstring& out)
+{
+    wchar_t head[32];
+    _snwprintf_s(head, _countof(head), _TRUNCATE, L"%ls slot %u: ",
+                 row == 0 ? L"Weapon" : L"Armor",
+                 static_cast<unsigned>(slot + 1));
+    out = head;
+    uint32_t w;
+    std::wstring content;
+    if (MateriaSlotWord(row, slot, w))
+        MateriaWordLine(w, content);
+    out += content;
+}
+
+static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
+{
+    bool     was_open   = false;
+    uint32_t last_mode  = 0xFFFFFFFF;
+    uint32_t last_key   = 0xFFFFFFFF;  // packed cursor identity per mode
+    uint32_t last_word  = 0xFFFFFFFF;  // content under cursor (equip/remove
+                                       // rewrites it while the cursor parks)
+    uint32_t last_party = 0xFFFFFFFF;
+    bool     i_was_down = false;
+    ULONGLONG next_scan_tick = 0;
+
+    static const wchar_t* const kBar[2]   = { L"Check", L"Arrange" };
+    static const wchar_t* const kPopup[4] =
+        { L"Arrange", L"Exchange", L"Remove all", L"Trash" };
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
+            Hooks::TutorialActive()) {
+            was_open = false;
+            continue;
+        }
+
+        const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
+            FF7Addr::FIELD_ID);
+        const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::MENU_OPEN);
+        const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::MENU_DISPATCH_INDEX);
+        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::BATTLE_END_MODE);
+        if (menu_open != 1 || field_id == 0 ||
+            screen != FF7Addr::MATMENU_SCREEN_INDEX ||
+            battle_end != 0 /* victory screens hold MENU_OPEN, v2.35.1 */) {
+            was_open = false;
+            continue;
+        }
+
+        if ((!g_k2.materia_name) && GetTickCount64() >= next_scan_tick) {
+            next_scan_tick = GetTickCount64() + 3000;
+            ScanKernel2Sections();
+        }
+
+        const uint32_t mode = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::MATMENU_MODE);
+        const uint32_t party = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::MATMENU_PARTY_SLOT);
+
+        bool announce_context = false;
+        if (!was_open) {
+            was_open  = true;
+            last_mode = 0xFFFFFFFF;
+            last_key  = last_word = 0xFFFFFFFF;
+            last_party = party;
+            i_was_down = true;
+            wchar_t who[32];
+            PartySlotLabel(static_cast<uint8_t>(party <= 2 ? party : 0),
+                           who, _countof(who));
+            std::wstring msg = L"Materia. ";
+            msg += who;
+            TTS::Speak(msg.c_str(), true);
+            announce_context = true;
+        } else if (party != last_party && party <= 2) {
+            // Page-up/down flips characters in place — re-announce whose
+            // materia we're now looking at.
+            last_party = party;
+            wchar_t who[32];
+            PartySlotLabel(static_cast<uint8_t>(party), who, _countof(who));
+            TTS::Speak(who, true);
+            last_key = last_word = 0xFFFFFFFF;   // re-announce the cursor line
+        }
+
+        if (mode != last_mode) {
+            char dbg[96];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] MATERIA mode %lu -> %lu",
+                static_cast<unsigned long>(last_mode),
+                static_cast<unsigned long>(mode));
+            Log::Write(dbg);
+            last_mode = mode;
+            last_key  = last_word = 0xFFFFFFFF;
+            switch (mode) {
+            case 3:  TTS::Speak(L"Choose materia.", !announce_context); break;
+            case 4:  TTS::Speak(L"Check.", !announce_context); break;
+            case 9:
+            case 10: TTS::Speak(L"Choose materia.", !announce_context); break;
+            default: break;   // 0/1 announce via their cursor lines below;
+                              // 5/6/7 transient; others logged above
+            }
+        }
+
+        // ── Per-mode cursor tracking ─────────────────────────────────────
+        std::wstring line;
+        uint32_t key  = 0xFFFFFFFF;
+        uint32_t word = 0;
+        bool     have = false;
+
+        switch (mode) {
+        case 0: {   // Check / Arrange bar
+            const uint32_t bar = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MATMENU_BAR_CURSOR);
+            if (bar < 2) {
+                key  = bar;
+                line = kBar[bar];
+                have = true;
+            }
+            break;
+        }
+        case 1:     // equipment slots (live cursor globals)
+        case 4: {   // Check mode (widget col/row)
+            uint32_t row, slot;
+            if (mode == 1) {
+                row  = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::MATMENU_SLOT_ROW);
+                slot = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::MATMENU_SLOT_IDX);
+            } else {
+                row  = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::MATMENU_CHECK_ROW);
+                slot = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::MATMENU_CHECK_COL);
+            }
+            if (row <= 1 && slot <= 7) {
+                key = (row << 8) | slot;
+                MateriaSlotWord(row, slot, word);
+                MateriaSlotLine(row, slot, line);
+                have = true;
+            }
+            break;
+        }
+        case 3: {   // equip list over materia[200]
+            const uint32_t idx =
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_EQUIP_ROW) +
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_EQUIP_SCROLL);
+            if (idx < FF7Addr::SAVEMAP_MATERIA_COUNT) {
+                key  = idx;
+                word = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::SAVEMAP_MATERIA + idx * 4);
+                MateriaWordLine(word, line);
+                have = true;
+            }
+            break;
+        }
+        case 9:
+        case 10: {  // arrange-mode list phases
+            const uint32_t idx =
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_ARR_ROW) +
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_ARR_SCROLL);
+            if (idx < FF7Addr::SAVEMAP_MATERIA_COUNT) {
+                key  = idx;
+                word = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::SAVEMAP_MATERIA + idx * 4);
+                MateriaWordLine(word, line);
+                have = true;
+            }
+            break;
+        }
+        case 8: {   // Arrange popup
+            const uint32_t rowp = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MATMENU_POPUP_ROW);
+            if (rowp < 4) {
+                key  = rowp;
+                line = kPopup[rowp];
+                have = true;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+
+        // Announce on cursor movement OR content change under a parked
+        // cursor (equipping/removing rewrites the slot/list word in place).
+        if (have && (key != last_key || word != last_word)) {
+            last_key  = key;
+            last_word = word;
+            TTS::Speak(line.c_str(), /*interrupt=*/!announce_context);
+        }
+
+        // ── I key: description + AP of the highlighted materia ──────────
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        const bool focused = (fg_pid == GetCurrentProcessId());
+        const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
+        const bool i_edge  = focused && i_down && !i_was_down;
+        i_was_down = i_down;
+        if (i_edge) {
+            uint32_t w = 0xFFFFFFFF;
+            if (mode == 1 || mode == 4) {
+                const uint32_t row = *reinterpret_cast<const volatile uint32_t*>(
+                    mode == 1 ? FF7Addr::MATMENU_SLOT_ROW : FF7Addr::MATMENU_CHECK_ROW);
+                const uint32_t slot = *reinterpret_cast<const volatile uint32_t*>(
+                    mode == 1 ? FF7Addr::MATMENU_SLOT_IDX : FF7Addr::MATMENU_CHECK_COL);
+                MateriaSlotWord(row, slot, w);
+            } else if (mode == 3 || mode == 9 || mode == 10) {
+                const uint32_t idx = (mode == 3)
+                    ? *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_EQUIP_ROW) +
+                      *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_EQUIP_SCROLL)
+                    : *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_ARR_ROW) +
+                      *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MATMENU_ARR_SCROLL);
+                if (idx < FF7Addr::SAVEMAP_MATERIA_COUNT)
+                    w = *reinterpret_cast<const volatile uint32_t*>(
+                        FF7Addr::SAVEMAP_MATERIA + idx * 4);
+            }
+            std::wstring msg;
+            if (w != 0xFFFFFFFF && (w & 0xFF) != 0xFF) {
+                std::wstring desc;
+                if (MateriaDesc(static_cast<uint8_t>(w & 0xFF), desc))
+                    msg = desc;
+                const uint32_t ap = w >> 8;
+                wchar_t buf[48];
+                if (ap == 0xFFFFFF) {
+                    msg += msg.empty() ? L"Mastered" : L". Mastered";
+                } else {
+                    _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                                 L"%lsAP %lu",
+                                 msg.empty() ? L"" : L". ",
+                                 static_cast<unsigned long>(ap));
+                    msg += buf;
+                }
+            }
+            TTS::Speak(msg.empty() ? L"No description" : msg.c_str(), true);
         }
     }
 
@@ -9269,6 +9565,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start shop menu thread.");
         }
 
+        // Materia menu TTS (v2.30.33). Dispatch index 3; all state
+        // static-derived (ff7_materia_menu_static.py — the MATMENU block
+        // in ff7_addresses.h). Mode-change debug lines are the live
+        // verify.
+        g_materiamenu_thread = CreateThread(nullptr, 0, MateriaMenuThread, nullptr, 0, nullptr);
+        if (g_materiamenu_thread) {
+            Log::Write("[FF7Access] Materia menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start materia menu thread.");
+        }
+
         // Announcement keys (FF4-scheme parity): G = current gil
         // (v2.30.28), H = in battle, current character's HP/MP/status
         // (v2.30.30).
@@ -9396,7 +9703,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
-            !g_statusmenu_thread && !g_shopmenu_thread && !g_gilkey_thread &&
+            !g_statusmenu_thread && !g_shopmenu_thread &&
+            !g_materiamenu_thread && !g_gilkey_thread &&
             !g_tutorial_thread && !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_dialogtone_thread && !g_fieldnav_thread &&
@@ -9552,6 +9860,11 @@ void Shutdown()
         WaitForSingleObject(g_shopmenu_thread, 500);
         CloseHandle(g_shopmenu_thread);
         g_shopmenu_thread = nullptr;
+    }
+    if (g_materiamenu_thread) {
+        WaitForSingleObject(g_materiamenu_thread, 500);
+        CloseHandle(g_materiamenu_thread);
+        g_materiamenu_thread = nullptr;
     }
     if (g_gilkey_thread) {
         WaitForSingleObject(g_gilkey_thread, 500);

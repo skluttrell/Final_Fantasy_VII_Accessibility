@@ -190,6 +190,9 @@ every confirmed address — the clustering itself is a discovery tool.
 | `SAVEMAP_GIL` | `0x00DC08B4` | u32 party gil = savemap+0xB7C (was a raw literal in the v2.35 victory reader; promoted v2.30.28 — the shop's own buy/sell arithmetic reads/writes exactly here, third independent confirmation). The G key speaks it |
 | `SAVEMAP_MATERIA` | `0x00DC04B4` | u32[200] materia inventory = savemap+0x77C (FFNx savemap struct; the shop sell code indexes it at 0x71DD16): word = id | AP<<8, 0xFFFFFFFF = empty slot |
 | `SHOP_SESSION` / `SHOP_FADE_STATE` | `0x00DD6D78` / `0x00DD4734` | Session-active flag (wrapper 0x71FF95: 0→init→1) and fade state (1 fading in / 2 fading out / -1 exiting → menu-exit flag 0xDC12F4). Not consumed by the mod (GAME_MODE==8 is the gate); documented for completeness |
+| `MATMENU_MODE` | `0x00920FA0` | u32 materia-menu state machine (jump table 0x70E246, modes 0-0xB, v2.30.33 static): 0=Check/Arrange bar, 1=slot navigation, 3=equip list, 4=Check mode, 5/6/7=transient, 8=Arrange popup (Arrange/Exchange/Remove all/Trash), 9/10=arrange list phases, 2/11=empty. Same .data band as SHOP_STATE/BATTLE_MENU_STATE — fourth confirmation of the per-screen state-machine cluster |
+| `MATMENU_*` cursors | `0xDD12BC/F0/F4, 0xDD1364/74, 0xDD14B4/C4, 0xDD147C, 0xDD1398/9C, 0xDD1638` | bar cursor (0=Check 1=Arrange); slot idx/row (row 0=weapon 1=armor, OK on slot -> equip list); equip-list row/scroll (**materia[200] index = row+scroll**, the commit math at 0x70DC80); arrange-list row/scroll; popup row 0..3; Check-mode widget col/row; party slot 0..2 (×0x440 = shared char-data index; weapon slot count byte at chardata+0x21) |
+| `MATMENU_CHARREC_PTR` | `0x00DCA810` | u32 → the viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was THIS screen's state all along |
 | `TUTORIAL_RUNNING` | `0x00DBFD30` | u32, 1 while a menu tutorial's byte-code VM runs (set by menu start_tutorial 0x6CB620, cleared by the VM's END opcode 0x7185AC / stop paths). v2.30.29's authoritative tutorial gate + "Tutorial finished." edge (ff7_tutorial_static.py 2026-07-26) |
 | `TUTWIN_STATE` | `0x00DC1310` | u8 tutorial/message window renderer state: 0=closed, 1=opening, 2=TEXT SHOWING, 3=closing (= FFNx's menu_tutorial_window_state, operand at renderer 0x6C49FD+0x9; FFNx's voice hook uses the same 0→1→2→3→0 edges). v2.30.29 speaks each slide on the →2 edge |
 | `TUTWIN_TEXT_PTR` | `0x00DC1214` | u32 → the CURRENT window's FF7-encoded text (= FFNx menu_tutorial_window_text_ptr, operand +0x18). For tutorial slides it points INTO the field buffer (the VM passes its script PC); for the save screens' info popups (same renderer, callers 0x6FFB65-0x6FFEAD/0x721Fxx) it points at exe .data strings — v2.30.29 speaks both |
@@ -3648,6 +3651,40 @@ well: the live pointer sitting PAST the decoded message's start
 (msg_base, the v2.30.19 capture) proves consumption no matter how few
 steps it took; dead pointers sit AT the start forever. The tone log
 gains rel= alongside ptrstill=/chg=.
+
+### v2.30.33 (2026-07-26): materia menu connected — table[3]'s identity settled
+
+**User request** (screenshot Menus/Materia/materia_menu_1.jpg): connect
+the materia menu.
+
+**Static session** (ff7_materia_menu_static.py, the shop recipe): the
+materia menu IS menu_subs_call_table[3] = 0x70CF0B — the very screen the
+v2.31 caption evidence scored for "Arrange" (that string belongs to this
+screen's Check/Arrange bar; the item menu that stole the guess is index
+1) — and its 0xDCA7F8 "exclusive block" is this screen's state block.
+Full map in §4: mode machine 0x920FA0 (12-case jump table, semantics
+read off each case's transitions), bar/slot/list/popup cursors, the
+viewed character's record pointer 0xDCA810, and the equip-commit index
+formula (materia[row+scroll]) lifted from the commit code itself. The
+Arrange popup's four options came from the string run 0x920C63-0x920CA3
+(Arrange / Exchange / Remove all / Trash).
+
+**Mod changes**: MateriaMenuThread (dispatch index 3, the item/status
+gate shape + victory/foreign-screen/tutorial stand-downs): entry
+"Materia. <character>" (re-announced on page-up/down character flips);
+Check/Arrange bar; slot navigation "Weapon slot 3: Lightning materia" /
+"Armor slot 1: Empty" (contents from the record's +0x40/+0x60 arrays,
+pointer layout-checked before every read); equip and arrange lists over
+materia[200] with in-place rewrite detection (equipping speaks the
+slot's new content without cursor movement); Arrange popup options; I
+key = materia description + AP / "Mastered". Modes 5/6/7 stay silent
+(transients); any unexpected mode logs.
+
+**Known residuals** (deliberate v1 scope): materia LEVEL (star count)
+and "to next level" need the kernel materia-data records' AP thresholds
+— not yet located; linked-slot pairs and slot-count bounds (chardata
++0x21) not spoken; Exchange's two-phase flow narrated as plain list
+navigation.
 
 ---
 

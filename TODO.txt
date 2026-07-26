@@ -5,6 +5,23 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MATERIA] Materia menu — SHIPPED v2.30.33 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Dispatch index 3 (= the v2.31 "table[3]" mystery screen). Speaks:
+"Materia. Cloud" on entry; Check/Arrange bar; "Weapon slot 3:
+Lightning materia" slot navigation; equip list ("Choose materia.");
+Arrange popup (Arrange/Exchange/Remove all/Trash); arrange lists;
+equip-in-place announcements; I = description + AP/Mastered.
+VERIFY: entry announce once (no stale-row talk-over); slot cursor
+tracks incl. weapon<->armor row moves; equip flow: OK on slot ->
+"Choose materia." + list rows -> OK -> back on slot with the NEW
+materia spoken; Arrange popup rows; character page-flip re-announces
+name; log "[FF7Access] MATERIA mode" lines — report any mode outside
+{0,1,3,4,5,6,7,8,9,10} or announcements in the wrong pane.
+RESIDUALS (v1 scope): no star-level/"to next level" (needs kernel
+materia-data AP thresholds — future static session); linked slots and
+slot counts unspoken; Exchange phase 2 narrated as plain list.
+
 [SHOP+DIALOG] False "Save" on shop open + short-dialog chime hole — FIXED v2.30.32 (2026-07-26)
 ------------------------------------------------------------------------
 (1) Shop open spoke "Save": stale MENU_CURSOR (row 9) + shop's

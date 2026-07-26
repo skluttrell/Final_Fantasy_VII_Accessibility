@@ -839,6 +839,59 @@ constexpr uint32_t KERNEL_ARMOR_RESTRICT  = 0x00DBCD00;
 constexpr uint32_t KERNEL_ACCESS_RESTRICT = 0x00DBCAEE;
 
 // ---------------------------------------------------------------------------
+// MATERIA menu (v2.30.33, 2026-07-26) — ALL STATIC in one session
+// (investigate/ff7_materia_menu_static.py, log materia_menu_static_
+// 20260726_125924; the shop-session recipe: full annotated disasm of the
+// sub + depth-2 write mining, semantics hand-read off the dump).
+//
+// The materia menu IS menu_subs_call_table[3] (= 0x70CF0B) — the screen
+// the v2.31 caption evidence pointed at all along (its "Arrange" string
+// belongs to THIS screen's Check/Arrange bar, and its 0xDCA7F8 exclusive
+// block is this screen's state; the row->index pattern Item row0=1 ...
+// Status row4=5 also lands Materia row2 = index 3).
+//
+// The sub is a switch on MATMENU_MODE (jump table 0x70E246, modes 0-0xB;
+// transitions read off the case code):
+//   0 = Check/Arrange bar (OK on Check -> 4, on Arrange -> 8;
+//       RIGHT/Cancel -> 1)
+//   1 = equipment slot navigation (LEFT from weapon slot 0 -> 0;
+//       OK on an existing slot -> 3)
+//   3 = materia list, equipping (OK commits into the slot — the commit
+//       at 0x70DC80..0x70DD0C is where the index formula comes from)
+//   4 = Check mode (slot browsing, detail pane)
+//   5/6/7 = transient (~0x30-byte cases — waits/animations; silent)
+//   8 = Arrange popup (Arrange / Exchange / Remove all / Trash — the
+//       0x920C63..0x920CA3 string run, widget rows=4)
+//   9/10 = arrange-mode list phases (exchange/trash targets)
+//   2/11 = empty cases (exit/idle)
+// Cursor widgets are the same generic ctor 0x6F4D30 as the shop's
+// (+0 col, +4 row, +0x14 scroll).
+constexpr uint32_t MATMENU_SCREEN_INDEX  = 3;          // dispatch index
+constexpr uint32_t MATMENU_MODE          = 0x00920FA0; // u32 0..0xB
+constexpr uint32_t MATMENU_BAR_CURSOR    = 0x00DD12BC; // u32 0=Check 1=Arrange
+constexpr uint32_t MATMENU_SLOT_IDX      = 0x00DD12F0; // u32 slot 0..7
+constexpr uint32_t MATMENU_SLOT_ROW      = 0x00DD12F4; // u32 0=weapon 1=armor
+constexpr uint32_t MATMENU_PARTY_SLOT    = 0x00DD1638; // u32 party slot 0..2
+                                                       // (x0x440 into the
+                                                       // shared char-data
+                                                       // block for slot
+                                                       // counts at +0x21)
+constexpr uint32_t MATMENU_CHARREC_PTR   = 0x00DCA810; // u32 -> savemap char
+                                                       // record (init
+                                                       // 0xDBFD8C = Cloud)
+constexpr uint32_t MATMENU_EQUIP_ROW     = 0x00DD1364; // mode-3 list widget
+constexpr uint32_t MATMENU_EQUIP_SCROLL  = 0x00DD1374; // idx = row + scroll
+constexpr uint32_t MATMENU_ARR_ROW       = 0x00DD14B4; // mode-9/10 list
+constexpr uint32_t MATMENU_ARR_SCROLL    = 0x00DD14C4;
+constexpr uint32_t MATMENU_POPUP_ROW     = 0x00DD147C; // u32 0..3
+constexpr uint32_t MATMENU_CHECK_COL     = 0x00DD1398; // mode-4 slot widget
+constexpr uint32_t MATMENU_CHECK_ROW     = 0x00DD139C; // 0=weapon 1=armor
+// Char record materia arrays (the shop's equipped-count walker reads the
+// same offsets; = FFNx savemap_char layout):
+constexpr uint32_t SAVEMAP_CHAR_WMATERIA_OFF = 0x40;   // u32[8] id|ap<<8
+constexpr uint32_t SAVEMAP_CHAR_AMATERIA_OFF = 0x60;   // u32[8]
+
+// ---------------------------------------------------------------------------
 // MENU TUTORIAL live state (v2.30.29, 2026-07-26) — the per-slide sync the
 // v2.30.27 narrator lacked. ALL STATIC (investigate/ff7_tutorial_static.py,
 // log tutorial_static_20260726_110911 + the writer sweeps in the same
