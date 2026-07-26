@@ -190,6 +190,11 @@ every confirmed address — the clustering itself is a discovery tool.
 | `SAVEMAP_GIL` | `0x00DC08B4` | u32 party gil = savemap+0xB7C (was a raw literal in the v2.35 victory reader; promoted v2.30.28 — the shop's own buy/sell arithmetic reads/writes exactly here, third independent confirmation). The G key speaks it |
 | `SAVEMAP_MATERIA` | `0x00DC04B4` | u32[200] materia inventory = savemap+0x77C (FFNx savemap struct; the shop sell code indexes it at 0x71DD16): word = id | AP<<8, 0xFFFFFFFF = empty slot |
 | `SHOP_SESSION` / `SHOP_FADE_STATE` | `0x00DD6D78` / `0x00DD4734` | Session-active flag (wrapper 0x71FF95: 0→init→1) and fade state (1 fading in / 2 fading out / -1 exiting → menu-exit flag 0xDC12F4). Not consumed by the mod (GAME_MODE==8 is the gate); documented for completeness |
+| `TUTORIAL_RUNNING` | `0x00DBFD30` | u32, 1 while a menu tutorial's byte-code VM runs (set by menu start_tutorial 0x6CB620, cleared by the VM's END opcode 0x7185AC / stop paths). v2.30.29's authoritative tutorial gate + "Tutorial finished." edge (ff7_tutorial_static.py 2026-07-26) |
+| `TUTWIN_STATE` | `0x00DC1310` | u8 tutorial/message window renderer state: 0=closed, 1=opening, 2=TEXT SHOWING, 3=closing (= FFNx's menu_tutorial_window_state, operand at renderer 0x6C49FD+0x9; FFNx's voice hook uses the same 0→1→2→3→0 edges). v2.30.29 speaks each slide on the →2 edge |
+| `TUTWIN_TEXT_PTR` | `0x00DC1214` | u32 → the CURRENT window's FF7-encoded text (= FFNx menu_tutorial_window_text_ptr, operand +0x18). For tutorial slides it points INTO the field buffer (the VM passes its script PC); for the save screens' info popups (same renderer, callers 0x6FFB65-0x6FFEAD/0x721Fxx) it points at exe .data strings — v2.30.29 speaks both |
+| `TUTWIN_MODE` | `0x00DC1318` | u8 window advance mode (0x6C49CB arg): 0 = auto-close on TUTWIN_TIMER (0xDC1314, from 0x14/0x28), nonzero = closes on ANY pressed key (renderer 0x6C4C4D: `call consume-pressed; test eax,eax` — no specific button). The v2.30.29 "Press any button to continue" hint keys off this |
+| `TUTORIAL_SCRIPT_PC` | `0x00DD1BC8` | u32 VM script pointer into the field buffer (start_tutorial 0x71820F arg; stepped by the opcode cases). Not consumed (TEXT_PTR suffices); documented with the VM map: opcode 0x00=wait u16 frames, 0x02-0x0D = INJECTED keys (UP 0x1000/DOWN 0x4000/LEFT 0x8000/RIGHT 0x2000/0x10/CANCEL 0x40/0x80/OK 0x20/8/2/4/1 — jump table 0x7185C7), 0x10=text window, 0x11=END, 0x12=window x,y. **While a tutorial runs the menu input refresh (0x7186C8→0x71826E) OVERWRITES the pressed/held digests 0x9A85E0/0x9A85D4 with VM output — real input never reaches menu navigation**; only the window-close test reads real presses first |
 | `FIELD_ID` | `0x00CC15D0` | s16, non-zero on named field maps, 0 on title/world. **Does NOT zero during battle** (live-corrected 2026-07-09; earlier belief wrong) |
 | `G_ACTIVE_ACTOR_ID` | `0x00BE1170` | u8 slot of last-acting battle actor (0–2 party, 4–9 enemy); never resets between battles (v2.5) |
 | `G_BATTLE_MODEL_STATE` | `0x00BE1178` | Per-actor battle array, stride 0x1AEC; commandID u8 at +0x23 (v2.5) |
@@ -3521,6 +3526,48 @@ static-derived only — debug log lines fire on shop open and every state
 change; the sell-item 2-column index formula and the buy-list visible-row
 behavior are the two most likely places live behavior could diverge.
 
+### v2.30.29 (2026-07-26): per-slide tutorial narration — the live state mapped
+
+**Play report on v2.30.27** (same day): "reads the entire tutorial in one
+long buffer... once the text is read, the user is left to guess how to
+move through each slide in silence. Sometimes you have to advance with a
+direction, sometimes a button."
+
+**Static session** (ff7_tutorial_static.py + writer sweeps, log
+tutorial_static_20260726_110911) mapped the whole tutorial machine the
+v2.30.27 comment had deferred:
+
+1. **FFNx's anchors decoded first**: menu_tutorial_window_state 0xDC1310
+   / _text_ptr 0xDC1214 (renderer 0x6C49FD operands +0x9/+0x18 — FFNx's
+   own voice-acting hook keys on the same 0→1→2→3→0 state edges, an
+   independent confirmation of the semantics).
+2. **The renderer is a SHARED menu message-window system** — the save
+   screens' "file corrupted"-class popups use it too (mode byte
+   0xDC1318=0 → timer auto-close; tutorials use mode≠0).
+3. **The tutorial VM** (0x71832E, jump table 0x7185C7; PC 0xDD1BC8
+   pointing INTO the field buffer; running flag 0xDBFD30): opcodes
+   0x02-0x0D are INJECTED key presses — the menu input refresh
+   (0x7186C8→0x71826E) overwrites the pressed/held digests
+   0x9A85E0/0x9A85D4 with VM output every tick, so **real input never
+   reaches menu navigation during a tutorial**. The ONLY player-paced
+   element is the text window, and its close test is `pressed != 0` —
+   **ANY key advances a slide** (after a 0x14/0x28-frame minimum
+   display). The "sometimes a direction, sometimes a button" experience
+   was the silent demo phases between slides, where keys do nothing.
+   (Dead code note: 0x71826E computes a blocked-keys mask from a header
+   blob at 0xDD1B9A, but its only caller discards the return — the mask
+   never applies in this build.)
+
+**Mod changes**: hook_tutor no longer narrates (flag + log only);
+TutorialThread polls TUTORIAL_RUNNING + TUTWIN_*: each slide is spoken
+when ITS window reaches state 2 ("Tutorial. <slide>" for the first),
+followed by "Press any button to continue." (input-mode windows only);
+"Tutorial finished." on the running-flag drop, which also clears the
+menu-suppression latch (previously waited for MENU_OPEN=0). Bonus: the
+save screens' info popups — previously silent — now speak under
+speak_menus via the same state edge. SafeDecodeFF7At (page-safe bounded
+copy-out) guards every text read.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -4023,6 +4070,7 @@ needed; the helper's own math is the documented ground truth.)
 
 | Address | Symbol | Notes |
 |---------|--------|-------|
+| `0xDBFD30` | TUTORIAL_RUNNING | u32 sitting 8 bytes BEFORE the savemap: 1 while the menu tutorial VM runs (v2.30.29). Menu-module global, NOT saved state — listed here for address-ordering only |
 | `0xDBFD38` | savemap base | live game state, persisted on save |
 | `0xDBFD8C–0xDC022F` | SAVEMAP_CHAR_RECORDS | 9 character records × 0x84 (savemap+0x54..+0x4F7); live name at record+0x10, equipment at +0x1C (= the 7thHeaven "+0x70 blocks") (v2.19); battle-row byte at **+0x20** (0xFF front/0xFE back — LIVE-toggled + disasm XOR 1, v2.32; community's +0x1F is one byte off); HP/MP words +0x2C/+0x38/+0x30/+0x3A (v2.31) |
 | `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
@@ -4054,6 +4102,7 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC1288` | CHARSEL_CHOSEN | u32 slot committed by the mode-1 pane (v2.32 disasm; not yet consumed) |
 | `0xDC1300` | BATTLE_END_MODE | u16 victory-screen phase, advancing on the player's OK PRESSES not screen appearances (v2.35.2 play-corrected): 0=EXP/AP screen showing, 1=roll-up running (chirps/levels apply), 2=gil/items screen showing, 3=after its OK (gil applied). FFNx menu_battle_end_mode |
 | `0xDC1320` | ORDERMENU_LATCH | u32 1 = first member selected (v2.32, scan + disasm) |
+| `0xDC1310` / `0xDC1214` / `0xDC1318` / `0xDC1314` | TUTWIN_STATE / TEXT_PTR / MODE / TIMER | the menu message/tutorial window renderer's state block (0x6C49FD; = FFNx menu_tutorial_window_state/_text_ptr). Full semantics in §4 (v2.30.29). Shared by tutorial slides AND save-screen info popups |
 | `0xDC1324` | MENU_FOCUS_MODE | u8 0=menu bar / 1=char-select pane (chimed) / 2=Order pane (silent — the player-noticed missing chime); v2.32's Order gate |
 | `0xDC1210` | (frame parity) | ⚠ DISPROVED as a pane flag (v2.29.2): oscillates in real use — passed the A/B/A scan by coincidence. CAUSE FOUND (v2.31 dispatcher disasm): the sub-screen dispatcher XOR-toggles it every menu tick. Never read |
 | `0xDC12DC` | MENU_OPEN | also 1 on post-battle results screen AND the naming screen (v2.8.3) |
@@ -4111,6 +4160,7 @@ any of these bytes.
 | `0xDD6BF0` (+4/+0x14) | sell-materia widget | SHOP_SELLM_ROW 0xDD6BF4 + SCROLL 0xDD6C04; slot = row+scroll |
 | `0xDD6C98` | SHOP_SELLTYPE_CURSOR | Item/Materia bar (state 6) |
 | `0xDD6D78` | SHOP_SESSION | 1 while the shop session runs (wrapper-managed) |
+| `0xDD1BC8` | TUTORIAL_SCRIPT_PC | tutorial VM position (pointer into the field buffer); `0xDD1BBC` = frame-wait counter, `0xDD1BF4` = window-open hold flag, `0xDD1BF8/FC` = window x/y from opcode 0x12 (v2.30.29 — item-menu-block neighborhood, more menu-module BSS interleaving) |
 
 ### Title / name-entry block: 0xDD4400 – 0xDD7704
 

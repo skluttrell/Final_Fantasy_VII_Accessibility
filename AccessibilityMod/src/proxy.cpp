@@ -156,6 +156,7 @@ static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_shopmenu_thread   = nullptr;
 static HANDLE g_gilkey_thread     = nullptr;
+static HANDLE g_tutorial_thread   = nullptr;
 static HANDLE g_timer_thread      = nullptr;
 static HANDLE g_victory_thread    = nullptr;
 static HANDLE g_battle_thread     = nullptr;
@@ -2605,6 +2606,145 @@ static DWORD WINAPI GilKeyThread(LPVOID /*unused*/)
         _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%lu gil",
                      static_cast<unsigned long>(gil));
         TTS::Speak(msg, true);
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// MENU TUTORIAL narration, per-slide (v2.30.29).
+//
+// Play report on v2.30.27's up-front model: "reads the entire tutorial in
+// one long buffer... once the text is read, the user is left to guess how
+// to move through each slide in silence." The live state the v1 comment
+// called unmapped is now mapped (TUTWIN_* / TUTORIAL_RUNNING provenance in
+// ff7_addresses.h): the menu module's tutorial VM opens one text window
+// per slide, holds until the player presses ANY key (renderer state 2's
+// close test is `pressed-digest != 0` — there is no per-slide magic key;
+// what LOOKED like "sometimes a direction, sometimes a button" was the
+// demo phases between slides, where the VM injects scripted key presses
+// and discards real input entirely), then runs the scripted demo to the
+// next slide.
+//
+// Model: follow the window renderer's state byte exactly like FFNx's own
+// voice-acting hook does — speak THE CURRENT slide when its window
+// reaches state 2 (text showing), tell the player "Press any button to
+// continue" (input-advanced windows only — TUTWIN_MODE 0 windows are
+// timer-closed info popups and take no input), and say when the lesson
+// is over (TUTORIAL_RUNNING 1->0), which also releases the menu-thread
+// suppression latch. Non-tutorial uses of the same renderer (the save
+// screens' "file corrupted"-class popups) get spoken too under
+// speak_menus — they were previously silent.
+// ---------------------------------------------------------------------------
+
+// Bounded copy-out + decode of an FF7 string at an arbitrary game pointer.
+// The text lives in the field buffer (tutorial slides) or exe .data
+// (popups); copy in page-safe chunks until the 0xFF terminator, then
+// decode the LOCAL copy — never hand a raw unbounded pointer to Decode.
+static bool SafeDecodeFF7At(uint32_t addr, std::wstring& out)
+{
+    char local[1024];
+    size_t n = 0;
+    while (n < sizeof(local) - 1) {
+        const size_t chunk = 64;
+        if (!IsReadableSpan(reinterpret_cast<const void*>(addr + n), chunk))
+            break;
+        bool done = false;
+        for (size_t i = 0; i < chunk && n < sizeof(local) - 1; ++i) {
+            const char c = *reinterpret_cast<const volatile char*>(addr + n);
+            local[n++] = c;
+            if (static_cast<uint8_t>(c) == 0xFF) {
+                done = true;
+                break;
+            }
+        }
+        if (done)
+            break;
+    }
+    if (n == 0)
+        return false;
+    local[n] = static_cast<char>(0xFF);   // force-terminate a truncated copy
+    out = FF7Text::Decode(local);
+    for (wchar_t c : out)
+        if (c != L' ')
+            return true;
+    return false;
+}
+
+static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
+{
+    bool     was_running = false;
+    uint32_t last_text   = 0;       // text ptr of the last SPOKEN window
+    bool     first_slide = false;   // next slide gets the "Tutorial." prefix
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        const bool running = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::TUTORIAL_RUNNING) != 0;
+        const uint8_t state = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::TUTWIN_STATE);
+        const uint32_t text_ptr = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::TUTWIN_TEXT_PTR);
+        const uint8_t mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::TUTWIN_MODE);
+
+        if (running && !was_running) {
+            first_slide = true;
+            last_text   = 0;
+            Log::Write("[FF7Access] TUTORIAL started (engine flag up)");
+        } else if (!running && was_running) {
+            // The VM hit its END opcode — no more slides. Saying so is the
+            // difference between "lesson over, menus are yours again" and
+            // the silence the play report described.
+            TTS::Speak(L"Tutorial finished.", /*interrupt=*/false);
+            Hooks::ClearTutorialActive();
+            Log::Write("[FF7Access] TUTORIAL finished (engine flag down)");
+        }
+        was_running = running;
+
+        // One announcement per window SHOWING. last_text re-arms when the
+        // window fully closes, so the compare-to-last is both the "spoke
+        // this one already" guard and the back-to-back-windows detector
+        // (every window passes through state 0 between shows — the VM's
+        // hold flag waits for it).
+        const bool showing = (state == 2);
+        const bool announce = showing && text_ptr != 0 &&
+                              text_ptr != last_text;
+        if (announce) {
+            std::wstring text;
+            if (SafeDecodeFF7At(text_ptr, text)) {
+                if (running) {
+                    std::wstring msg = first_slide ? L"Tutorial. " : L"";
+                    msg += text;
+                    // Input-advanced window: tell the player exactly how
+                    // to move on (any key — the close test is literal
+                    // "any pressed bit"). Timer windows advance alone.
+                    if (mode != 0)
+                        msg += L" Press any button to continue.";
+                    // Interrupt: the previous slide's speech is stale the
+                    // moment the player advanced past it.
+                    TTS::Speak(msg, /*interrupt=*/true);
+                    first_slide = false;
+                } else if (Config::Get().speak_menus) {
+                    // Non-tutorial info popup on the shared renderer
+                    // (save screens' "file corrupted" class) — speak it
+                    // plainly; these had no speech path before.
+                    TTS::Speak(text, /*interrupt=*/true);
+                }
+                last_text = text_ptr;
+
+                char dbg[128];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] TUTWIN show: text=%08lX mode=%u running=%d",
+                    static_cast<unsigned long>(text_ptr),
+                    static_cast<unsigned>(mode), running ? 1 : 0);
+                Log::Write(dbg);
+            }
+        }
+        if (!showing && state == 0)
+            last_text = 0;   // window fully closed — re-arm for re-shows
     }
 
     return 0;
@@ -8970,6 +9110,16 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start gil key thread.");
         }
 
+        // Menu tutorial per-slide narration (v2.30.29). Live window state
+        // + engine tutorial flag from ff7_tutorial_static.py; replaces
+        // v2.30.27's read-everything-up-front model in hook_tutor.
+        g_tutorial_thread = CreateThread(nullptr, 0, TutorialThread, nullptr, 0, nullptr);
+        if (g_tutorial_thread) {
+            Log::Write("[FF7Access] Tutorial narration thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start tutorial thread.");
+        }
+
         // Countdown timer announcements + T/Shift+T (v2.34). Value/units
         // static-proven via the STTIM handler disasm; shipped speculatively
         // ahead of the first reachable timer with debug logging as the
@@ -9078,7 +9228,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
             !g_statusmenu_thread && !g_shopmenu_thread && !g_gilkey_thread &&
-            !g_timer_thread && !g_victory_thread &&
+            !g_tutorial_thread && !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_dialogtone_thread && !g_fieldnav_thread &&
             !g_nameentry_thread) {
@@ -9238,6 +9388,11 @@ void Shutdown()
         WaitForSingleObject(g_gilkey_thread, 500);
         CloseHandle(g_gilkey_thread);
         g_gilkey_thread = nullptr;
+    }
+    if (g_tutorial_thread) {
+        WaitForSingleObject(g_tutorial_thread, 500);
+        CloseHandle(g_tutorial_thread);
+        g_tutorial_thread = nullptr;
     }
     if (g_timer_thread) {
         WaitForSingleObject(g_timer_thread, 500);

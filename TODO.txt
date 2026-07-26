@@ -5,6 +5,25 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TUTORIAL] Per-slide narration — SHIPPED v2.30.29 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Play report on v2.30.27: whole lesson read as one buffer, then silence
+while guessing how slides advance. Root cause mapped statically
+(research §8 v2.30.29): slides advance on ANY key (the window-close
+test is literally pressed!=0); the confusing part was the demo phases
+between slides, where the tutorial VM INJECTS key presses and discards
+real input. Now: each slide speaks when its window shows ("Tutorial.
+<first slide>"), then "Press any button to continue."; "Tutorial
+finished." when the VM ends; menu-thread suppression released on the
+engine flag instead of menu close. Save-screen info popups (same
+window renderer) now speak too. VERIFY on the next tutorial (Materia
+tutorial replays from the Sector 5 save?): one slide per window, hint
+after each, no long buffer, no silence at the end; menus speak
+normally again right after "Tutorial finished."; no double-speak of
+save popups. RESIDUAL: if a slide ever seems to need a SPECIFIC key
+(not any key), capture the log — would mean a second window mode
+beyond the two decoded.
+
 [SHOP] Shop menus + G gil key — SHIPPED v2.30.28 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 User request (with item-shop screenshots): connect the shop menus; add a

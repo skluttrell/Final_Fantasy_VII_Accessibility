@@ -832,6 +832,46 @@ constexpr uint32_t KERNEL_WEAPON_RESTRICT = 0x00DBE75A;
 constexpr uint32_t KERNEL_ARMOR_RESTRICT  = 0x00DBCD00;
 constexpr uint32_t KERNEL_ACCESS_RESTRICT = 0x00DBCAEE;
 
+// ---------------------------------------------------------------------------
+// MENU TUTORIAL live state (v2.30.29, 2026-07-26) — the per-slide sync the
+// v2.30.27 narrator lacked. ALL STATIC (investigate/ff7_tutorial_static.py,
+// log tutorial_static_20260726_110911 + the writer sweeps in the same
+// session; FFNx cross-anchor: menu_tutorial_window_state / _text_ptr are
+// FFNx's own names for the first two, resolved via its documented chain
+// menu_sub_6CB56A+0x2B7 -> renderer 0x6C49FD, operands +0x9/+0x18).
+//
+// ARCHITECTURE (who does what, from the disasm):
+//   - The field TUTOR opcode only REQUESTS a tutorial; the menu module
+//     starts it (0x6CB618 start_tutorial(script_ptr), which sets
+//     TUTORIAL_RUNNING=1 and SCRIPT_PC=ptr INTO THE FIELD BUFFER).
+//   - A byte-code VM (0x71832E, jump table 0x7185C7) steps the script
+//     each menu tick: opcode 0x00=wait u16 frames, 0x02-0x0D = INJECTED
+//     key presses driving the demo (masks UP 0x1000/DOWN 0x4000/LEFT
+//     0x8000/RIGHT 0x2000/OK 0x20/CANCEL 0x40/menu-buttons 0x80,0x10,
+//     8,4,2,1), 0x10 = open text window (text follows to 0xFF), 0x12 =
+//     window x,y, 0x11 = END (clears TUTORIAL_RUNNING).
+//   - While a tutorial runs, the menu's input refresh (0x7186C8 ->
+//     0x71826E) OVERWRITES the pressed/held digests (0x9A85E0/0x9A85D4)
+//     with the VM's output — REAL INPUT NEVER REACHES MENU NAVIGATION
+//     during a tutorial (why pressing keys mid-demo does nothing).
+//   - The text window is the ONLY player-paced element: renderer state 2
+//     closes when the raw pressed digest is nonzero — ANY key (test
+//     eax,eax at 0x6C4C52), after a minimum-display countdown
+//     (TUTWIN_TIMER from 0x14/0x28). TUTWIN_MODE==0 windows (the save
+//     screen's info popups reuse this renderer) auto-close on the timer
+//     instead and take no input.
+constexpr uint32_t TUTORIAL_RUNNING = 0x00DBFD30; // u32 1 = tutorial active
+constexpr uint32_t TUTWIN_STATE    = 0x00DC1310;  // u8 0=closed 1=opening
+                                                  //    2=text shown 3=closing
+constexpr uint32_t TUTWIN_TEXT_PTR = 0x00DC1214;  // u32 -> CURRENT window's
+                                                  //    FF7 text (state>=1)
+constexpr uint32_t TUTWIN_MODE     = 0x00DC1318;  // u8 0=timer auto-close,
+                                                  //    else any-key-advanced
+constexpr uint32_t TUTWIN_TIMER    = 0x00DC1314;  // u32 min-display countdown
+                                                  //    (not consumed; doc)
+constexpr uint32_t TUTORIAL_SCRIPT_PC = 0x00DD1BC8; // u32 -> next opcode in
+                                                  // the field buffer (doc)
+
 // Savemap gil + materia inventory (promoted from raw literals now that a
 // third feature reads them; gil offset live-proven by the v2.35 victory
 // total, materia array = FFNx savemap struct, and the shop's own sell
