@@ -3590,6 +3590,40 @@ AnnounceKeysThread (G + H, same focus-gated edge pattern); H is
 battle-only (GAME_MODE==2) per the FF4 scheme. Debug log line carries
 the raw mask for verifying any surprising status callout.
 
+### v2.30.31 (2026-07-26): wait tone — typewriter-pointer stillness ends the muted pages
+
+**Play report**: "Not every dialog chimes when the user needs to press the
+continue button... no pattern... more in long dialogs with several blocks
+of text that just advance rather than change speaker boxes."
+
+**Root cause — the pattern IS text length.** The v2.30.6 three-tier rule
+blacklists state VALUES {1,2} as "never fire" (correct for win=0, which
+parks at 2 while typing). But counter-style windows (win=1) rest on a
+DATA-DEPENDENT value after typing each page (17/34/60 observed — the
+counter tracks rendered text). A short block can settle on 1 or 2 —
+landing exactly in the blacklist and permanently muting that page's
+chime. Whether a given block chimes depends on its length parity —
+invisible as a pattern from the outside, precisely as reported. This is
+the v2.30.15 lesson's third act: the state byte's styles were documented
+in v2.30.5, and AGAIN one reader (the wait tone) kept a single-style
+assumption.
+
+**Fix — a style-independent wait signal.** The typewriter pointer
+(DIALOG_TEXT_PTRS[win], the same live pointer behind v2.30.17/19) moves
+every frame while ANY window style is typing and parks when the page is
+fully displayed. New rule, per window per dialog: count pointer changes
+since DLGID; ≥3 proves THIS dialog's pointer is live (1 = the open
+buffer swap; 2+ = actual typing). For live-pointer windows,
+"pointer still for ≥300ms" IS the wait signal: it overrides the {1,2}
+blacklist (the muted-page fix) and REPLACES the bare state-hold in the
+fallback tier (also fixing a quieter defect: positional windows park
+their state byte all dialog, so the old 300ms state-hold chimed
+mid-typing, ~300ms after page-turn). Dead-pointer windows keep the old
+value-tier behavior unchanged — the new path cannot regress a window it
+has no evidence about. Discrete terminal values {4,6,14} keep their fast
+80ms path. The tone log now prints ptrstill/chg so the next report
+distinguishes which path fired or failed.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

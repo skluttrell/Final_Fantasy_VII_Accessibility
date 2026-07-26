@@ -320,6 +320,26 @@ struct WindowState {
     const char*         msg_base = nullptr;
     bool                state_static = true;
 
+    // v2.30.31: live typewriter-pointer stillness tracking — the
+    // style-independent "waiting for input" signal the wait tone needs.
+    // The state-VALUE blacklist {1,2} is correct for win=0 (types parked
+    // at 2) but WRONG for counter-style windows, whose post-typing rest
+    // value is DATA-DEPENDENT (17/34/60 observed — a short page can
+    // settle on 1 or 2, permanently muting that page's chime; the
+    // 2026-07-26 "some dialogs don't chime, no pattern" report, where
+    // the pattern is text length). The typewriter pointer moves every
+    // frame while ANY style is typing and parks when the page is fully
+    // displayed — pointer-still-while-open is therefore a wait signal
+    // that transcends the style split. rawptr_changes counts pointer
+    // changes since DLGID: the open transition (stale -> fresh buffer)
+    // is 1 change even on windows whose pointer never advances, so only
+    // >= 2 changes proves THIS dialog's pointer is live — windows with
+    // a dead pointer keep exactly the old value-tier behavior, making
+    // the new path regression-free by construction.
+    const char* last_rawptr        = nullptr;
+    DWORD       rawptr_change_tick = 0;
+    uint8_t     rawptr_changes     = 0;
+
     // The dialog_id we most recently spoke for this window slot (0xFF = none spoken yet).
     // When dialog_id changes from what we last spoke, a new dialog is starting.
     //
@@ -808,6 +828,18 @@ static int __cdecl hook_message()
         if (has_dialog_text)
             s_last_dialog_tick = GetTickCount();
 
+        // v2.30.31: typewriter-pointer stillness tracking (see the
+        // WindowState field comment). Counted for every window every
+        // frame — cheap (one pointer compare) and deliberately NOT gated
+        // on speak_dialog: the wait tone must work for voice-acting-mod
+        // players who disable our dialog TTS.
+        if (raw_text != s_window[window_id].last_rawptr) {
+            s_window[window_id].last_rawptr = raw_text;
+            s_window[window_id].rawptr_change_tick = GetTickCount();
+            if (s_window[window_id].rawptr_changes < 0xFF)
+                ++s_window[window_id].rawptr_changes;
+        }
+
         // Diagnostic (throttled): reveals the clock window's signature during
         // a timed escape — window_id, state, and whether we stamped — so the
         // next timed sequence confirms the fix (or names a residual).
@@ -943,6 +975,13 @@ static int __cdecl hook_message()
             // would trivially already be "held" long enough on dialog 2+,
             // skipping its intended delay.
             s_window[window_id].state_change_tick = GetTickCount();
+            // v2.30.31: fresh dialog = fresh pointer-liveness evidence.
+            // The upcoming stale->fresh buffer swap is 1 change; only
+            // further movement (actual typing) re-enables the
+            // pointer-stillness wait path for this dialog.
+            s_window[window_id].last_rawptr        = nullptr;
+            s_window[window_id].rawptr_change_tick = GetTickCount();
+            s_window[window_id].rawptr_changes     = 0;
             char dbg[80];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] MSG win=%u id=%u [DLGID] pending",
@@ -1150,10 +1189,34 @@ static int __cdecl hook_message()
             const bool is_never_wait_state =
                 (current_state == 1 || current_state == 2);
 
+            // v2.30.31: the style-independent wait signal — the typewriter
+            // pointer has PROVEN it advances this dialog (>= 3 changes:
+            // 1 = the open buffer swap, 2+ = actual typing) and has now
+            // been still for a full debounce. This is what fixes the
+            // muted pages: a counter window resting on a data-dependent
+            // 1 or 2 (blacklisted by value), or any style parked on an
+            // uncatalogued value. Windows whose pointer never moves keep
+            // the pure value-tier behavior — no new false-fire surface.
+            const DWORD ptr_still_ms =
+                GetTickCount() - s_window[window_id].rawptr_change_tick;
+            const bool pointer_live =
+                s_window[window_id].rawptr_changes >= 3;
+            const bool typewriter_parked =
+                pointer_live && ptr_still_ms >= kFallbackDebounceMs;
+
             const bool should_fire =
-                is_never_wait_state ? false :
+                is_never_wait_state ? typewriter_parked :
                 is_wait_state       ? (held_ms >= kWaitConfirmMs) :
-                                       (held_ms >= kFallbackDebounceMs);
+                // Fallback tier: when the pointer is live, pointer
+                // stillness REPLACES the bare state-hold — a held state
+                // value alone can elapse while the typewriter is still
+                // typing (positional windows park their state byte at 0
+                // for the whole dialog: the old rule chimed ~300ms after
+                // page-turn, mid-typing — an early tone the play reports
+                // haven't separately named but the log timings show).
+                // Dead-pointer windows keep the old state-hold rule.
+                (pointer_live ? typewriter_parked
+                              : held_ms >= kFallbackDebounceMs);
 
             if (should_fire) {
                 if (!s_window[window_id].wait_tone_armed) {
@@ -1164,11 +1227,17 @@ static int __cdecl hook_message()
                     // for all dialogs" report undiagnosable — no way to
                     // tell "tone never armed" from "tone armed but
                     // inaudible/drowned out". One line per arm settles it.
-                    char tone_log[96];
+                    // v2.30.31 adds the pointer-stillness numbers so the
+                    // NEXT missing-chime report can tell which path fired
+                    // (or which one failed to).
+                    char tone_log[128];
                     _snprintf_s(tone_log, sizeof(tone_log), _TRUNCATE,
-                        "[FF7Access] MSG win=%u wait tone (state=%u held=%lums)",
+                        "[FF7Access] MSG win=%u wait tone (state=%u held=%lums "
+                        "ptrstill=%lums chg=%u)",
                         window_id, current_state,
-                        static_cast<unsigned long>(held_ms));
+                        static_cast<unsigned long>(held_ms),
+                        static_cast<unsigned long>(ptr_still_ms),
+                        static_cast<unsigned>(s_window[window_id].rawptr_changes));
                     Log::Write(tone_log);
                 }
             } else {

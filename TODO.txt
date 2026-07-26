@@ -5,6 +5,23 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[DIALOG] Wait tone muted on some pages — FIXED v2.30.31 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Player report: some dialogs don't chime at the continue wait, no
+visible pattern, worst in long multi-block same-window dialogs. The
+pattern was TEXT LENGTH: counter-style windows rest on a data-
+dependent state value after typing each block; short blocks can settle
+on 1 or 2 = the v2.30.6 "never fire" blacklist = that page's chime
+permanently muted. Fix: typewriter-pointer stillness as a style-
+independent wait signal (pointer proven live this dialog via >=3
+changes, then still >=300ms) — overrides the blacklist and replaces
+the bare state-hold fallback (which also used to chime mid-typing on
+positional windows). Research §8 v2.30.31. VERIFY: the previously
+silent blocks now chime (replay a known offender if one is memorable);
+no chime mid-typing; no double-chimes; log line now shows
+"ptrstill=/chg=" — if any block STILL doesn't chime, that line (or its
+absence) names the failing path.
+
 [BATTLE] H key: current character HP/MP/status — SHIPPED v2.30.30 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 FF4-parity H key (battle only): "Cloud, HP 244 of 302, MP 54 of 54.
