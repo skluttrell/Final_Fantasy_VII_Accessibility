@@ -5,6 +5,43 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[SHOP] Shop menus + G gil key — SHIPPED v2.30.28 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+User request (with item-shop screenshots): connect the shop menus; add a
+gil-announce key. Entirely static-derived in one offline session
+(ff7_shop_static.py; research §8 v2.30.28, §4/§14 shop blocks): gate =
+GAME_MODE==8, state machine 0x92565C (7 states), cursor widgets, catalog
+0x923418, price table [0xDD4720]. Speaks: shop greeting + title on open;
+Buy/Sell/Exit and Item/Materia bars; buy rows "name, price gil, own N"
+(+ "You have N gil" entering the buy list); sell-item rows "name, N
+owned, sells for M gil / can't sell"; sell-materia rows (AP price /
+mastered = base×70); quantity screens "N, total M gil"; I key = ware
+description (FF4 parity); G key = current gil anywhere in a loaded game
+(suppressed on the naming screen — G is text input there).
+VERIFY at the Sector 5/Wall Market shops: (1) greeting spoken once on
+open, no double-speak with the field dialog engine (the shop dialog
+boxes are MENU-module windows, invisible to MESSAGE hooks — if the
+greeting ALSO arrives via a field dialog on some shop, expect a double
+and report it); (2) bar cursors announce Buy/Sell/Exit correctly (order
+= state map check); (3) buy list speaks correct names/prices vs the
+sighted screen, cursor tracks rows incl. scrolling past 5-6 visible
+rows; (4) sell item list: 2-column grid — LEFT/RIGHT column movement
+must track (the col+(row+scroll)*2 formula is the least-proven piece);
+(5) sell materia list prices match the "Price through AP"/"Price for
+Master" panel; (6) quantity up/down speaks count+total, buy total =
+price×qty, sell total = half; (7) I key reads descriptions (armor has
+none by data — expected silence-with-"No description"); (8) G key in
+field/menu/shop/battle; check debug log "[FF7Access] SHOP" lines for
+any state value NOT in 0..6 (would mean an unmapped screen, e.g. a
+buy-confirm popup — log it, don't guess). RESIDUALS accepted at ship:
+equipped-count not spoken on buy rows (sighted header shows
+Owned+Equipped; "own N" = inventory only for materia); weapon-shop
+"try on" / stat-compare pane unmapped (separate screen, likely its own
+state value — harvest from the debug log when a weapon shop is
+visited); accessory descriptions rely on a raw-byte signature
+(0xB2 colour code head) — if the scan log shows acc_desc=00000000,
+that signature needs re-derivation from a live dump.
+
 [TIMER] Stale timer resurrects itself on a save loaded past the escape — FIXED v2.30.8 (2026-07-20)
 ------------------------------------------------------------------------
 Player report: "When I load the game from the slums, the timer from

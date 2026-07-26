@@ -736,6 +736,112 @@ constexpr uint32_t SAVEMAP_CHAR_EXP_OFF     = 0x3C;
 constexpr uint32_t SAVEMAP_CHAR_EXPNEXT_OFF = 0x80;
 
 // ---------------------------------------------------------------------------
+// SHOP menu (v2.30.28, 2026-07-26) — ALL STATIC-DERIVED in one session
+// (investigate/ff7_shop_static.py, log shop_static_20260726_101315; every
+// address below read straight off the annotated disasm, cross-anchored to
+// FFNx's shop chain: ff7_data.h menu_sub_6CDA83 --0xC1--> 6CBD54 --0x7-->
+// 71FF95 --0x84--> menu_shop_loop = 0x71AAA3, verified on disk byte-exact,
+// plus the FFNx-documented get_materia_gil call site at shop_loop+0x327B).
+//
+// HOW A SHOP OPENS: the field MENU opcode switches GAME_MODE (0xCC0D89) and
+// the menu module's own dispatcher menu_sub_6CDA83 switches on it via a jump
+// table (index bytes 0x6CDBE4, targets 0x6CDBC4, decoded offline):
+//   GAME_MODE 6 = name entry (matches the long-confirmed GAME_MODE_NAME_ENTRY)
+//   GAME_MODE 7 = PHS,  GAME_MODE 8 = SHOP,  GAME_MODE 9 = main menu
+//   (9 = main menu matches the long-confirmed "9 = menu" observation —
+//   two independent confirmations that the decode is right.)
+// So the mod's whole shop gate is GAME_MODE == 8. The shop id travels as
+// the menu PARAM word 0xCC0D8A -> copied to SHOP_ID by the shop init
+// (0x719D7A disasm).
+constexpr uint8_t  GAME_MODE_SHOP  = 8;
+constexpr uint32_t MENU_PARAM_WORD = 0x00CC0D8A;  // s16 opcode param (shop id)
+
+// The shop loop (0x71AAA3) is a switch on SHOP_STATE (jump table 0x71E193,
+// 7 targets, decoded offline). States, identified by what each case draws
+// (caption strings + which cursor variables feed the highlight rectangles):
+//   0 = greeting + Buy/Sell/Exit bar   ("Welcome!" text-set string)
+//   1 = BUY list                        (ware names/prices, gil header)
+//   2 = SELL item list                  (savemap items[] 2-column grid)
+//   3 = SELL materia list               (savemap materia[] 1-column list)
+//   4 = BUY quantity  ("How many")      (qty x unit price total drawn)
+//   5 = SELL item quantity ("How many") (qty x price/2 total drawn)
+//   6 = sell-type bar (Item / Materia)  (sell prompt text-set string)
+constexpr uint32_t SHOP_STATE = 0x0092565C;  // u32 0..6 (see above)
+
+// Shop session globals (shop wrapper 0x71FF95 + init 0x719D7A disasm):
+constexpr uint32_t SHOP_ID         = 0x00DD4724; // u32 copy of the param word
+constexpr uint32_t SHOP_NAME_IDX   = 0x00DD4728; // u32 = catalog byte +0
+constexpr uint32_t SHOP_TEXT_IDX   = 0x00DD472C; // u32 = catalog byte +1
+constexpr uint32_t SHOP_FADE_STATE = 0x00DD4734; // u32 1=in 2=out -1=exiting
+constexpr uint32_t SHOP_SESSION    = 0x00DD6D78; // u32 1 while shop running
+constexpr uint32_t SHOP_QTY        = 0x00DD473C; // u32 "How many" count
+                                                 // (set to 1 on qty entry)
+
+// Cursor widgets. The shop builds generic menu list widgets (constructor
+// 0x6F4D30 at 0x71A6F5..): struct +0 = COLUMN, +4 = visible ROW, +0x14 =
+// SCROLL (rows). Bases below; the ABSOLUTE-index formulas are the ones the
+// shop's own confirm handlers compute (buy: 0x71DAF7; sell items: 0x71DC2B
+// `col + row*2 + scroll*2`; sell materia: 0x71DD0A `row + scroll`):
+constexpr uint32_t SHOP_BAR_CURSOR      = 0x00DD6B48; // u32 0=Buy 1=Sell 2=Exit
+constexpr uint32_t SHOP_SELLTYPE_CURSOR = 0x00DD6C98; // u32 0=Item 1=Materia
+constexpr uint32_t SHOP_BUY_ROW         = 0x00DD6B84; // u32; ware = row+scroll
+constexpr uint32_t SHOP_BUY_SCROLL      = 0x00DD6B94; // u32
+constexpr uint32_t SHOP_SELLI_COL       = 0x00DD6BB8; // u32 0/1 (2-col grid)
+constexpr uint32_t SHOP_SELLI_ROW       = 0x00DD6BBC; // u32 visible row
+constexpr uint32_t SHOP_SELLI_SCROLL    = 0x00DD6BCC; // u32 row scroll
+constexpr uint32_t SHOP_SELLM_ROW       = 0x00DD6BF4; // u32; slot = row+scroll
+constexpr uint32_t SHOP_SELLM_SCROLL    = 0x00DD6C04; // u32
+
+// The SHOP CATALOG is static exe data (init 0x719D7A + buy-list code):
+// record = 0x923418 + shop_id*0x54:
+//   +0 u8  shop name index  -> FF7-encoded string 0x922FC8 + idx*0x14
+//   +1 u8  greeting-set idx -> FF7-encoded strings 0x923080 + idx*0x1CC
+//          (the set's first string is the greeting; later strings in the
+//          set are the buy/sell/how-many prompts the states draw)
+//   +2 u16 ware count (buy-list bound, compared at 0x71B826)
+//   +4 ware[10]: { s16 type (0=item id 0-319, 1=materia id 0-95);
+//                  u16 pad; u32 id } — 8 bytes each (0x54 = 4 + 10*8)
+constexpr uint32_t SHOP_CATALOG        = 0x00923418;
+constexpr uint32_t SHOP_CATALOG_STRIDE = 0x54;
+constexpr uint32_t SHOP_NAME_STRINGS   = 0x00922FC8; // stride 0x14
+constexpr uint32_t SHOP_GREET_STRINGS  = 0x00923080; // stride 0x1CC
+
+// PRICES: the game keeps one live price table behind a pointer (reads at
+// 0x71B8ED item / 0x71B981 materia, and every affordability check):
+//   u32 buy price of item id  = [[SHOP_PRICE_TABLE_PTR] + (id&0x1FF)*4]
+//   u32 buy price of materia  = [[SHOP_PRICE_TABLE_PTR] + 0x600 + (id&0xFF)*4]
+//   item SELL price  = buy >> 1            (drawn at 0x71BD1C, exact)
+//   materia SELL     = get_materia_gil 0x71FCF9: AP-mastered (ap field ==
+//                      0xFFFFFF) -> base*70, else -> the raw AP count
+//                      ("Price through AP" on the sighted screen; base
+//                      price 1 = unsellable marker, returns 1)
+// Validate the pointer before EVERY read — heap allocation, not static.
+constexpr uint32_t SHOP_PRICE_TABLE_PTR = 0x00DD4720;
+constexpr uint32_t SHOP_PRICE_MATERIA_OFF = 0x600;
+
+// Sell restriction: bit 0 of the kernel gear record word returned by
+// 0x6C50DD (disasm; the sell handler at 0x71DC60 does `and eax,1` and
+// refuses the row). The four kernel DATA arrays it indexes (loaded to
+// static BSS, stride = kernel record size):
+//   items       id 0x00-0x7F: u16[0xDBD16A + id*0x1C]
+//   weapons     id 0x80-0xFF: u16[0xDBE75A + (id-0x80)*0x2C]
+//   armor      id 0x100-0x11F: u16[0xDBCD00 + (id-0x100)*0x24]
+//   accessories id 0x120+   : u16[0xDBCAEE + (id-0x120)*0x10]
+constexpr uint32_t KERNEL_ITEM_RESTRICT   = 0x00DBD16A;
+constexpr uint32_t KERNEL_WEAPON_RESTRICT = 0x00DBE75A;
+constexpr uint32_t KERNEL_ARMOR_RESTRICT  = 0x00DBCD00;
+constexpr uint32_t KERNEL_ACCESS_RESTRICT = 0x00DBCAEE;
+
+// Savemap gil + materia inventory (promoted from raw literals now that a
+// third feature reads them; gil offset live-proven by the v2.35 victory
+// total, materia array = FFNx savemap struct, and the shop's own sell
+// code indexes both exactly here — 0x71DD16/0x71DBB2):
+constexpr uint32_t SAVEMAP_GIL     = SAVEMAP_BASE + 0xB7C;   // 0xDC08B4 u32
+constexpr uint32_t SAVEMAP_MATERIA = SAVEMAP_BASE + 0x77C;   // 0xDC04B4
+constexpr uint32_t SAVEMAP_MATERIA_COUNT = 200;              // u32 id|ap<<8
+                                                             // -1 = empty slot
+
+// ---------------------------------------------------------------------------
 // SECTION 1b: Savemap region layout (confirmed from 7th Heaven source)
 //
 // SAVEMAP_BASE (0xDBFD38) is the start of a region that includes both the

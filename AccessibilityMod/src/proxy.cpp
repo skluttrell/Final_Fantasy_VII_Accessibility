@@ -154,6 +154,8 @@ static HANDLE g_savemenu_thread   = nullptr;
 static HANDLE g_itemmenu_thread   = nullptr;
 static HANDLE g_ordermenu_thread  = nullptr;
 static HANDLE g_statusmenu_thread = nullptr;
+static HANDLE g_shopmenu_thread   = nullptr;
+static HANDLE g_gilkey_thread     = nullptr;
 static HANDLE g_timer_thread      = nullptr;
 static HANDLE g_victory_thread    = nullptr;
 static HANDLE g_battle_thread     = nullptr;
@@ -1387,9 +1389,38 @@ struct Kernel2Sections {
     const uint8_t* item_desc;  // entries 0-127 item descriptions (entry 0 =
                                // Potion's "Restores HP by 100", the exact
                                // items_menu_1.png caption)
+    // v2.30.28 (shop menus): materia names/descriptions plus the two gear
+    // description sections a weapon shop needs. Section heads ground-truthed
+    // from the RUNTIME text file kernel2.bin (LZS-decompressed offline,
+    // 2026-07-26 — it is the F9-expanded PC text, which is why the heap
+    // copies contain plain strings): materia names [0]="MP Plus",
+    // [1]="HP Plus"; materia descs [0]="Increases MP capacity"; weapon
+    // descs [0]="Initial equipment" (kernel.bin's "Initial equiping" is
+    // the PSX-era text — the PC runtime uses kernel2's spelling). Armor
+    // descriptions have a BLANK entry 0 (single space) so no signature can
+    // find them — armor rows just get no description, exactly what a
+    // sighted player sees (the bar is blank for armor too).
+    const uint8_t* materia_name;  // entries 0-95 materia names
+    const uint8_t* materia_desc;  // entries 0-95 materia descriptions
+    const uint8_t* weapon_desc;   // entries 0-127 weapon descriptions
+    const uint8_t* accessory_desc;// entries 0-31 accessory descriptions
+                                  // (head bytes include the 0xB2/0xB3
+                                  // colour codes -> raw-byte signature)
 };
 static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr, nullptr,
-                                nullptr, nullptr, nullptr };
+                                nullptr, nullptr, nullptr,
+                                nullptr, nullptr, nullptr, nullptr };
+
+// Raw-byte section signature for the accessory descriptions: entry 0 is
+// "<0xB2>Strength<0xB3> +10" (kernel2.bin ground truth) — the colour-code
+// bytes cannot be expressed through EncodeSignature's ASCII mapping, so
+// this one is spelled out byte-for-byte (text bytes = char - 0x20).
+static const uint8_t kAccessoryDescSig[] = {
+    0xB2,
+    'S'-0x20, 't'-0x20, 'r'-0x20, 'e'-0x20, 'n'-0x20, 'g'-0x20, 't'-0x20, 'h'-0x20,
+    0xB3,
+    ' '-0x20, '+'-0x20, '1'-0x20, '0'-0x20,
+};
 
 // Scan-in-progress guard.  v2.9 added a second thread (BattleMenuThread) that
 // can trigger ScanKernel2Sections lazily, so two threads could otherwise scan
@@ -1431,15 +1462,13 @@ static bool IsReadableSpan(const void* p, size_t len);
 // event — noise. Cross-thread: two battle threads may race on *slot; both
 // only ever write nullptr here, and aligned pointer stores are atomic on
 // x86 (same argument as the scan guard above).
-static const uint8_t* ValidatedSection(const uint8_t** slot,
-                                       const char* ascii_sig)
+static const uint8_t* ValidatedSectionBytes(const uint8_t** slot,
+                                            const uint8_t* sig, size_t sig_len,
+                                            const char* debug_label)
 {
     const uint8_t* base = *slot;
     if (!base)
         return nullptr;
-
-    uint8_t sig[24];
-    const size_t sig_len = EncodeSignature(ascii_sig, sig, sizeof(sig));
 
     bool ok = false;
     if (IsReadableSpan(base, 2)) {
@@ -1453,12 +1482,23 @@ static const uint8_t* ValidatedSection(const uint8_t** slot,
         char dbg[128];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
             "[FF7Access] kernel2 section STALE ('%s' head gone at %p) — "
-            "dropped for rescan", ascii_sig, base);
+            "dropped for rescan", debug_label, base);
         Log::Write(dbg);
         *slot = nullptr;
         return nullptr;
     }
     return base;
+}
+
+// ASCII-signature wrapper — the original v2.22.1 entry point; the raw-byte
+// core above exists because the accessory-description head embeds colour
+// codes (see kAccessoryDescSig).
+static const uint8_t* ValidatedSection(const uint8_t** slot,
+                                       const char* ascii_sig)
+{
+    uint8_t sig[24];
+    const size_t sig_len = EncodeSignature(ascii_sig, sig, sizeof(sig));
+    return ValidatedSectionBytes(slot, sig, sig_len, ascii_sig);
 }
 
 // Find a section base inside one memory region: locate the signature (the
@@ -1508,6 +1548,7 @@ static void ScanKernel2Sections()
 
     uint8_t sig_magic[24], sig_item[24], sig_weapon[24], sig_command[24];
     uint8_t sig_armor[24], sig_access[24], sig_idesc[24];
+    uint8_t sig_mname[24], sig_mdesc[24], sig_wdesc[24];
     const size_t len_magic  = EncodeSignature("Cure|Cure2|",        sig_magic,  sizeof(sig_magic));
     const size_t len_item   = EncodeSignature("Potion|Hi-Potion|",  sig_item,   sizeof(sig_item));
     const size_t len_weapon = EncodeSignature("Buster Sword|",      sig_weapon, sizeof(sig_weapon));
@@ -1521,12 +1562,20 @@ static void ScanKernel2Sections()
     const size_t len_armor  = EncodeSignature("Bronze Bangle|",       sig_armor,  sizeof(sig_armor));
     const size_t len_access = EncodeSignature("Power Wrist|",         sig_access, sizeof(sig_access));
     const size_t len_idesc  = EncodeSignature("Restores HP by 100|",  sig_idesc,  sizeof(sig_idesc));
+    // v2.30.28 shop sections — heads ground-truthed from kernel2.bin (the
+    // runtime text; see the Kernel2Sections comment for why kernel2, not
+    // kernel.bin, is the authority here).
+    const size_t len_mname = EncodeSignature("MP Plus|HP Plus|",       sig_mname, sizeof(sig_mname));
+    const size_t len_mdesc = EncodeSignature("Increases MP capacity|", sig_mdesc, sizeof(sig_mdesc));
+    const size_t len_wdesc = EncodeSignature("Initial equipment|",     sig_wdesc, sizeof(sig_wdesc));
 
     MEMORY_BASIC_INFORMATION mbi = {};
     uintptr_t addr = 0x00400000;
     while (addr < 0x7FFF0000 &&
            (!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command ||
-            !g_k2.armor || !g_k2.accessory || !g_k2.item_desc)) {
+            !g_k2.armor || !g_k2.accessory || !g_k2.item_desc ||
+            !g_k2.materia_name || !g_k2.materia_desc || !g_k2.weapon_desc ||
+            !g_k2.accessory_desc)) {
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
             break;
         const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -1544,16 +1593,23 @@ static void ScanKernel2Sections()
             if (!g_k2.armor)     g_k2.armor     = FindSectionBase(p, mbi.RegionSize, sig_armor,  len_armor);
             if (!g_k2.accessory) g_k2.accessory = FindSectionBase(p, mbi.RegionSize, sig_access, len_access);
             if (!g_k2.item_desc) g_k2.item_desc = FindSectionBase(p, mbi.RegionSize, sig_idesc,  len_idesc);
+            if (!g_k2.materia_name)   g_k2.materia_name   = FindSectionBase(p, mbi.RegionSize, sig_mname, len_mname);
+            if (!g_k2.materia_desc)   g_k2.materia_desc   = FindSectionBase(p, mbi.RegionSize, sig_mdesc, len_mdesc);
+            if (!g_k2.weapon_desc)    g_k2.weapon_desc    = FindSectionBase(p, mbi.RegionSize, sig_wdesc, len_wdesc);
+            if (!g_k2.accessory_desc) g_k2.accessory_desc = FindSectionBase(p, mbi.RegionSize, kAccessoryDescSig, sizeof(kAccessoryDescSig));
         }
         addr = base + mbi.RegionSize;
     }
 
-    char dbg[256];
+    char dbg[320];
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
         "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p "
-        "armor=%p accessory=%p item_desc=%p",
+        "armor=%p accessory=%p item_desc=%p mat_name=%p mat_desc=%p "
+        "weap_desc=%p acc_desc=%p",
         g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command,
-        g_k2.armor, g_k2.accessory, g_k2.item_desc);
+        g_k2.armor, g_k2.accessory, g_k2.item_desc,
+        g_k2.materia_name, g_k2.materia_desc,
+        g_k2.weapon_desc, g_k2.accessory_desc);
     Log::Write(dbg);
 
     InterlockedExchange(&g_k2_scan_busy, 0);
@@ -1963,6 +2019,595 @@ static bool InventoryEntryName(uint32_t id, std::wstring& out)
         return SectionEntryText(
             ValidatedSection(&g_k2.accessory, "Power Wrist|"), id - 288, out);
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// SHOP menus (v2.30.28, 2026-07-26) + the G gil-announce key.
+//
+// Every address is static-derived from one offline disasm session
+// (ff7_shop_static.py — provenance in ff7_addresses.h's SHOP block): the
+// shop is its own top-level menu-module branch selected by GAME_MODE == 8,
+// NOT a menu_subs_call_table screen, with a 7-state loop at 0x71AAA3 whose
+// state variable, cursor widgets, catalog, and price table all fell out of
+// the annotated dump. Shipped static-first with debug logging as the live
+// verify — the same discipline as v2.32's FOCUS_MODE and v2.34's timer.
+// ---------------------------------------------------------------------------
+
+// Materia name / description via the kernel2 sections (heads ground-truthed
+// from kernel2.bin — see the Kernel2Sections comment).
+static bool MateriaName(uint8_t id, std::wstring& out)
+{
+    return SectionEntryText(
+        ValidatedSection(&g_k2.materia_name, "MP Plus|HP Plus|"), id, out);
+}
+
+static bool MateriaDesc(uint8_t id, std::wstring& out)
+{
+    return SectionEntryText(
+        ValidatedSection(&g_k2.materia_desc, "Increases MP capacity|"), id, out);
+}
+
+// Description for one inventory/gear id (the I key). Armor has no section:
+// kernel2's armor descriptions are blank, so armor rows return false and
+// the caller speaks its no-description line — same info a sighted player
+// gets from the empty description bar.
+static bool InventoryEntryDesc(uint32_t id, std::wstring& out)
+{
+    if (id < 128)
+        return SectionEntryText(
+            ValidatedSection(&g_k2.item_desc, "Restores HP by 100|"), id, out);
+    if (id < 256)
+        return SectionEntryText(
+            ValidatedSection(&g_k2.weapon_desc, "Initial equipment|"), id - 128, out);
+    if (id < 288)
+        return false;   // armor: blank descriptions by ground truth
+    if (id < 320)
+        return SectionEntryText(
+            ValidatedSectionBytes(&g_k2.accessory_desc, kAccessoryDescSig,
+                                  sizeof(kAccessoryDescSig), "accessory desc"),
+            id - 288, out);
+    return false;
+}
+
+// How many of item `id` the party owns (savemap items[320], word = id|qty<<9;
+// the game keeps one slot per id, but summing all matches costs nothing and
+// survives any duplicate-slot state).
+static uint32_t CountOwnedItems(uint32_t id)
+{
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < FF7Addr::SAVEMAP_ITEMS_COUNT; ++i) {
+        const uint16_t w = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::SAVEMAP_ITEMS + i * 2);
+        if (w != 0xFFFF && (w & 0x1FF) == id)
+            total += w >> 9;
+    }
+    return total;
+}
+
+// How many materia orbs of `id` sit in the inventory list (one slot = one
+// orb). Equipped orbs live in the char records instead and are NOT counted
+// here — this feeds the buy screen's "own N" hint, not the full Owned+
+// Equipped split the sighted header shows.
+static uint32_t CountOwnedMateria(uint8_t id)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < FF7Addr::SAVEMAP_MATERIA_COUNT; ++i) {
+        const uint32_t w = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::SAVEMAP_MATERIA + i * 4);
+        if (w != 0xFFFFFFFF && (w & 0xFF) == id)
+            ++n;
+    }
+    return n;
+}
+
+// Read ware `idx` of shop `shop_id` from the static catalog. Returns false
+// past the shop's ware count (or on an insane shop id — the catalog region
+// is finite; 0x80 is far above the game's real shop count).
+static bool ShopWare(uint32_t shop_id, uint32_t idx, int& type, uint32_t& id)
+{
+    if (shop_id >= 0x80 || idx >= 10)
+        return false;
+    const uint32_t rec = FF7Addr::SHOP_CATALOG +
+                         shop_id * FF7Addr::SHOP_CATALOG_STRIDE;
+    const uint16_t count = *reinterpret_cast<const uint16_t*>(rec + 2);
+    if (idx >= count || count > 10)
+        return false;
+    type = *reinterpret_cast<const int16_t*>(rec + 4 + idx * 8);
+    id   = *reinterpret_cast<const uint32_t*>(rec + 8 + idx * 8);
+    return type == 0 || type == 1;
+}
+
+// Buy price via the shop's live price table ([SHOP_PRICE_TABLE_PTR]; items
+// at id*4, materia at +0x600). Pointer-validated every read — it is a heap
+// allocation, not a static (the ValidatedSection lesson applied to data).
+static bool ShopBuyPrice(int type, uint32_t id, uint32_t& price)
+{
+    const uint32_t table = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::SHOP_PRICE_TABLE_PTR);
+    if (!table || !IsReadableSpan(reinterpret_cast<const void*>(table),
+                                  FF7Addr::SHOP_PRICE_MATERIA_OFF + 96 * 4))
+        return false;
+    if (type == 0)
+        price = *reinterpret_cast<const volatile uint32_t*>(
+            table + (id & 0x1FF) * 4);
+    else
+        price = *reinterpret_cast<const volatile uint32_t*>(
+            table + FF7Addr::SHOP_PRICE_MATERIA_OFF + (id & 0xFF) * 4);
+    return true;
+}
+
+// Bit 0 of the kernel gear record's restriction word = cannot sell (the
+// sell handler's own test at shop_loop+0x31BD). The four kernel data
+// arrays are loaded to static BSS at startup, so plain reads are safe.
+static bool ItemUnsellable(uint32_t id)
+{
+    uint32_t addr;
+    if (id < 0x80)        addr = FF7Addr::KERNEL_ITEM_RESTRICT   + id * 0x1C;
+    else if (id < 0x100)  addr = FF7Addr::KERNEL_WEAPON_RESTRICT + (id - 0x80) * 0x2C;
+    else if (id < 0x120)  addr = FF7Addr::KERNEL_ARMOR_RESTRICT  + (id - 0x100) * 0x24;
+    else if (id < 0x140)  addr = FF7Addr::KERNEL_ACCESS_RESTRICT + (id - 0x120) * 0x10;
+    else return false;
+    const uint16_t w = *reinterpret_cast<const volatile uint16_t*>(addr);
+    return (w & 1) != 0;
+}
+
+// "<name>, <price> gil, own <N>" for one buy-list ware. Name falls back to
+// a numbered label (non-English kernel2), price is omitted if the table
+// pointer is not live — degraded, never wrong.
+static bool ShopBuyLine(uint32_t shop_id, uint32_t idx, std::wstring& out)
+{
+    int type; uint32_t id;
+    if (!ShopWare(shop_id, idx, type, id))
+        return false;
+    std::wstring name;
+    wchar_t buf[64];
+    if (type == 0) {
+        if (!InventoryEntryName(id & 0x1FF, name)) {
+            _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"item %u", id & 0x1FF);
+            name = buf;
+        }
+    } else {
+        if (!MateriaName(static_cast<uint8_t>(id & 0xFF), name)) {
+            _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"materia %u", id & 0xFF);
+            name = buf;
+        }
+        name += L" materia";
+    }
+    out = name;
+    uint32_t price;
+    if (ShopBuyPrice(type, id, price)) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L", %lu gil",
+                     static_cast<unsigned long>(price));
+        out += buf;
+    }
+    const uint32_t owned = (type == 0)
+        ? CountOwnedItems(id & 0x1FF)
+        : CountOwnedMateria(static_cast<uint8_t>(id & 0xFF));
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L", own %lu",
+                 static_cast<unsigned long>(owned));
+    out += buf;
+    return true;
+}
+
+// One sell-item row: "<name>, 4 owned, sells for <p> gil" / "Empty."
+static void ShopSellItemLine(uint32_t idx, std::wstring& out)
+{
+    out.clear();
+    if (idx >= FF7Addr::SAVEMAP_ITEMS_COUNT) {
+        out = L"Empty";
+        return;
+    }
+    const uint16_t w = *reinterpret_cast<const volatile uint16_t*>(
+        FF7Addr::SAVEMAP_ITEMS + idx * 2);
+    if (w == 0xFFFF) {
+        out = L"Empty";
+        return;
+    }
+    const uint32_t id  = w & 0x1FF;
+    const uint32_t qty = w >> 9;
+    wchar_t buf[64];
+    if (!InventoryEntryName(id, out)) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"item %lu",
+                     static_cast<unsigned long>(id));
+        out = buf;
+    }
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, L", %lu owned",
+                 static_cast<unsigned long>(qty));
+    out += buf;
+    if (ItemUnsellable(id)) {
+        out += L", can't sell";
+        return;
+    }
+    uint32_t price;
+    if (ShopBuyPrice(0, id, price)) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L", sells for %lu gil",
+                     static_cast<unsigned long>(price >> 1));
+        out += buf;
+    }
+}
+
+// One sell-materia row: "<name> materia, sells for <p> gil[, mastered]" /
+// "Empty." Sell price = the game's get_materia_gil (0x71FCF9) replicated:
+// AP field 0xFFFFFF (mastered) -> base price * 70, else the raw AP count
+// ("Price through AP" on the sighted panel — screenshot-verified: Restore
+// with 0 AP showed 0, and its master price 52500 = base 750 * 70).
+static void ShopSellMateriaLine(uint32_t idx, std::wstring& out)
+{
+    out.clear();
+    if (idx >= FF7Addr::SAVEMAP_MATERIA_COUNT) {
+        out = L"Empty";
+        return;
+    }
+    const uint32_t w = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::SAVEMAP_MATERIA + idx * 4);
+    if (w == 0xFFFFFFFF || (w & 0xFF) == 0xFF) {
+        out = L"Empty";
+        return;
+    }
+    const uint8_t  id = static_cast<uint8_t>(w & 0xFF);
+    const uint32_t ap = w >> 8;
+    wchar_t buf[64];
+    if (!MateriaName(id, out)) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"materia %u", id);
+        out = buf;
+    }
+    out += L" materia";
+    uint32_t base;
+    const bool mastered = (ap == 0xFFFFFF);
+    uint32_t sell = ap;
+    if (ShopBuyPrice(1, id, base)) {
+        if (base == 1)
+            sell = 1;              // the game's unsellable-materia marker
+        else if (mastered)
+            sell = base * 70;
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L", sells for %lu gil",
+                     static_cast<unsigned long>(sell));
+        out += buf;
+    } else if (!mastered) {
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE, L", sells for %lu gil",
+                     static_cast<unsigned long>(ap));
+        out += buf;
+    }
+    if (mastered)
+        out += L", mastered";
+}
+
+static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
+{
+    bool     was_open   = false;
+    uint32_t last_state = 0xFFFFFFFF;
+    uint32_t last_bar   = 0xFFFFFFFF;   // Buy/Sell/Exit cursor
+    uint32_t last_stype = 0xFFFFFFFF;   // Item/Materia sell-type cursor
+    uint32_t last_idx   = 0xFFFFFFFF;   // list index in the active list state
+    uint32_t last_word  = 0xFFFFFFFF;   // items/materia word under the cursor
+                                        // (selling rewrites it in place)
+    uint32_t last_qty   = 0xFFFFFFFF;
+    bool     i_was_down = false;
+    ULONGLONG next_scan_tick = 0;
+
+    static const wchar_t* const kBar[3]   = { L"Buy", L"Sell", L"Exit" };
+    static const wchar_t* const kSType[2] = { L"Item", L"Materia" };
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus) {
+            was_open = false;
+            continue;
+        }
+
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
+        if (game_mode != FF7Addr::GAME_MODE_SHOP) {
+            was_open = false;
+            continue;
+        }
+
+        const uint32_t shop_id = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::SHOP_ID);
+        const uint32_t state = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::SHOP_STATE);
+
+        // Kernel2 sections are needed for every name — kick the scan early
+        // (rate-limited) instead of waiting for the first battle.
+        if ((!g_k2.item || !g_k2.materia_name) &&
+            GetTickCount64() >= next_scan_tick) {
+            next_scan_tick = GetTickCount64() + 3000;
+            ScanKernel2Sections();
+        }
+
+        bool opened_this_tick = false;
+        if (!was_open) {
+            was_open   = true;
+            opened_this_tick = true;
+            last_state = 0xFFFFFFFF;   // force the state announce below
+            last_bar   = last_stype = last_idx = last_qty = 0xFFFFFFFF;
+            last_word  = 0xFFFFFFFF;
+            i_was_down = true;         // swallow a held I across the open
+
+            // "<Shop name>. <Greeting>" — both FF7-encoded statics in the
+            // exe's own .data (catalog provenance in ff7_addresses.h).
+            const uint32_t name_idx = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::SHOP_NAME_IDX);
+            const uint32_t text_idx = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::SHOP_TEXT_IDX);
+            std::wstring greet;
+            if (name_idx < 32) {
+                // Shop titles are packed 0x14 bytes apart and may use the
+                // full width — copy out and force a terminator.
+                char nbuf[0x15];
+                memcpy(nbuf, reinterpret_cast<const void*>(
+                    FF7Addr::SHOP_NAME_STRINGS + name_idx * 0x14), 0x14);
+                nbuf[0x14] = static_cast<char>(0xFF);
+                greet = FF7Text::Decode(nbuf);
+                if (!greet.empty())
+                    greet += L". ";
+            }
+            if (text_idx < 16)
+                greet += FF7Text::Decode(reinterpret_cast<const char*>(
+                    FF7Addr::SHOP_GREET_STRINGS + text_idx * 0x1CC));
+            if (!greet.empty())
+                TTS::Speak(greet.c_str(), /*interrupt=*/true);
+
+            char dbg[128];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] SHOP open: id=%lu name_idx=%lu text_idx=%lu state=%lu",
+                static_cast<unsigned long>(shop_id),
+                static_cast<unsigned long>(name_idx),
+                static_cast<unsigned long>(text_idx),
+                static_cast<unsigned long>(state));
+            Log::Write(dbg);
+        }
+
+        // ── Screen-state transitions ─────────────────────────────────────
+        const bool state_changed = (state != last_state);
+        if (state_changed) {
+            char dbg[96];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] SHOP state %lu -> %lu",
+                static_cast<unsigned long>(last_state),
+                static_cast<unsigned long>(state));
+            Log::Write(dbg);
+            last_state = state;
+            // Fresh screen: force the per-screen announcers below to speak
+            // the current selection even if the cursor value didn't move.
+            last_bar = last_stype = last_idx = last_qty = 0xFFFFFFFF;
+            last_word = 0xFFFFFFFF;
+
+            // Right after the shop-open greeting, QUEUE the screen intro
+            // instead of interrupting it — the greeting is one sentence and
+            // the intro should follow it, not clobber it.
+            const bool intr = !opened_this_tick;
+            switch (state) {
+            case 0:  TTS::Speak(L"Buy, Sell, or Exit.", intr); break;
+            case 6:  TTS::Speak(L"Sell Item or Materia.", intr); break;
+            case 1: {
+                const uint32_t gil = *reinterpret_cast<const volatile uint32_t*>(
+                    FF7Addr::SAVEMAP_GIL);
+                wchar_t msg[64];
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                             L"Buying. You have %lu gil.",
+                             static_cast<unsigned long>(gil));
+                TTS::Speak(msg, intr);
+                break;
+            }
+            case 2:  TTS::Speak(L"Selling items.", intr); break;
+            case 3:  TTS::Speak(L"Selling materia.", intr); break;
+            case 4:
+            case 5:  TTS::Speak(L"How many?", intr); break;
+            default: break;   // unmapped value — logged above, stay quiet
+            }
+        }
+
+        // ── Per-screen cursor tracking ───────────────────────────────────
+        switch (state) {
+        case 0: {   // Buy / Sell / Exit bar
+            const uint32_t bar = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::SHOP_BAR_CURSOR);
+            if (bar != last_bar && bar < 3) {
+                last_bar = bar;
+                TTS::Speak(kBar[bar], !state_changed);
+            }
+            break;
+        }
+        case 6: {   // sell-type bar: Item / Materia
+            const uint32_t st = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::SHOP_SELLTYPE_CURSOR);
+            if (st != last_stype && st < 2) {
+                last_stype = st;
+                TTS::Speak(kSType[st], !state_changed);
+            }
+            break;
+        }
+        case 1: {   // buy list
+            const uint32_t idx =
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_BUY_ROW) +
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_BUY_SCROLL);
+            if (idx != last_idx && idx < 10) {
+                last_idx = idx;
+                std::wstring line;
+                if (ShopBuyLine(shop_id, idx, line))
+                    TTS::Speak(line.c_str(), !state_changed);
+            }
+            break;
+        }
+        case 2: {   // sell item list — idx formula from the confirm handler
+            const uint32_t idx =
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_COL) +
+                (*reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_ROW) +
+                 *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_SCROLL)) * 2;
+            const uint32_t word = (idx < FF7Addr::SAVEMAP_ITEMS_COUNT)
+                ? *reinterpret_cast<const volatile uint16_t*>(
+                      FF7Addr::SAVEMAP_ITEMS + idx * 2)
+                : 0xFFFF;
+            // Re-announce on slot change OR content change (a sale rewrites
+            // the word in place while the cursor stays put).
+            if (idx != last_idx || word != last_word) {
+                last_idx  = idx;
+                last_word = word;
+                std::wstring line;
+                ShopSellItemLine(idx, line);
+                TTS::Speak(line.c_str(), !state_changed);
+            }
+            break;
+        }
+        case 3: {   // sell materia list
+            const uint32_t idx =
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLM_ROW) +
+                *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLM_SCROLL);
+            const uint32_t word = (idx < FF7Addr::SAVEMAP_MATERIA_COUNT)
+                ? *reinterpret_cast<const volatile uint32_t*>(
+                      FF7Addr::SAVEMAP_MATERIA + idx * 4)
+                : 0xFFFFFFFF;
+            if (idx != last_idx || word != last_word) {
+                last_idx  = idx;
+                last_word = word;
+                std::wstring line;
+                ShopSellMateriaLine(idx, line);
+                TTS::Speak(line.c_str(), !state_changed);
+            }
+            break;
+        }
+        case 4:     // buy quantity
+        case 5: {   // sell-item quantity
+            const uint32_t qty = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::SHOP_QTY);
+            if (qty != last_qty && qty <= 99) {
+                last_qty = qty;
+                // Unit price of the ware/item the quantity applies to.
+                uint32_t unit = 0;
+                bool have_unit = false;
+                if (state == 4) {
+                    const uint32_t widx =
+                        *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_BUY_ROW) +
+                        *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_BUY_SCROLL);
+                    int type; uint32_t id;
+                    if (ShopWare(shop_id, widx, type, id))
+                        have_unit = ShopBuyPrice(type, id, unit);
+                } else {
+                    const uint32_t iidx =
+                        *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_COL) +
+                        (*reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_ROW) +
+                         *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_SCROLL)) * 2;
+                    if (iidx < FF7Addr::SAVEMAP_ITEMS_COUNT) {
+                        const uint16_t w = *reinterpret_cast<const volatile uint16_t*>(
+                            FF7Addr::SAVEMAP_ITEMS + iidx * 2);
+                        uint32_t buy;
+                        if (w != 0xFFFF && ShopBuyPrice(0, w & 0x1FF, buy)) {
+                            unit = buy >> 1;
+                            have_unit = true;
+                        }
+                    }
+                }
+                wchar_t msg[64];
+                if (have_unit)
+                    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                                 L"%lu, total %lu gil",
+                                 static_cast<unsigned long>(qty),
+                                 static_cast<unsigned long>(qty * unit));
+                else
+                    _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%lu",
+                                 static_cast<unsigned long>(qty));
+                TTS::Speak(msg, !state_changed);
+            }
+            break;
+        }
+        default:
+            break;
+        }
+
+        // ── I key: description of the highlighted ware (FF4-scheme parity:
+        // "I: In shop menus, reads description of highlighted item") ──────
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        const bool focused = (fg_pid == GetCurrentProcessId());
+        const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
+        const bool i_edge  = focused && i_down && !i_was_down;
+        i_was_down = i_down;
+        if (i_edge) {
+            std::wstring desc;
+            bool have = false;
+            if (state == 1 || state == 4) {
+                const uint32_t widx =
+                    *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_BUY_ROW) +
+                    *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_BUY_SCROLL);
+                int type; uint32_t id;
+                if (ShopWare(shop_id, widx, type, id))
+                    have = (type == 0)
+                        ? InventoryEntryDesc(id & 0x1FF, desc)
+                        : MateriaDesc(static_cast<uint8_t>(id & 0xFF), desc);
+            } else if (state == 2 || state == 5) {
+                const uint32_t iidx =
+                    *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_COL) +
+                    (*reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_ROW) +
+                     *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_SCROLL)) * 2;
+                if (iidx < FF7Addr::SAVEMAP_ITEMS_COUNT) {
+                    const uint16_t w = *reinterpret_cast<const volatile uint16_t*>(
+                        FF7Addr::SAVEMAP_ITEMS + iidx * 2);
+                    if (w != 0xFFFF)
+                        have = InventoryEntryDesc(w & 0x1FF, desc);
+                }
+            } else if (state == 3) {
+                const uint32_t midx =
+                    *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLM_ROW) +
+                    *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLM_SCROLL);
+                if (midx < FF7Addr::SAVEMAP_MATERIA_COUNT) {
+                    const uint32_t w = *reinterpret_cast<const volatile uint32_t*>(
+                        FF7Addr::SAVEMAP_MATERIA + midx * 4);
+                    if (w != 0xFFFFFFFF && (w & 0xFF) != 0xFF)
+                        have = MateriaDesc(static_cast<uint8_t>(w & 0xFF), desc);
+                }
+            }
+            TTS::Speak(have ? desc.c_str() : L"No description", true);
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// G key — announce current gil (FF4-scheme parity: "G: Announce current
+// Gil"). Works any time a game is loaded: field, menus, shops, battle. The
+// gil dword is savemap+0xB7C — live-proven by the v2.35 victory total and
+// the shop's own buy/sell arithmetic.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI GilKeyThread(LPVOID /*unused*/)
+{
+    bool g_was_down = false;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        const bool focused = (fg_pid == GetCurrentProcessId());
+        const bool down    = (GetAsyncKeyState('G') & 0x8000) != 0;
+        const bool edge    = focused && down && !g_was_down;
+        g_was_down = down;
+        if (!edge)
+            continue;
+
+        // No game loaded -> the savemap is zeroed and "0 gil" would be a
+        // lie about a game that doesn't exist yet. The naming screen gets
+        // typed letters — G there is text entry, not a query.
+        const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
+            FF7Addr::FIELD_ID);
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
+        if (field_id == 0 || game_mode == FF7Addr::GAME_MODE_NAME_ENTRY)
+            continue;
+
+        const uint32_t gil = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::SAVEMAP_GIL);
+        wchar_t msg[32];
+        _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%lu gil",
+                     static_cast<unsigned long>(gil));
+        TTS::Speak(msg, true);
+    }
+
+    return 0;
 }
 
 static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
@@ -2521,7 +3166,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                 spoke_gil = true;
                 const uint32_t total_gil =
                     *reinterpret_cast<const volatile uint32_t*>(
-                        FF7Addr::SAVEMAP_BASE + 0xB7C);
+                        FF7Addr::SAVEMAP_GIL);
                 std::wstring msg;
                 wchar_t part[96];
                 _snwprintf_s(part, _countof(part), _TRUNCATE,
@@ -8305,6 +8950,26 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start status menu thread.");
         }
 
+        // Shop menus TTS (v2.30.28). Entirely static-derived in one offline
+        // session (ff7_shop_static.py): GAME_MODE==8 gate, 7-state loop,
+        // cursor widgets, catalog, and price table — provenance in
+        // ff7_addresses.h's SHOP block. Debug logging on state changes is
+        // the live-confirm channel.
+        g_shopmenu_thread = CreateThread(nullptr, 0, ShopMenuThread, nullptr, 0, nullptr);
+        if (g_shopmenu_thread) {
+            Log::Write("[FF7Access] Shop menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start shop menu thread.");
+        }
+
+        // G key: announce current gil (v2.30.28, FF4-scheme parity).
+        g_gilkey_thread = CreateThread(nullptr, 0, GilKeyThread, nullptr, 0, nullptr);
+        if (g_gilkey_thread) {
+            Log::Write("[FF7Access] Gil key thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start gil key thread.");
+        }
+
         // Countdown timer announcements + T/Shift+T (v2.34). Value/units
         // static-proven via the STTIM handler disasm; shipped speculatively
         // ahead of the first reachable timer with debug logging as the
@@ -8412,7 +9077,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
-            !g_statusmenu_thread && !g_timer_thread && !g_victory_thread &&
+            !g_statusmenu_thread && !g_shopmenu_thread && !g_gilkey_thread &&
+            !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_dialogtone_thread && !g_fieldnav_thread &&
             !g_nameentry_thread) {
@@ -8562,6 +9228,16 @@ void Shutdown()
         WaitForSingleObject(g_statusmenu_thread, 500);
         CloseHandle(g_statusmenu_thread);
         g_statusmenu_thread = nullptr;
+    }
+    if (g_shopmenu_thread) {
+        WaitForSingleObject(g_shopmenu_thread, 500);
+        CloseHandle(g_shopmenu_thread);
+        g_shopmenu_thread = nullptr;
+    }
+    if (g_gilkey_thread) {
+        WaitForSingleObject(g_gilkey_thread, 500);
+        CloseHandle(g_gilkey_thread);
+        g_gilkey_thread = nullptr;
     }
     if (g_timer_thread) {
         WaitForSingleObject(g_timer_thread, 500);

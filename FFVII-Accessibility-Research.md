@@ -176,6 +176,20 @@ every confirmed address — the clustering itself is a discovery tool.
 | `ORDERMENU_FIRST_SLOT` | `0x00DC110C` | s8 slot latched at the first confirm (disasm 0x6CA616). Same-slot second confirm = row toggle; different = swap |
 | `CHARSEL_CURSOR` / `CHARSEL_CHOSEN` | `0x00DC118C` / `0x00DC1288` | Mode-1 character-select pane cursor and the chosen slot it commits (disasm 0x6CA598 block; empty slot = error buzz 0x74580A(3)). Pre-solves the Magic/Equip/Status entry step; v2.32 speaks the cursor |
 | *(savemap row byte)* | — | Char record **+0x20**: 0xFF = front row, 0xFE = back row (toggled by XOR 1 at 0x6CA67F). LIVE-CONFIRMED by the scan's single toggle candidate + disasm agreement. ⚠ community savemap doc says +0x1F — one byte off. Game's char-id→record map: static u32 table 0x919928 |
+| `SHOP_STATE` | `0x0092565C` | u32 shop screen state, the shop loop 0x71AAA3's own switch (jump table 0x71E193 decoded offline, v2.30.28 ff7_shop_static.py): **0=greeting + Buy/Sell/Exit bar, 1=buy list, 2=sell item list, 3=sell materia list, 4=buy quantity, 5=sell-item quantity, 6=sell-type bar (Item/Materia)**. Lives in menu-module .data like BATTLE_MENU_STATE. Shop gate = GAME_MODE==8 |
+| `SHOP_ID` / `SHOP_NAME_IDX` / `SHOP_TEXT_IDX` | `0x00DD4724/28/2C` | u32 shop id (copy of the MENU opcode param word 0xCC0D8A) + the catalog's name/greeting-set indices, written by shop init 0x719D7A (disasm). Name string = 0x922FC8+idx·0x14; greeting set = 0x923080+idx·0x1CC (FF7-encoded exe .data) |
+| `SHOP_BAR_CURSOR` | `0x00DD6B48` | u32 0=Buy 1=Sell 2=Exit — drawn ×0x32 px in states 0/6 (disasm). Widget struct base (+0=column) built by the generic list-widget ctor 0x6F4D30 |
+| `SHOP_SELLTYPE_CURSOR` | `0x00DD6C98` | u32 0=Item 1=Materia on the sell-type bar (state 6, ×0x43 px highlight) |
+| `SHOP_BUY_ROW` / `SHOP_BUY_SCROLL` | `0x00DD6B84` / `0x00DD6B94` | Buy-list widget (+4 row / +0x14 scroll of base 0xDD6B80); **ware index = row + scroll** (the confirm handler's own math at 0x71DAF7) |
+| `SHOP_SELLI_COL/ROW/SCROLL` | `0x00DD6BB8/BC/CC` | Sell ITEM list widget (2-column grid over savemap items[320]); **item index = col + (row+scroll)·2** — lifted verbatim from the sell-confirm handler 0x71DC2B |
+| `SHOP_SELLM_ROW` / `SHOP_SELLM_SCROLL` | `0x00DD6BF4` / `0x00DD6C04` | Sell MATERIA list widget (1 column over materia[200]); **slot = row + scroll** (0x71DD0A) |
+| `SHOP_QTY` | `0x00DD473C` | u32 "How many" count, set to 1 on entering either quantity state; totals drawn as unit×qty (buy 0x71B317, sell (price>>1)×qty 0x71BD1E — the exact sell-price-halving proof) |
+| `SHOP_PRICE_TABLE_PTR` | `0x00DD4720` | u32 → heap price table: item buy price at (id&0x1FF)·4, materia at +0x600+(id&0xFF)·4. Materia sell = get_materia_gil 0x71FCF9: mastered (AP field 0xFFFFFF) → base·70, else the raw AP count; base 1 = unsellable marker. Screenshot cross-check: Restore (id 53) master price 52500 = 750·70 ✓ |
+| `SHOP_CATALOG` | `0x00923418` | Static exe .data, record = base + shop_id·0x54: +0 u8 name idx, +1 u8 greeting-set idx, +2 u16 ware count, +4 ware[10]{s16 type 0=item/1=materia; u16 pad; u32 id}. Read by init 0x719D7A and every buy-list access |
+| `KERNEL_*_RESTRICT` | `0x00DBD16A/0xDBE75A/0xDBCD00/0xDBCAEE` | Kernel gear-record restriction words (items stride 0x1C / weapons 0x2C base id 0x80 / armor 0x24 base 0x100 / accessories 0x10 base 0x120), via helper 0x6C50DD; **bit 0 = cannot sell** (sell handler 0x71DC60 `and eax,1`) |
+| `SAVEMAP_GIL` | `0x00DC08B4` | u32 party gil = savemap+0xB7C (was a raw literal in the v2.35 victory reader; promoted v2.30.28 — the shop's own buy/sell arithmetic reads/writes exactly here, third independent confirmation). The G key speaks it |
+| `SAVEMAP_MATERIA` | `0x00DC04B4` | u32[200] materia inventory = savemap+0x77C (FFNx savemap struct; the shop sell code indexes it at 0x71DD16): word = id | AP<<8, 0xFFFFFFFF = empty slot |
+| `SHOP_SESSION` / `SHOP_FADE_STATE` | `0x00DD6D78` / `0x00DD4734` | Session-active flag (wrapper 0x71FF95: 0→init→1) and fade state (1 fading in / 2 fading out / -1 exiting → menu-exit flag 0xDC12F4). Not consumed by the mod (GAME_MODE==8 is the gate); documented for completeness |
 | `FIELD_ID` | `0x00CC15D0` | s16, non-zero on named field maps, 0 on title/world. **Does NOT zero during battle** (live-corrected 2026-07-09; earlier belief wrong) |
 | `G_ACTIVE_ACTOR_ID` | `0x00BE1170` | u8 slot of last-acting battle actor (0–2 party, 4–9 enemy); never resets between battles (v2.5) |
 | `G_BATTLE_MODEL_STATE` | `0x00BE1178` | Per-actor battle array, stride 0x1AEC; commandID u8 at +0x23 (v2.5) |
@@ -186,7 +200,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). ⚠ Useless in battle: reads menu-module scratch (0x9A13C8 via u16 table 0x9A7FC8) which is EMPTY during battle. v2.7 reads the heap text sections directly instead |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) — but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** — PSX comments identify unnamed PC fields |
-| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 6=name entry, 9=menu**. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
+| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 6=name entry, 9=menu**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline — index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens** — the two live-confirmed values (6, 9) both match the decode, validating the table. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
 | `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
 | `FIELD_BGMOVIE_FLAG` | `0x00CC0DC2` | +0x3A, u8. Movie is background-only (player walkable) |
 | `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
@@ -3450,6 +3464,63 @@ The report's "slow and choppy" is expected to be the interrupt-storm
 (speech restarted every 300ms); if choppiness persists WITH the
 suppression in place, investigate separately (frame-rate, not speech).
 
+### v2.30.28 (2026-07-26): shop menus + G gil key — entirely static, one session
+
+**User request** (with screenshots Menus/Shop/item_shop_1/2.jpg): connect
+the shop menus; add a key announcing current gil.
+
+**The whole shop cracked offline in one static pass** — zero live scans,
+zero play-test rounds spent on discovery (ff7_shop_static.py, log
+shop_static_20260726_101315; all addresses in §4 + §14's new shop block):
+
+1. **The shop is NOT a menu_subs_call_table screen.** FFNx's chain
+   (ff7_data.h 1442-1444) reaches it through the menu-TYPE dispatcher
+   0x6CDA83: chain verified on disk byte-exact (0x6CDA83+0xC1 → 0x6CBD54
+   +0x7 → 0x71FF95 +0x84 → menu_shop_loop **0x71AAA3**; FFNx's
+   get_materia_gil call site at +0x327B present as E8 — date-stamp OK;
+   the docs' other site +0x3373 is the non-US build's offset, absent
+   here, as ff7_data.h's version switch itself says).
+2. **The dispatcher's jump table decoded** (index bytes 0x6CDBE4, targets
+   0x6CDBC4): GAME_MODE 6=name entry, 7=PHS, **8=SHOP**, 9=main menu —
+   the two values already live-confirmed (6, 9) both match, validating
+   the decode. Shop gate = GAME_MODE==8; shop id = the MENU opcode's
+   param word 0xCC0D8A.
+3. **7-state loop** switch on 0x92565C (jump table 0x71E193): full state
+   map + every cursor widget (generic ctor 0x6F4D30: +0 col/+4 row/
+   +0x14 scroll) + the ABSOLUTE-index formulas lifted from the shop's
+   own confirm handlers (buy row+scroll; sell items col+(row+scroll)·2;
+   sell materia row+scroll).
+4. **Catalog + prices + sell rules**, all with cross-checks: catalog
+   records 0x923418 stride 0x54; price table behind ptr 0xDD4720 (items
+   ·4, materia +0x600); item sell = buy>>1 (drawn AND committed that
+   way); materia sell = get_materia_gil 0x71FCF9 replicated (mastered →
+   base·70, else raw AP; base 1 = unsellable) — screenshot cross-check:
+   Restore id 53, master price 52500 = 750·70 exactly; restriction
+   bit 0 via helper 0x6C50DD (which also mapped the four kernel
+   gear-data arrays, §14).
+5. **Kernel2 ground truth for the new text sections** (materia names /
+   materia+weapon+accessory descs): kernel2.bin LZS-decompressed offline
+   — it is the F9-EXPANDED runtime text (why heap strings are plain and
+   the existing decoder never hits kernel F9 back-refs). Weapon desc
+   entry 0 is kernel2's "Initial equipment", NOT kernel.bin's PSX-era
+   "Initial equiping" — signatures must come from kernel2. Armor descs
+   are BLANK in the data (sighted parity: the bar shows nothing);
+   accessory descs need a raw-byte signature (0xB2/0xB3 colour codes).
+
+**Mod changes**: ShopMenuThread (greeting + shop title on open; per-state
+intros; buy rows "name, price gil, own N"; sell-item rows "name, N owned,
+sells for M gil / can't sell"; sell-materia rows with AP/mastered price;
+quantity states "N, total M gil"; I key = ware description — FF4-scheme
+parity); GilKeyThread (G = "<N> gil" whenever a game is loaded, suppressed
+on the naming screen where G is text input); 4 new signature-scanned
+kernel2 sections (+ raw-byte signature infrastructure for the accessory
+head); SAVEMAP_GIL/SAVEMAP_MATERIA promoted to named constants.
+
+**Residual risk for play-test**: state-numbering and cursor semantics are
+static-derived only — debug log lines fire on shop open and every state
+change; the sell-item 2-column index formula and the buy-list visible-row
+behavior are the two most likely places live behavior could diverge.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -3822,6 +3893,9 @@ battle UI text in 0x42xxxx, shared low-level services in 0x40–0x41xxxx.
 | `0x9A8E9C` | BATTLE_ENEMY_RECORDS | 3 × 0xB8 scene.bin enemy records (ends 0x9A90C4); name = bytes 0–0x1F, possibly unterminated. Sits between the formation/per-actor block and ENEMY_ATTACK_NAME_TABLE 0x9A9484 — one contiguous loaded-scene cluster 0x9A87xx–0x9A98xx (2026-07-13, v2.10) |
 | `0x9AB070` | encoded-'A' base for dup letters | dword; game emits FF7-char(value + letter idx) for "MP A"/"MP B" suffixes (2026-07-13). Region 0x9AAD70–0x9AB070 (0x300 bytes) is cleared as one block by the battle-init memset |
 | `0x9AB0A0` | battle_ai_context (FFNx battle_context) | = u32 operand at 0x41CCB2+0x5F (FFNx's own chain; sub_41CCB2 = battle-init memset, clears 0x253 dwords from here). Header 0x3C bytes (10 flag bytes + 23 u16 masks + u32 partyGil), then **actor_vars[10] at 0x9AB0DC = BATTLE_ACTOR_VARS**, stride 0x68: +0x04 stateFlags (the 0x9AB0E0 read from the v2.10 disasm), +0x24 formationID, +0x28/+0x2A cur/max MP u16, +0x2C/+0x30 cur/max HP i32 (+0x30 low word = the 0x9AB10C read). Array ends 0x9AB4EC (v2.11, 2026-07-13) |
+| `0x92565C` | SHOP_STATE | u32 shop screen state 0..6 — the shop loop's own switch variable (v2.30.28 static; full state map in §4). Menu-module .data, same neighborhood as BATTLE_MENU_STATE/NAME_ENTRY_PANE_FLAG — third confirmation that per-screen menu state machines live in this 0x91E–0x925 band |
+| `0x922D00–0x923416` | shop caption strings | FF7-encoded exe statics: "Buy"/"Sell"/"Exit"/"Owned"/"Equipped"/"Gil remaining"/"Price through AP"/"Price for Master" captions (0x922Dxx), shop TITLES at 0x922FC8 + idx·0x14, shopkeeper GREETING/PROMPT sets at 0x923080 + set·0x1CC (v2.30.28) |
+| `0x923418` | SHOP_CATALOG | shop records, stride 0x54 (name idx, greeting-set idx, ware count, ware[10]{type,id}) — the complete what-every-shop-sells table, indexable offline (v2.30.28) |
 | `0x9AD1E0` / `0x9AD9E0` | SCENE_MSG_BASE / SCENE_MSG_OFFSETS | current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0+(idx−0x100)·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD → 0x41D2E5). v2.36 scene-message reader |
 | `0x9AE12C` | BATTLE_DROPS_COUNT | u32 count for the drops array 0x99E2F0 (battle results, v2.35). Sits just past the actor_vars block |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED — reads 0 at runtime (2026-07-11) |
@@ -3927,6 +4001,24 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 |---------|--------|-------|
 | `0xDBA498` | BATTLE_CHAR_BLOCK | Per-party-slot char data, stride 0x440 — battle command/magic/summon tables (v2.9) AND, v2.33, the menu's computed EFFECTIVE stats: +0x02..+0x07 u8 stats, +0x08..+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/MP pairs. See the §4 row for the full field map. Sits BELOW the savemap — the two must not be conflated |
 
+### Kernel gear-data arrays: 0xDBCAEE – ≈0xDBEB00 (loaded from kernel.bin)
+
+Static BSS destinations of the kernel.bin DATA sections (not the text
+sections — those are heap + signature-scanned). Mapped v2.30.28 from the
+gear-record helper 0x6C50DD, which the shop's sell handler calls for the
+restriction word (bit 0 = cannot sell):
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDBCAEE` | accessory records | stride 0x10, ids 0x120+ (restriction word at +0) |
+| `0xDBCD00` | armor records | stride 0x24, ids 0x100–0x11F |
+| `0xDBD16A` | item records (word field) | stride 0x1C, ids 0x00–0x7F |
+| `0xDBE75A` | weapon records (word field) | stride 0x2C, ids 0x80–0xFF |
+
+(The addresses are the RESTRICTION-WORD field the helper returns, not the
+record bases — subtract the field offset if the full records are ever
+needed; the helper's own math is the documented ground truth.)
+
 ### Savemap: 0xDBFD38 – ≈0xDC0E2C (0x10F4 bytes)
 
 | Address | Symbol | Notes |
@@ -3935,7 +4027,9 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xDBFD8C–0xDC022F` | SAVEMAP_CHAR_RECORDS | 9 character records × 0x84 (savemap+0x54..+0x4F7); live name at record+0x10, equipment at +0x1C (= the 7thHeaven "+0x70 blocks") (v2.19); battle-row byte at **+0x20** (0xFF front/0xFE back — LIVE-toggled + disasm XOR 1, v2.32; community's +0x1F is one byte off); HP/MP words +0x2C/+0x38/+0x30/+0x3A (v2.31) |
 | `0xDC0230` | SAVEMAP_PARTY_IDS | u8[3] party-member character IDs (savemap+0x4F8); slot 0 mirrors PARTY_LEADER — used as the v2.19 runtime layout guard |
 | `0xDC0234–0xDC04B3` | SAVEMAP_ITEMS | items[320] u16 (savemap+0x4FC, pinned by party_members[3]+pad in FFNx's savemap struct): id = bits 0-8, qty = bits 9-15, EMPTY = 0xFFFF (FFNx menu.cpp's own reimplementation). Screen row order = array order. Read by v2.31's item-menu speaker |
+| `0xDC04B4–0xDC07D3` | SAVEMAP_MATERIA | materia[200] u32 (savemap+0x77C, FFNx savemap struct): id = low byte (0xFF/whole-word -1 = empty), AP = bits 8-31 (0xFFFFFF = mastered). The shop's sell-materia code indexes exactly here (0x71DD16) — v2.30.28's sell-list reader |
 | `0xDC0894–0xDC08B3` | SAVEMAP_KEYITEM_BITS | 32-byte key-item bitmask (savemap+0xB5C, FFNx field_B5C). Recorded for the Key Items pane follow-up; not yet consumed |
+| `0xDC08B4` | SAVEMAP_GIL | u32 party gil (savemap+0xB7C). Triple-confirmed: v2.35 victory total, the shop's buy/sell writes (0x71DBBF/0x71DD2E), and FFNx's achievement reads. Spoken by the G key + shop screens (v2.30.28) |
 | `0xDC08BC` | COUNTDOWN_TIMER_SECONDS | u32 seconds, timed-escape clock (savemap+0xB84, STTIM-written; v2.34 announcer + Shift+T freeze). +0x4 = ms accumulator 0xDC08C0 |
 | `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var) |
 | `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |
@@ -3990,6 +4084,33 @@ item_menu_scan_20260718_114427 (list cursor speak-back verified live).
 | `0xDD1A18` | ITEMMENU_TOPBAR_CURSOR | u8 0=Use 1=Arrange 2=Key Items |
 | `0xDD1A54` | ITEMMENU_LIST_CURSOR | u8 item-list row; tracked 0..4 over a 3-item inventory in speak-back (cursor DOES ride empty rows → "Empty"). ⚠ window-vs-absolute UNRESOLVED (3 items can't scroll — the v2.29.2 lesson); re-verify once inventory > visible rows |
 | `0xDD1A8C` | ITEMMENU_TARGET_CURSOR | u8 party slot 0..2, top-to-bottom |
+
+### Shop block: 0xDD4700 – 0xDD4740 + widgets 0xDD6B48 – 0xDD6C98 (v2.30.28, all static)
+
+Every row from one annotated-disasm session (ff7_shop_static.py, log
+shop_static_20260726_101315). ⚠ This block INTERLEAVES with the title /
+name-entry block below — the menu module reuses this DD44xx–DD6xxx BSS
+across its screens (name entry, shop, title Continue all place state
+here), which is why gating on the right GAME_MODE matters before trusting
+any of these bytes.
+
+| Address | Symbol | Notes |
+|---------|--------|-------|
+| `0xDD4700–0xDD470C` | shop scrollbar param block | 7 u16s rewritten per state (x, y, scroll, w, h, …) — draw plumbing, never read for state |
+| `0xDD4710` | shop layout-struct ptr | → 0x925660 (0x9256D8 in the 0xDC130C==1 variant); window x/y fields feed every draw call. Hottest read in the loop (R=976 in the mining pass) |
+| `0xDD4714` | shop widget-struct ptr | → 0xDD4744 (set every tick at loop entry) |
+| `0xDD4718` / `0xDD4738` | frame counter / parity toggle | wrapper 0x71FF95 housekeeping — noise |
+| `0xDD4720` | SHOP_PRICE_TABLE_PTR | u32 → heap price table (items ·4, materia +0x600) — validate before every read |
+| `0xDD4724/28/2C` | SHOP_ID / NAME_IDX / TEXT_IDX | written by init 0x719D7A from the catalog record |
+| `0xDD4734` | SHOP_FADE_STATE | 1 fading in / 2 fading out / -1 exiting (→ 0xDC12F4 menu-exit) |
+| `0xDD473C` | SHOP_QTY | "How many" count, entry value 1 |
+| `0xDD4740` | key-repeat delay counter | set 0xA on qty entry, decremented per frame — NOT a price (first read suggested otherwise; the decrement loop settled it) |
+| `0xDD6B48` | SHOP_BAR_CURSOR | Buy/Sell/Exit widget base (generic list-widget ctor 0x6F4D30: +0 col, +4 row, +0x14 scroll) |
+| `0xDD6B80` (+4/+0x14) | buy-list widget | SHOP_BUY_ROW 0xDD6B84 + SHOP_BUY_SCROLL 0xDD6B94; ware = row+scroll |
+| `0xDD6BB8` (+0/+4/+0x14) | sell-item widget | 2-col grid; item index = col + (row+scroll)·2 (handler 0x71DC2B verbatim) |
+| `0xDD6BF0` (+4/+0x14) | sell-materia widget | SHOP_SELLM_ROW 0xDD6BF4 + SCROLL 0xDD6C04; slot = row+scroll |
+| `0xDD6C98` | SHOP_SELLTYPE_CURSOR | Item/Materia bar (state 6) |
+| `0xDD6D78` | SHOP_SESSION | 1 while the shop session runs (wrapper-managed) |
 
 ### Title / name-entry block: 0xDD4400 – 0xDD7704
 
