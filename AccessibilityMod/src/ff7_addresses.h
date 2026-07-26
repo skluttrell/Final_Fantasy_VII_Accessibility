@@ -1534,6 +1534,11 @@ constexpr uint32_t BATTLE_DUP_LETTER_STRIDE     = 0x44;
 
 constexpr uint32_t BATTLE_ACTOR_VARS            = 0x009AB0DC;
 constexpr uint32_t BATTLE_ACTOR_VARS_STRIDE     = 0x68;
+constexpr uint32_t BAVARS_OFF_STATUS_MASK       = 0x00;   // u32 (v2.30.30:
+                                                 // FFNx battle_actor_vars
+                                                 // .statusMask; kernel
+                                                 // status bit order — the
+                                                 // H-key readout's table)
 constexpr uint32_t BAVARS_OFF_CURRENT_MP        = 0x28;   // u16
 constexpr uint32_t BAVARS_OFF_MAX_MP            = 0x2A;   // u16
 constexpr uint32_t BAVARS_OFF_CURRENT_HP        = 0x2C;   // i32

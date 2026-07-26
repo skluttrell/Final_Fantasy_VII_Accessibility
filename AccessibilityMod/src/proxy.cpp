@@ -2568,14 +2568,64 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
-// G key — announce current gil (FF4-scheme parity: "G: Announce current
-// Gil"). Works any time a game is loaded: field, menus, shops, battle. The
-// gil dword is savemap+0xB7C — live-proven by the v2.35 victory total and
-// the shop's own buy/sell arithmetic.
+// On-demand announcement keys (FF4-scheme parity, accessiblity_keys.txt):
+//   G — "Announce current Gil" (v2.30.28). Works any time a game is
+//       loaded: field, menus, shops, battle. The gil dword is
+//       savemap+0xB7C — live-proven by the v2.35 victory total and the
+//       shop's own buy/sell arithmetic.
+//   H — "In battle, announce character hp, mp, status effects"
+//       (v2.30.30). Reads the CURRENT-TURN character: BATTLE_ACTIVE_SLOT
+//       is the party slot whose battle menu is open (the v2.37 whose-turn
+//       source; it retains the last acting slot during animations, which
+//       is still "the current-most character"). HP/MP come from the same
+//       actor-vars fields the v2.11 target readout uses; statuses from
+//       actor_vars +0x00 statusMask (FFNx battle_actor_vars field name).
 // ---------------------------------------------------------------------------
-static DWORD WINAPI GilKeyThread(LPVOID /*unused*/)
+
+// FF7's kernel status-mask bit order — the one 32-bit status layout every
+// kernel/save tool documents (WallMarket/Proud Clod/qhimm "Battle
+// Mechanics"; corroborated in-repo: the Sadness/Fury bits 0x10/0x20 match
+// the savemap flag convention, and bit 0 = Death matches the KO'd actors
+// observed with currentHP 0). Names checked against walkthrough.txt terms.
+// Buff-side bits (Haste/Regen/Barrier/...) are spoken too — they answer
+// "what's on me right now" exactly like the FF4 mod's H does.
+static const struct { uint32_t bit; const wchar_t* name; } kBattleStatusNames[] = {
+    { 0x00000001, L"Death"          },
+    { 0x00000002, L"Near death"     },
+    { 0x00000004, L"Sleep"          },
+    { 0x00000008, L"Poison"         },
+    { 0x00000010, L"Sadness"        },
+    { 0x00000020, L"Fury"           },
+    { 0x00000040, L"Confusion"      },
+    { 0x00000080, L"Silence"        },
+    { 0x00000100, L"Haste"          },
+    { 0x00000200, L"Slow"           },
+    { 0x00000400, L"Stop"           },
+    { 0x00000800, L"Frog"           },
+    { 0x00001000, L"Small"          },
+    { 0x00002000, L"Slow numb"      },
+    { 0x00004000, L"Petrify"        },
+    { 0x00008000, L"Regen"          },
+    { 0x00010000, L"Barrier"        },
+    { 0x00020000, L"M Barrier"      },   // the game's own term (walkthrough
+                                         // -verified); spelled with a space
+                                         // so TTS says "em barrier"
+    { 0x00040000, L"Reflect"        },
+    // 0x00080000 "Dual" — internal pairing flag, not a player-facing
+    // condition; skipped rather than spoken as jargon.
+    { 0x00100000, L"Shield"         },
+    { 0x00200000, L"Death sentence" },
+    { 0x00400000, L"Manipulate"     },
+    { 0x00800000, L"Berserk"        },
+    { 0x01000000, L"Peerless"       },
+    { 0x02000000, L"Paralyzed"      },
+    { 0x04000000, L"Darkness"       },
+};
+
+static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
 {
     bool g_was_down = false;
+    bool h_was_down = false;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
@@ -2584,28 +2634,93 @@ static DWORD WINAPI GilKeyThread(LPVOID /*unused*/)
         DWORD fg_pid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
-        const bool down    = (GetAsyncKeyState('G') & 0x8000) != 0;
-        const bool edge    = focused && down && !g_was_down;
-        g_was_down = down;
-        if (!edge)
+        const bool g_down  = (GetAsyncKeyState('G') & 0x8000) != 0;
+        const bool h_down  = (GetAsyncKeyState('H') & 0x8000) != 0;
+        const bool g_edge  = focused && g_down && !g_was_down;
+        const bool h_edge  = focused && h_down && !h_was_down;
+        g_was_down = g_down;
+        h_was_down = h_down;
+        if (!g_edge && !h_edge)
             continue;
 
-        // No game loaded -> the savemap is zeroed and "0 gil" would be a
-        // lie about a game that doesn't exist yet. The naming screen gets
-        // typed letters — G there is text entry, not a query.
         const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
             FF7Addr::FIELD_ID);
         const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::GAME_MODE);
-        if (field_id == 0 || game_mode == FF7Addr::GAME_MODE_NAME_ENTRY)
-            continue;
 
-        const uint32_t gil = *reinterpret_cast<const volatile uint32_t*>(
-            FF7Addr::SAVEMAP_GIL);
-        wchar_t msg[32];
-        _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%lu gil",
-                     static_cast<unsigned long>(gil));
-        TTS::Speak(msg, true);
+        // ── G: current gil ───────────────────────────────────────────────
+        // No game loaded -> the savemap is zeroed and "0 gil" would be a
+        // lie about a game that doesn't exist yet. The naming screen gets
+        // typed letters — G there is text entry, not a query.
+        if (g_edge && field_id != 0 &&
+            game_mode != FF7Addr::GAME_MODE_NAME_ENTRY) {
+            const uint32_t gil = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::SAVEMAP_GIL);
+            wchar_t msg[32];
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%lu gil",
+                         static_cast<unsigned long>(gil));
+            TTS::Speak(msg, true);
+        }
+
+        // ── H: current character's HP/MP/status, battle only ─────────────
+        if (h_edge && game_mode == 2) {
+            uint8_t slot = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::BATTLE_ACTIVE_SLOT);
+            if (slot > 2)
+                slot = 0;   // no menu opened yet this battle — leader
+
+            wchar_t label[32];
+            PartySlotLabel(slot, label, _countof(label));
+            std::wstring msg = label;
+
+            const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
+                static_cast<uint32_t>(slot) * FF7Addr::BATTLE_ACTOR_VARS_STRIDE;
+            const int32_t cur_hp = *reinterpret_cast<const volatile int32_t*>(
+                base + FF7Addr::BAVARS_OFF_CURRENT_HP);
+            const int32_t max_hp = *reinterpret_cast<const volatile int32_t*>(
+                base + FF7Addr::BAVARS_OFF_MAX_HP);
+            const uint16_t cur_mp = *reinterpret_cast<const volatile uint16_t*>(
+                base + FF7Addr::BAVARS_OFF_CURRENT_MP);
+            const uint16_t max_mp = *reinterpret_cast<const volatile uint16_t*>(
+                base + FF7Addr::BAVARS_OFF_MAX_MP);
+
+            // Same plausibility gate as TargetHPText — mid-init garbage
+            // speaks as name-only, never as wrong numbers.
+            if (max_hp > 0 && max_hp <= 10000000 &&
+                cur_hp >= 0 && cur_hp <= max_hp && max_mp <= 9999) {
+                wchar_t nums[96];
+                _snwprintf_s(nums, _countof(nums), _TRUNCATE,
+                             L", HP %d of %d, MP %u of %u",
+                             static_cast<int>(cur_hp),
+                             static_cast<int>(max_hp),
+                             static_cast<unsigned>(cur_mp),
+                             static_cast<unsigned>(max_mp));
+                msg += nums;
+            }
+
+            const uint32_t status = *reinterpret_cast<const volatile uint32_t*>(
+                base + FF7Addr::BAVARS_OFF_STATUS_MASK);
+            bool any_status = false;
+            for (const auto& s : kBattleStatusNames) {
+                if (status & s.bit) {
+                    msg += any_status ? L", " : L". ";
+                    msg += s.name;
+                    any_status = true;
+                }
+            }
+            if (!any_status)
+                msg += L". No status effects";
+
+            if (Config::Get().debug_log) {
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] H key: slot=%u status=%08lX",
+                    static_cast<unsigned>(slot),
+                    static_cast<unsigned long>(status));
+                Log::Write(dbg);
+            }
+            TTS::Speak(msg, true);
+        }
     }
 
     return 0;
@@ -9102,12 +9217,14 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start shop menu thread.");
         }
 
-        // G key: announce current gil (v2.30.28, FF4-scheme parity).
-        g_gilkey_thread = CreateThread(nullptr, 0, GilKeyThread, nullptr, 0, nullptr);
+        // Announcement keys (FF4-scheme parity): G = current gil
+        // (v2.30.28), H = in battle, current character's HP/MP/status
+        // (v2.30.30).
+        g_gilkey_thread = CreateThread(nullptr, 0, AnnounceKeysThread, nullptr, 0, nullptr);
         if (g_gilkey_thread) {
-            Log::Write("[FF7Access] Gil key thread started.");
+            Log::Write("[FF7Access] Announcement keys thread started.");
         } else {
-            Log::Write("[FF7Access] Warning: could not start gil key thread.");
+            Log::Write("[FF7Access] Warning: could not start announcement keys thread.");
         }
 
         // Menu tutorial per-slide narration (v2.30.29). Live window state

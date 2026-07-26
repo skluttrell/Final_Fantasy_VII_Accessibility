@@ -5,6 +5,19 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[BATTLE] H key: current character HP/MP/status — SHIPPED v2.30.30 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+FF4-parity H key (battle only): "Cloud, HP 244 of 302, MP 54 of 54.
+No status effects" — or the status list (Poison, Fury, Barrier...).
+Character = BATTLE_ACTIVE_SLOT (whose menu is open / last acted;
+leader before the first turn). Statuses = actor_vars statusMask via
+the standard kernel bit table (research §8 v2.30.30). VERIFY: H mid-
+battle names the right character at the right moment (during another
+ally's turn it should name THAT ally); numbers match the screen;
+poison/fury/barrier callouts match reality (debug log prints the raw
+mask — compare if anything sounds wrong); H does nothing outside
+battle; G still works.
+
 [TUTORIAL] Per-slide narration — SHIPPED v2.30.29 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 Play report on v2.30.27: whole lesson read as one buffer, then silence

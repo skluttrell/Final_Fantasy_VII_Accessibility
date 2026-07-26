@@ -3568,6 +3568,28 @@ save screens' info popups — previously silent — now speak under
 speak_menus via the same state edge. SafeDecodeFF7At (page-safe bounded
 copy-out) guards every text read.
 
+### v2.30.30 (2026-07-26): H key — battle HP/MP/status for the current character
+
+**User request**: attach health to its accessiblity_keys.txt binding ("H:
+In battle, announce character hp, mp, status effects"), reading the
+current-most character.
+
+No new address hunting needed — everything was already mapped:
+BATTLE_ACTIVE_SLOT 0xDC3C7C (the v2.37 whose-turn source; retains the
+last acting slot through animations, i.e. exactly "the current-most
+character"; >2 → leader fallback), name via PartySlotLabel, HP/MP from
+the v2.11 actor-vars fields with the same plausibility gate as
+TargetHPText (garbage → name-only, never wrong numbers), and statuses
+from actor_vars +0x00 — FFNx's own battle_actor_vars.statusMask field
+name, spoken through the standard kernel status bit table (bit 0 Death …
+bit 26 Darkness; Sadness/Fury 0x10/0x20 corroborate the savemap flag
+convention; names walkthrough-verified — "M Barrier", "Slow numb",
+"Death sentence"; internal bit 0x80000 "Dual" deliberately not spoken).
+"No status effects" when the mask is clean. GilKeyThread generalized to
+AnnounceKeysThread (G + H, same focus-gated edge pattern); H is
+battle-only (GAME_MODE==2) per the FF4 scheme. Debug log line carries
+the raw mask for verifying any surprising status callout.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
