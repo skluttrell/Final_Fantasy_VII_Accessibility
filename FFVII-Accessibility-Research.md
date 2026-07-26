@@ -195,6 +195,9 @@ every confirmed address — the clustering itself is a discovery tool.
 | `MATMENU_CHARREC_PTR` | `0x00DCA810` | u32 → the viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was THIS screen's state all along |
 | `EQMENU_CATEGORY` | `0x00DCA4A4` | u32 equip-menu category row 0=Weapon 1=Armor 2=Accessory (±1 wrap code at 0x707079/0x7070C0, v2.30.34 static). ⚠ first read suggested "mode" — the ±1-wrap disasm settled it as the cursor |
 | `EQMENU_LIST_OPEN` / `EQMENU_LIST_ROW/SCROLL/COUNT/BYTES` | `0xDCA6A0 / 0xDCA5FC / 0xDCA60C / 0xDCA7EC / 0xDCA6A8` | candidate-pane flag (0=rows 1=list); list widget @0xDCA5F8 (+4/+0x14); **candidate = u8[0xDCA6A8][row+scroll]** (the OK-commit's own read at 0x707350) — bytes are category-relative kernel gear indices, 0xFF terminator, count from the list builder 0x708640. Equip menu char = CHARSEL_CHOSEN (char page-flip writes it at 0x707148/0x70726E); equipped ids = record +0x1C/1D/1E. Equip sub = table[4] = FFNx menu_sub_705D16 (table[15] dupes it) |
+| `LIMITMENU_MODE` | `0x009204D8` | u32 limit-menu state 0..4 (draw switch 0x70313A; 0 = Set/Check bar, 1-4 = grid/confirm phases — per-value mapping rides the mod's debug log; v2.30.35 static). Same 0x92 state band as the shop/materia/battle machines |
+| `LIMITMENU_*` cursors | `0xDCA1D0, 0xDCA198/9C, 0xDCA208/0C, 0xDCA3C8` | bar cursor (×0x50 highlight, 0=Set 1=Check); Set grid col/row (×0x124/×0x89 — the 2×2 LEVEL grid, level=row·2+col); Check grid col/row (second instance); party slot 0..2 (the sub resolves char via SAVEMAP_PARTY_IDS + the game's own id→record table 0x919928) |
+| *(limit data)* | — | learned mask = charrec **+0x22** u16, bit = level·3+technique (the sub's own `imul 3/shl` test at 0x702190); technique names = magic text 128 + block·7 + (level·2+tech; L4=+6) with the KERNEL'S Aeris/Tifa block swap (kernel2 ground truth: 128 Braver/Cloud, 135 Barret, 142 AERIS, 149 TIFA, 156 Red XIII); current limit level = charrec +0x0E |
 | `TUTORIAL_RUNNING` | `0x00DBFD30` | u32, 1 while a menu tutorial's byte-code VM runs (set by menu start_tutorial 0x6CB620, cleared by the VM's END opcode 0x7185AC / stop paths). v2.30.29's authoritative tutorial gate + "Tutorial finished." edge (ff7_tutorial_static.py 2026-07-26) |
 | `TUTWIN_STATE` | `0x00DC1310` | u8 tutorial/message window renderer state: 0=closed, 1=opening, 2=TEXT SHOWING, 3=closing (= FFNx's menu_tutorial_window_state, operand at renderer 0x6C49FD+0x9; FFNx's voice hook uses the same 0→1→2→3→0 edges). v2.30.29 speaks each slide on the →2 edge |
 | `TUTWIN_TEXT_PTR` | `0x00DC1214` | u32 → the CURRENT window's FF7-encoded text (= FFNx menu_tutorial_window_text_ptr, operand +0x18). For tutorial slides it points INTO the field buffer (the VM passes its script PC); for the save screens' info popups (same renderer, callers 0x6FFB65-0x6FFEAD/0x721Fxx) it points at exe .data strings — v2.30.29 speaks both |
@@ -3713,6 +3716,37 @@ by data; accessory via the raw-byte signature).
 computed-stats scratch — not hunted; materia-slot/growth line of the
 highlighted gear unspoken (kernel gear records; future); candidate
 counts (×N owned) unspoken.
+
+### v2.30.35 (2026-07-26): limit menu connected — the day's fifth menu
+
+**User request** (screenshot Menus/Limit/limit_menu_1.jpg). Same-recipe
+static session (ff7_limit_menu_static.py): limit menu =
+menu_subs_call_table[7] = 0x70212A (row→index pattern, fifth
+consecutive hit). State: mode 0x9204D8 (0=Set/Check bar, 1-4
+grid/confirm), bar cursor 0xDCA1D0 (×0x50 highlight), TWO 2×2 LEVEL
+grid instances (0xDCA198/9C and 0xDCA208/0C, ×0x124/×0x89 highlights),
+party slot 0xDCA3C8 (the sub resolves characters through
+SAVEMAP_PARTY_IDS + the game's own 0x919928 id→record table — the
+v2.32-documented aliasing table reused). Two data finds: the
+limit-learned mask is charrec +0x22 with bit = level·3+technique (the
+sub's own bit test), and the limit NAME layout in the magic text
+section is 7 entries per character in KERNEL block order, which swaps
+Aeris and Tifa relative to savemap record order (kernel2 decode: 142 =
+Healing Wind = Aeris, 149 = Beat Rush = Tifa).
+
+**Mod changes**: LimitMenuThread — entry "Limit. Cloud. Limit level 1"
+(level from charrec +0x0E); Set/Check bar; every grid move speaks
+"Level 2: Blade Beam, Climhazzard" or "Level 4: not learned" (exactly
+what the sighted grid shows); character page-flips re-announce. Grid
+tracking is mode-agnostic (both instances watched every poll) so the
+static mode-value guesses cannot silence a pane; mode transitions log.
+
+**Residuals**: per-technique Check-mode sub-cursor (if one exists
+beyond the level blocks) unmapped; limit descriptions unspoken (needs
+a magic-DESC kernel2 section — signature would be "Restores HP|
+Restores HP|" to dodge the item-desc collision); the Aeris/Tifa block
+swap should be EAR-VERIFIED the first time Tifa's or Aeris' limit
+screen is opened.
 
 ---
 

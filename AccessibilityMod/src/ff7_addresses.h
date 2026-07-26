@@ -924,6 +924,43 @@ constexpr uint32_t EQMENU_LIST_BYTES   = 0x00DCA6A8;   // u8[] gear indices
                                                        // (category-relative)
 
 // ---------------------------------------------------------------------------
+// LIMIT menu (v2.30.35, 2026-07-26) — ALL STATIC, one session
+// (investigate/ff7_limit_menu_static.py + targeted sweeps; log
+// limit_menu_static_20260726_132310). The limit menu is
+// menu_subs_call_table[7] = 0x70212A (the row->index pattern's fifth
+// consecutive confirmation: Limit row 6 -> index 7).
+//
+// State (draw switch 0x70313A + input region 0x702C40..0x703130):
+//   LIMITMENU_MODE       — 0=Set/Check bar, 1..4 = grid/confirm phases
+//                          (exact per-value meaning rides the debug log;
+//                          the mod tracks BOTH grid cursor pairs mode-
+//                          agnostically so a mis-guessed mapping cannot
+//                          silence announcements)
+//   LIMITMENU_BAR_CURSOR — ×0x50 highlight spacing (Set / Check)
+//   Set grid  col/row    — ×0x124 / ×0x89 highlight spacing: the 2x2
+//                          LEVEL grid; level = row*2 + col
+//   Check grid col/row   — the second grid instance (+0x70 struct echo)
+//   LIMITMENU_PARTY_SLOT — party slot 0..2; the sub resolves char via
+//                          SAVEMAP_PARTY_IDS + the game's own id->record
+//                          table 0x919928 (disasm 0x70216A..0x702186)
+// Limit-learned bitmask: charrec +0x22 u16, bit = level*3 + technique
+// (the 0x702190 `imul ecx,3 / shl` loop). Technique NAMES = magic text
+// entries 128 + block*7 + (level*2 + tech; level-4 single = +6), where
+// block = savemap record index with the KERNEL'S Aeris/Tifa swap
+// (kernel2 ground truth 2026-07-26: 128 Braver/Cloud, 135 Big Shot/
+// Barret, 142 Healing Wind/AERIS, 149 Beat Rush/TIFA, 156 Sled Fang/
+// Red XIII). Current limit level = charrec +0x0E (v2.33 offset).
+constexpr uint32_t LIMITMENU_SCREEN_INDEX = 7;
+constexpr uint32_t LIMITMENU_MODE        = 0x009204D8; // u32 0..4
+constexpr uint32_t LIMITMENU_BAR_CURSOR  = 0x00DCA1D0; // u32 0=Set 1=Check
+constexpr uint32_t LIMITMENU_SETG_COL    = 0x00DCA198; // u32 0/1
+constexpr uint32_t LIMITMENU_SETG_ROW    = 0x00DCA19C; // u32 0/1
+constexpr uint32_t LIMITMENU_CHKG_COL    = 0x00DCA208; // u32 0/1
+constexpr uint32_t LIMITMENU_CHKG_ROW    = 0x00DCA20C; // u32 0/1
+constexpr uint32_t LIMITMENU_PARTY_SLOT  = 0x00DCA3C8; // u32 0..2
+constexpr uint32_t SAVEMAP_CHAR_LIMITBITS_OFF = 0x22;  // u16 learned mask
+
+// ---------------------------------------------------------------------------
 // MENU TUTORIAL live state (v2.30.29, 2026-07-26) — the per-slide sync the
 // v2.30.27 narrator lacked. ALL STATIC (investigate/ff7_tutorial_static.py,
 // log tutorial_static_20260726_110911 + the writer sweeps in the same

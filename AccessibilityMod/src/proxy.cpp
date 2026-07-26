@@ -157,6 +157,7 @@ static HANDLE g_statusmenu_thread = nullptr;
 static HANDLE g_shopmenu_thread   = nullptr;
 static HANDLE g_materiamenu_thread = nullptr;
 static HANDLE g_equipmenu_thread  = nullptr;
+static HANDLE g_limitmenu_thread  = nullptr;
 static HANDLE g_gilkey_thread     = nullptr;
 static HANDLE g_tutorial_thread   = nullptr;
 static HANDLE g_timer_thread      = nullptr;
@@ -3133,6 +3134,206 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
             const bool have = full_id != 0xFFFFFFFF &&
                               InventoryEntryDesc(full_id, desc);
             TTS::Speak(have ? desc.c_str() : L"No description", true);
+        }
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// LIMIT menu TTS (v2.30.35). Provenance: ff7_addresses.h LIMITMENU block.
+// Set/Check bar + the 2x2 LEVEL grid, with each level announced together
+// with the technique names the character has LEARNED at that level (the
+// exact information the sighted grid shows — unlearned levels read as
+// "not learned"). Grid tracking is deliberately mode-agnostic: both grid
+// instances are watched every poll, so the static mode-value guesses
+// can't silence a pane (the debug log settles the real mapping).
+// ---------------------------------------------------------------------------
+
+// Savemap record + kernel limit-name block for the limit menu's party
+// slot. The kernel's limit blocks swap Aeris/Tifa relative to savemap
+// record order (kernel2 ground truth — see the header comment).
+static bool LimitCharInfo(uint32_t party_slot, uint32_t& rec_va, uint32_t& block)
+{
+    if (party_slot > 2)
+        return false;
+    const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::SAVEMAP_PARTY_IDS + party_slot);
+    if (char_id == 0xFF)
+        return false;
+    uint8_t rec = char_id;
+    if (char_id == 9)  rec = 6;
+    if (char_id == 10) rec = 7;
+    if (rec > 8)
+        return false;
+    rec_va = FF7Addr::SAVEMAP_CHAR_RECORDS + rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE;
+    block  = (rec == 2) ? 3u : (rec == 3) ? 2u : rec;   // the Aeris/Tifa swap
+    return true;
+}
+
+// "Level 2: Blade Beam, Climhazzard" / "Level 4: not learned" for one
+// grid position (level = row*2 + col, 0-based internally).
+static void LimitLevelLine(uint32_t party_slot, uint32_t level, std::wstring& out)
+{
+    wchar_t head[24];
+    _snwprintf_s(head, _countof(head), _TRUNCATE, L"Level %u: ",
+                 static_cast<unsigned>(level + 1));
+    out = head;
+    uint32_t rec, block;
+    if (!LimitCharInfo(party_slot, rec, block) || level > 3) {
+        out += L"unknown";
+        return;
+    }
+    const uint16_t bits = *reinterpret_cast<const volatile uint16_t*>(
+        rec + FF7Addr::SAVEMAP_CHAR_LIMITBITS_OFF);
+    const uint32_t techs = (level < 3) ? 2u : 1u;
+    bool any = false;
+    for (uint32_t t = 0; t < techs; ++t) {
+        if (!(bits & (1u << (level * 3 + t))))
+            continue;
+        const uint32_t name_idx = 128 + block * 7 +
+                                  ((level < 3) ? level * 2 + t : 6u);
+        std::wstring name;
+        if (SectionEntryText(ValidatedSection(&g_k2.magic, "Cure|Cure2|"),
+                             name_idx, name)) {
+            if (any)
+                out += L", ";
+            out += name;
+            any = true;
+        }
+    }
+    if (!any)
+        out += L"not learned";
+}
+
+static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
+{
+    bool     was_open  = false;
+    uint32_t last_mode = 0xFFFFFFFF;
+    uint32_t last_bar  = 0xFFFFFFFF;
+    uint32_t last_setg = 0xFFFFFFFF;   // packed col|row<<8
+    uint32_t last_chkg = 0xFFFFFFFF;
+    uint32_t last_slot = 0xFFFFFFFF;
+    ULONGLONG next_scan_tick = 0;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+            break;
+
+        if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
+            Hooks::TutorialActive()) {
+            was_open = false;
+            continue;
+        }
+        const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
+            FF7Addr::FIELD_ID);
+        const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::MENU_OPEN);
+        const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::MENU_DISPATCH_INDEX);
+        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::BATTLE_END_MODE);
+        if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
+            screen != FF7Addr::LIMITMENU_SCREEN_INDEX) {
+            was_open = false;
+            continue;
+        }
+
+        if (!g_k2.magic && GetTickCount64() >= next_scan_tick) {
+            next_scan_tick = GetTickCount64() + 3000;
+            ScanKernel2Sections();
+        }
+
+        const uint32_t mode = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::LIMITMENU_MODE);
+        const uint32_t slot = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::LIMITMENU_PARTY_SLOT);
+
+        bool fresh = false;
+        if (!was_open) {
+            was_open = true;
+            fresh = true;
+            last_mode = last_bar = last_setg = last_chkg = 0xFFFFFFFF;
+            last_slot = slot;
+            wchar_t who[32];
+            PartySlotLabel(static_cast<uint8_t>(slot <= 2 ? slot : 0),
+                           who, _countof(who));
+            std::wstring msg = L"Limit. ";
+            msg += who;
+            uint32_t rec, block;
+            if (LimitCharInfo(slot <= 2 ? slot : 0, rec, block)) {
+                const uint8_t lvl = *reinterpret_cast<const volatile uint8_t*>(
+                    rec + FF7Addr::SAVEMAP_CHAR_LIMITLVL_OFF);
+                if (lvl >= 1 && lvl <= 4) {
+                    wchar_t buf[32];
+                    _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                                 L". Limit level %u", static_cast<unsigned>(lvl));
+                    msg += buf;
+                }
+            }
+            TTS::Speak(msg.c_str(), true);
+        } else if (slot != last_slot && slot <= 2) {
+            last_slot = slot;
+            wchar_t who[32];
+            PartySlotLabel(static_cast<uint8_t>(slot), who, _countof(who));
+            TTS::Speak(who, true);
+            last_bar = last_setg = last_chkg = 0xFFFFFFFF;
+        }
+
+        if (mode != last_mode) {
+            char dbg[80];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] LIMIT mode %lu -> %lu",
+                static_cast<unsigned long>(last_mode),
+                static_cast<unsigned long>(mode));
+            Log::Write(dbg);
+            last_mode = mode;
+            last_bar = last_setg = last_chkg = 0xFFFFFFFF;
+        }
+
+        if (mode == 0) {
+            const uint32_t bar = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::LIMITMENU_BAR_CURSOR);
+            if (bar < 2 && bar != last_bar) {
+                last_bar = bar;
+                TTS::Speak(bar == 0 ? L"Set" : L"Check", !fresh);
+            }
+        } else {
+            // Mode-agnostic grid tracking: whichever grid instance moves
+            // is the live one (the two never move in the same poll —
+            // only one pane has focus).
+            const uint32_t sc = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::LIMITMENU_SETG_COL);
+            const uint32_t sr = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::LIMITMENU_SETG_ROW);
+            const uint32_t cc = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::LIMITMENU_CHKG_COL);
+            const uint32_t cr = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::LIMITMENU_CHKG_ROW);
+            const uint32_t setg = (sc <= 1 && sr <= 1) ? (sc | (sr << 8)) : 0xFFFFFFFF;
+            const uint32_t chkg = (cc <= 1 && cr <= 1) ? (cc | (cr << 8)) : 0xFFFFFFFF;
+            uint32_t level = 0xFFFFFFFF;
+            if (setg != 0xFFFFFFFF &&
+                (last_setg == 0xFFFFFFFF || setg != last_setg))
+                level = sr * 2 + sc;
+            else if (chkg != 0xFFFFFFFF && chkg != last_chkg &&
+                     last_chkg != 0xFFFFFFFF)
+                level = cr * 2 + cc;
+            if (setg != last_setg || chkg != last_chkg) {
+                const bool first_grid_poll =
+                    (last_setg == 0xFFFFFFFF && last_chkg == 0xFFFFFFFF);
+                last_setg = setg;
+                last_chkg = chkg;
+                if (level != 0xFFFFFFFF || first_grid_poll) {
+                    if (level == 0xFFFFFFFF && setg != 0xFFFFFFFF)
+                        level = sr * 2 + sc;   // fresh pane: speak Set grid
+                    if (level != 0xFFFFFFFF) {
+                        std::wstring line;
+                        LimitLevelLine(slot <= 2 ? slot : 0, level, line);
+                        TTS::Speak(line.c_str(), true);
+                    }
+                }
+            }
         }
     }
 
@@ -9831,6 +10032,16 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start equip menu thread.");
         }
 
+        // Limit menu TTS (v2.30.35). Dispatch index 7 (row->index
+        // pattern); state static-derived (ff7_limit_menu_static.py —
+        // LIMITMENU block in ff7_addresses.h).
+        g_limitmenu_thread = CreateThread(nullptr, 0, LimitMenuThread, nullptr, 0, nullptr);
+        if (g_limitmenu_thread) {
+            Log::Write("[FF7Access] Limit menu polling thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start limit menu thread.");
+        }
+
         // Announcement keys (FF4-scheme parity): G = current gil
         // (v2.30.28), H = in battle, current character's HP/MP/status
         // (v2.30.30).
@@ -9959,7 +10170,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         if (!g_title_thread && !g_menu_thread && !g_config_thread &&
             !g_savemenu_thread && !g_itemmenu_thread && !g_ordermenu_thread &&
             !g_statusmenu_thread && !g_shopmenu_thread &&
-            !g_materiamenu_thread && !g_equipmenu_thread && !g_gilkey_thread &&
+            !g_materiamenu_thread && !g_equipmenu_thread &&
+            !g_limitmenu_thread && !g_gilkey_thread &&
             !g_tutorial_thread && !g_timer_thread && !g_victory_thread &&
             !g_battle_thread && !g_battlemsg_thread && !g_battlemenu_thread &&
             !g_wallbump_thread && !g_dialogtone_thread && !g_fieldnav_thread &&
@@ -10125,6 +10337,11 @@ void Shutdown()
         WaitForSingleObject(g_equipmenu_thread, 500);
         CloseHandle(g_equipmenu_thread);
         g_equipmenu_thread = nullptr;
+    }
+    if (g_limitmenu_thread) {
+        WaitForSingleObject(g_limitmenu_thread, 500);
+        CloseHandle(g_limitmenu_thread);
+        g_limitmenu_thread = nullptr;
     }
     if (g_gilkey_thread) {
         WaitForSingleObject(g_gilkey_thread, 500);

@@ -5,6 +5,21 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[LIMIT] Limit menu — SHIPPED v2.30.35 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Dispatch index 7. Speaks: "Limit. Cloud. Limit level 1" entry;
+Set/Check bar; grid moves as "Level 1: Braver, Cross-slash" /
+"Level 4: not learned"; char page-flip re-announces. VERIFY: entry
+line matches the header's limit level; bar labels; grid navigation in
+BOTH Set and Check panes speaks levels+techniques; setting a level
+works; ⚠ EAR-CHECK Tifa's and Aeris' screens specifically — their
+technique names come from kernel blocks that SWAP their order vs the
+savemap (kernel2-derived; wrong names for exactly those two = the
+swap map needs inverting). Log: "[FF7Access] LIMIT mode" lines give
+the real mode mapping. RESIDUALS: Check-mode per-technique sub-cursor
+(if any) unmapped; limit descriptions unspoken (future magic-desc
+section, sig "Restores HP|Restores HP|").
+
 [EQUIP] Equip menu — SHIPPED v2.30.34 (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 Dispatch index 4 (FFNx menu_sub_705D16; table[15] dupe accepted).
