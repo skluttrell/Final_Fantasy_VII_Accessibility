@@ -574,6 +574,16 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
 
         if (menu_open == 0) {
+            // v2.30.27: the menu closing ends any running tutorial —
+            // clear the flag and cut whatever narration is still queued
+            // (the player has moved on; finishing the lesson into the
+            // field would talk over gameplay).
+            if (Hooks::TutorialActive()) {
+                Hooks::ClearTutorialActive();
+                TTS::Silence();
+                Log::Write("[FF7Access] TUTOR: menu closed, tutorial "
+                           "narration cut, announcements resume.");
+            }
             last_cursor      = 0xFF;
             last_menu_open   = 0;
             last_quit_cursor = 0xFF;
@@ -605,6 +615,17 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         // fires when the window ends.
         if (g_victory_active != 0 ||
             (GetTickCount() - g_last_battle_tick) < 4000) {
+            last_cursor = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::MENU_CURSOR);
+            last_quit_cursor = 0xFF;
+            continue;
+        }
+
+        // v2.30.27: a menu TUTORIAL is running — the script drives the
+        // cursor, and hook_tutor has already queued the lesson text.
+        // Track state silently (so nothing stale fires when the
+        // tutorial ends) but announce nothing over the narration.
+        if (Hooks::TutorialActive()) {
             last_cursor = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::MENU_CURSOR);
             last_quit_cursor = 0xFF;
@@ -1987,7 +2008,10 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             // dispatch index — if the last screen visited was Item, this
             // gate would false-open over the victory announcements.
             g_victory_active != 0 ||
-            (GetTickCount() - g_last_battle_tick) < 4000) {
+            (GetTickCount() - g_last_battle_tick) < 4000 ||
+            // v2.30.27: a menu TUTORIAL drives the screens itself —
+            // stand down, the tutorial narration is the speech.
+            Hooks::TutorialActive()) {
             was_open = false;
             last_mode = last_top = last_row = last_tgt = 0xFF;
             last_word = 0xFFFF;
@@ -2231,6 +2255,14 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
 
         const uint8_t focus =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_FOCUS_MODE);
+
+        // v2.30.27: tutorial scripts move menu focus too — track
+        // silently, never lecture over the tutorial narration.
+        if (Hooks::TutorialActive()) {
+            last_focus = focus;
+            latch_armed = false;
+            continue;
+        }
 
         if (focus != last_focus) {
             char dbg[64];
@@ -2894,7 +2926,9 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             // v2.35.1: stale dispatch index during victory screens — see
             // the ItemMenuThread gate.
             g_victory_active != 0 ||
-            (GetTickCount() - g_last_battle_tick) < 4000) {
+            (GetTickCount() - g_last_battle_tick) < 4000 ||
+            // v2.30.27: tutorials drive the screens — see ItemMenuThread.
+            Hooks::TutorialActive()) {
             was_open = false;
             last_slot = 0xFFFFFFFF;
             continue;

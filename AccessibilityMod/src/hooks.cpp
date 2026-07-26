@@ -229,6 +229,24 @@ static int (__cdecl* s_old_ask)(int) = nullptr;
 // parameters, handler reads its h/m/s script args directly.
 static int (__cdecl* s_old_sttim)() = nullptr;
 
+// Saved opcode table entry for TUTOR (0x21, "play menu tutorial" --
+// v2.30.27). Same convention as MESSAGE/STTIM.
+static int (__cdecl* s_old_tutor)() = nullptr;
+
+// v2.30.27: nonzero while a menu tutorial is (believed) running -- set
+// when TUTOR fires, cleared by MenuCursorThread when MENU_OPEN returns
+// to 0. proxy.cpp's menu announcement threads stand down while set: the
+// tutorial script drives the menu cursor itself (the 2026-07-26 Materia
+// tutorial log shows scripted Item->Order sweeps at ~300ms/step), and
+// announcing every scripted step with interrupting speech both clobbers
+// the tutorial narration below and reads as chaos ("the cursor was
+// jumping around"). Plain LONG: x86-atomic, set/clear only.
+static volatile LONG s_tutorial_active = 0;
+
+// Debounce: TUTOR should execute once per lesson, but guard against a
+// script re-running the opcode while the same tutorial is still up.
+static DWORD s_last_tutor_tick = 0;
+
 // v2.30.8: true once a LIVE STTIM opcode call has been observed THIS
 // PROCESS RUN. Plain volatile write/read is sufficient -- this is a
 // monotonic "once true, stays true for the rest of the session" latch, not
@@ -1609,6 +1627,115 @@ static int __cdecl hook_sttim()
 }
 
 // ---------------------------------------------------------------------------
+// Hook: TUTOR opcode (0x21) — "play menu tutorial" (v2.30.27)
+//
+// Play report 2026-07-26 (the Materia tutorial): "Text boxes explaining
+// the process were probably firing but not spoken... the cursor was
+// jumping around." Tutorials never pass the MESSAGE/ASK hooks — they are
+// a separate byte-code script interpreted by the MENU module. But the
+// script itself lives in the FIELD FILE we already parse: the section-0
+// header's nAkaoOffsets table points at both AKAO music blocks (magic
+// "AKAO") and tutorial scripts; TUTOR's 1-byte arg indexes that table.
+//
+// Tutorial script format (offline-validated against mds7pb_2's Materia
+// lesson, investigate/ff7_tutorial_dump.py — every sentence decodes
+// cleanly):
+//   0x12 = window: u16 x, u16 y follow (4 arg bytes)
+//   0x10 = text: FF7-encoded bytes follow until an 0xFF terminator
+//   other bytes = timing/simulated key presses (the scripted cursor
+//   sweeps) — irrelevant to TTS, skipped one byte at a time
+//
+// SPEECH MODEL (v1, deliberately simple): decode every text window up
+// front and queue them as one narration (first utterance interrupts,
+// the rest queue). The tutorial waits for OK per step anyway, so the
+// player paces the VISUAL; the narration delivers the complete lesson
+// in order. Per-window pacing would need the menu module's live
+// tutorial-position state — an address we haven't hunted; revisit only
+// if play shows the v1 model confusing.
+// ---------------------------------------------------------------------------
+static int __cdecl hook_tutor()
+{
+    const DWORD now = GetTickCount();
+    const bool fresh = (now - s_last_tutor_tick) > 2000 || s_last_tutor_tick == 0;
+    s_last_tutor_tick = now;
+    s_tutorial_active = 1;
+    if (!fresh)
+        return s_old_tutor();
+
+    const uint8_t tut_idx = FF7Addr::get_opcode_param_byte(0);
+    char dbg[96];
+    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+        "[FF7Access] TUTOR opcode fired: tutorial index %u", tut_idx);
+    Log::Write(dbg);
+
+    // Locate the tutorial block inside the current field file.
+    const uint32_t buf = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_FILE_BUFFER);
+    if (buf < 0x401000 || !is_readable_ptr(reinterpret_cast<void*>(buf)))
+        return s_old_tutor();
+    const uint32_t sec0 = *reinterpret_cast<const uint32_t*>(buf + 6);
+    const uint32_t sec1 = *reinterpret_cast<const uint32_t*>(buf + 6 + 4);
+    if (sec0 != 0x2A || sec1 <= sec0)
+        return s_old_tutor();
+    const uint8_t* sc = reinterpret_cast<const uint8_t*>(buf + sec0 + 4);
+    const uint8_t* sc_end = reinterpret_cast<const uint8_t*>(buf + sec1);
+    if (!is_readable_ptr(sc) || !is_readable_ptr(sc_end - 1))
+        return s_old_tutor();
+    const uint8_t  n_ent  = sc[2];
+    const uint16_t n_akao = *reinterpret_cast<const uint16_t*>(sc + 6);
+    if (tut_idx >= n_akao || n_akao > 64)
+        return s_old_tutor();
+    const uint32_t* offs = reinterpret_cast<const uint32_t*>(
+        sc + 0x20 + n_ent * 8);
+    const uint32_t o = offs[tut_idx];
+    if (sc + o + 4 > sc_end)
+        return s_old_tutor();
+    // Block bound: the next-higher table offset, else the section end.
+    const uint8_t* p  = sc + o;
+    const uint8_t* hi = sc_end;
+    for (uint16_t a = 0; a < n_akao; ++a)
+        if (offs[a] > o && sc + offs[a] < hi)
+            hi = sc + offs[a];
+    if (memcmp(p, "AKAO", 4) == 0)
+        return s_old_tutor();   // music entry — not a tutorial after all
+
+    // Walk the byte-code; collect text windows.
+    int spoken = 0;
+    while (p < hi && spoken < 40) {
+        if (*p == 0x12 && p + 5 <= hi) {
+            p += 5;
+        } else if (*p == 0x10) {
+            ++p;
+            // Decode only when the 0xFF terminator provably exists
+            // inside the block (FF7Text::Decode reads to 0xFF).
+            const uint8_t* q = p;
+            while (q < hi && *q != 0xFF)
+                ++q;
+            if (q >= hi)
+                break;
+            const std::wstring text =
+                FF7Text::Decode(reinterpret_cast<const char*>(p));
+            if (!text.empty()) {
+                std::wstring msg = (spoken == 0) ? L"Tutorial. " : L"";
+                msg += text;
+                // First window interrupts (announce the lesson has
+                // started); the rest queue in order behind it.
+                TTS::Speak(msg, /*interrupt=*/(spoken == 0));
+                ++spoken;
+            }
+            p = q + 1;
+        } else {
+            ++p;   // timing / simulated keys — irrelevant to speech
+        }
+    }
+    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+        "[FF7Access] TUTOR: %d text window(s) queued for speech", spoken);
+    Log::Write(dbg);
+
+    return s_old_tutor();
+}
+
+// ---------------------------------------------------------------------------
 // Install / Uninstall
 // ---------------------------------------------------------------------------
 
@@ -1654,8 +1781,20 @@ bool Install()
         *reinterpret_cast<uint32_t*>(sttim_entry_addr));
     patch_dword(sttim_entry_addr, reinterpret_cast<uint32_t>(&hook_sttim));
 
+    // --- TUTOR hook (opcode 0x21, v2.30.27) ---
+    //
+    // Same pattern. Speaks menu-tutorial text (a script system the
+    // MESSAGE/ASK hooks never see) and flags tutorial-active so the menu
+    // announcement threads stand down — see hook_tutor.
+    const uint32_t tutor_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x21 * sizeof(uint32_t);
+
+    s_old_tutor = reinterpret_cast<int (__cdecl*)()>(
+        *reinterpret_cast<uint32_t*>(tutor_entry_addr));
+    patch_dword(tutor_entry_addr, reinterpret_cast<uint32_t>(&hook_tutor));
+
     s_installed = true;
-    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM opcode table).");
+    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM+TUTOR opcode table).");
     return true;
 }
 
@@ -1683,6 +1822,13 @@ void Uninstall()
         reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x38 * sizeof(uint32_t);
     if (s_old_sttim) {
         patch_dword(sttim_entry_addr, reinterpret_cast<uint32_t>(s_old_sttim));
+    }
+
+    // Restore TUTOR entry.
+    const uint32_t tutor_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x21 * sizeof(uint32_t);
+    if (s_old_tutor) {
+        patch_dword(tutor_entry_addr, reinterpret_cast<uint32_t>(s_old_tutor));
     }
 
     s_installed = false;
@@ -1714,6 +1860,18 @@ bool ConsumeDialogChoiceTone()
 bool SttimSeen()
 {
     return s_sttim_seen != 0;
+}
+
+// v2.30.27 — see s_tutorial_active's doc comment. Set by hook_tutor;
+// cleared by MenuCursorThread (proxy.cpp) when MENU_OPEN returns to 0.
+bool TutorialActive()
+{
+    return s_tutorial_active != 0;
+}
+
+void ClearTutorialActive()
+{
+    s_tutorial_active = 0;
 }
 
 } // namespace Hooks

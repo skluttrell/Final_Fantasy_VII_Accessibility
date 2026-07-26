@@ -146,4 +146,17 @@ bool ConsumeDialogChoiceTone();
  */
 bool SttimSeen();
 
+/*
+ * TutorialActive / ClearTutorialActive (v2.30.27): nonzero from the
+ * moment a TUTOR opcode (0x21, "play menu tutorial") fires until
+ * MenuCursorThread observes MENU_OPEN back at 0 and calls the clear.
+ * While active, hook_tutor has queued the tutorial's full text as a
+ * narration and the menu announcement threads (main-menu cursor, Order
+ * focus) must stand down: the tutorial script drives the cursor itself,
+ * and announcing each scripted move with interrupting speech clobbers
+ * the narration (the 2026-07-26 Materia-tutorial play report).
+ */
+bool TutorialActive();
+void ClearTutorialActive();
+
 } // namespace Hooks

@@ -541,6 +541,31 @@ choice page at +15, speaking lead-in" -> "choice page reached
 (rel=18)" -> options queued and cursor tracked both directions
 (09:49:17-25). Single-page ASKs (win=1 id=4, 09:47:36) also clean.
 
+[MENU] Materia tutorial: text unspoken, cursor chatter — FIXED v2.30.27 (2026-07-26), awaiting play-test
+------------------------------------------------------------------------
+Player report: "when Cloud started the Materia tutorial things got
+slow and choppy. Text boxes explaining the process were probably
+firing but not spoken... the cursor was jumping around." Menu
+tutorials are a SEPARATE script system (MENU module byte-code) —
+invisible to the MESSAGE/ASK hooks — and the tutorial script drives
+the menu cursor itself (the log's Item->Order sweeps at ~300ms/step,
+each spoken with interrupt=true: the chatter/choppiness).
+FIX v2.30.27: TUTOR opcode (0x21) hooked (same table pattern as
+MESSAGE); the tutorial script is parsed straight out of the field
+file's akao-offsets table (format offline-validated: 0x12 window,
+0x10 text until 0xFF; ff7_tutorial_dump.py — 8 fields, 40 tutorials
+game-wide) and the FULL LESSON is queued as one narration ("Tutorial.
+Sure, I'll explain how Materia works." ...). While a tutorial runs
+(TUTOR fired -> MENU_OPEN back to 0), the main-menu cursor, Order
+focus, Item and Status announcements stand down; narration is
+silenced if the menu closes early.
+VERIFY: (a) replay the Materia tutorial (Barret re-asks? if not, the
+next tutorial encountered) — the full lesson speaks, no cursor
+chatter over it; (b) normal menu use unaffected after the tutorial;
+(c) if "slow and choppy" PERSISTS even with speech quiet, report —
+that would be a frame-rate issue to investigate separately, not
+speech; (d) log shows "TUTOR opcode fired" + "N text window(s)".
+
 [NAV] No proximity chirp near large-bodied NPCs (Barret) — FIXED v2.30.26 (2026-07-25), awaiting play-test
 ------------------------------------------------------------------------
 Player report: "it doesn't always chime when a person I can talk to is

@@ -3404,6 +3404,52 @@ un-talkable distances, revisit with the reader hunt (the engine may add
 only the MODEL's radius, not the player's — one anchor cannot split
 118 vs 150 and both cover every observed case).
 
+### v2.30.27 (2026-07-26): menu tutorials — TUTOR hook + narration + chatter suppression
+
+Play report (the Materia tutorial): "Text boxes explaining the process
+were probably firing but not spoken... the cursor was jumping around."
+The log shows exactly that: at 00:02 the tutorial script swept the
+main-menu cursor Item→Order and back at ~300-470ms/step — every step
+announced with interrupting speech — while the tutorial's explanation
+windows never appeared in any hook. **Menu tutorials are a separate
+byte-code script system interpreted by the MENU module**, invisible to
+the MESSAGE/ASK hooks.
+
+But the scripts live in the field file we already parse: the section-0
+header's nAkaoOffsets table holds BOTH music blocks (magic "AKAO") and
+tutorial scripts; the TUTOR opcode's (0x21) 1-byte arg indexes that
+same table. Offline dump (`investigate/ff7_tutorial_dump.py`):
+game-wide, 8 fields carry 40 tutorial entries (mds7pb_2's entry 3 is
+the Materia lesson; mds7_w2/junpb_2 carry 9 each — the battle
+tutorials). Script format (validated against the Materia lesson, every
+sentence decodes cleanly with the standard field text table):
+**0x12 = window (u16 x, u16 y), 0x10 = FF7-encoded text until 0xFF**,
+other bytes = timing/simulated key presses (the scripted cursor sweeps
+— the log's Item→Order sweep is literally `03 03 03 03 03` in the
+data).
+
+**Mod changes**:
+1. **TUTOR hook** (opcode 0x21, the same execute_opcode_table pattern
+   as MESSAGE/ASK/STTIM): on first fire (2s debounce), locate the
+   indexed entry in the current field buffer (guards: readable, not
+   "AKAO", bounded by the next table offset / section end), walk the
+   byte-code, decode every 0x10 text run (only when its 0xFF terminator
+   provably lies inside the block), and queue the lesson as ONE
+   narration — "Tutorial. <first window>" interrupts, the rest queue in
+   order (cap 40 windows). v1 pacing model: the tutorial waits for OK
+   per step so the player paces the visual; per-window sync would need
+   the menu module's live tutorial-position state (unmapped).
+2. **Tutorial-active flag** (Hooks::TutorialActive, set by the hook,
+   cleared by MenuCursorThread when MENU_OPEN returns 0, which also
+   TTS-silences any unfinished narration): while set, the main-menu
+   cursor announce, Order-focus lectures, and the Item/Status menu
+   threads stand down — the scripted cursor sweeps are a demo, not
+   user navigation.
+
+The report's "slow and choppy" is expected to be the interrupt-storm
+(speech restarted every 300ms); if choppiness persists WITH the
+suppression in place, investigate separately (frame-rate, not speech).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
