@@ -3999,6 +3999,55 @@ Deployed both installs, hash-verified (770ED59415B1475D).
 
 ---
 
+### v2.30.40 (2026-07-27): quit-cursor stale "Yes" at menu open — seed-on-reset
+
+**v2.30.38 LAUNCH-LOG CONFIRMED first.** The 12:16 launch (first with
+the new build) is the verification the TITLE_STATE disasm was waiting
+for: `TITLE state=0` through the whole logo splash (silence — the old
+false "New Game" gone), `state=1` at 12:16:55.619 with the cursor
+announce ("Continue") at that exact poll, `state=2` on the fade-out
+into the loaded save. The Continue grid also spoke its slot correctly
+(SAVEMENU phase=1 line). One minor absence: no `state=-1` line after
+the handoff to the field — either the module writes it before the
+150ms poll saw 2→-1 in sequence or logging stopped mattering once out
+of title context; the announce gate (==1) is unaffected. [TITLE]
+closed.
+
+**The same log caught a new bug**: at the first main-menu open after
+loading the save (12:17:02), `QUIT cursor=0 (Yes)` fired at the same
+instant as `MENU cursor=0 (Item)` — the quit thread spoke a stale
+"Yes" (immediately cut by "Item", both interrupt=true, so audibly a
+blip — but the same class as the pre-v2.30.37 game-over-prompt stale
+"Yes", now proven to fire on ORDINARY menu opens too).
+
+**Root cause**: QUIT_CURSOR is stale between quit dialogs, and every
+stand-down/close path re-arms `last_quit_cursor = 0xFF` ("nothing
+announced"). The first poll of a fresh menu open then sees stale-byte
+!= 0xFF, and if the stale value is <= 1 it speaks it as if the player
+had moved the quit cursor. Any menu open following a session where the
+byte settled on 0 or 1 reproduces it.
+
+**Fix (the v2.30.13 baseline-suppression pattern)**: first valid read
+after a reset seeds silently (logged with a `seeded` suffix); the two
+sentinel states keep the REAL dialog-open announce alive — 0xFF =
+"just reset, seed next valid read", 0xFE = "byte was out-of-range
+while watched; a garbage→valid transition is the quit dialog writing
+its initial cursor and speaks" (that transition was the old
+else-branch's announce path, preserved by construction). Yes↔No moves
+inside a live dialog are valid→valid changes and speak exactly as
+before. The `ORDER focus=0 (was 255)` line in the same log was
+checked and is log-only (speaks only on focus 1/2 with a non-0xFF
+baseline) — benign.
+
+No addresses involved — no §4/§14 changes. VERIFY (passive): menu
+opens speak only the row; log shows `QUIT cursor=N (...) seeded`
+instead of a bare announce at open; a real Quit dialog still speaks
+Yes/No on navigation.
+
+Deployed both installs, hash-verified (64BF90FD00FDFF17).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

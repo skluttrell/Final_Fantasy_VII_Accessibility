@@ -20,24 +20,20 @@ ONLY — an uncommented key=value example in the glossary would override
 the top list, parser is last-one-wins). VERIFY (quick): rename the cfg
 away, launch, confirm a new-format default file appears.
 
-[TITLE] Launch-splash false "New Game" — FIXED v2.30.38 (2026-07-27), awaiting launch log
+[TITLE] Launch-splash false "New Game" — CONFIRMED 2026-07-27 12:16 launch log
 ------------------------------------------------------------------------
-User request: stop announcing "New Game" during the company-logo splash
-(then silence when the real menu appeared). Root cause: TITLE_CURSOR is
-BSS-zero pre-title and the old gate was FIELD_ID==0 only. Static disasm
-(research §8 v2.30.38) found the title module's own lifecycle dword
-TITLE_STATE 0xDD74E0: 1 = menu on screen and interactive, everything
-else = splash/fades/exited. Announces now gate on ==1, and the first
-announce each title session says "Title screen. New Game/Continue"
-exactly as the menu fades in. Also upgraded the v2.30.37 game-over
-prompt detection to this signal.
-VERIFY on the next launch (debug log): (1) silence through the logos;
-(2) "Title screen. New Game" right as the buster-sword menu appears;
-(3) log "TITLE state=" lines go 0 -> 1 at that moment (this line IS
-the live verification of the disasm — if state=1 shows during the
-logos, report the log); (4) Up/Down still announce; (5) after a game
-over the prompt announces as before. Note: this feature is disasm-
-derived with zero live samples yet — the transition log is deliberate.
+✓ CLOSED: the 12:16 launch log verified the disasm end-to-end —
+state=0 through the logos (silence), state=1 exactly at the menu with
+the cursor announce, state=2 on fade-out, Continue grid spoke.
+Residual observation only: no state=-1 line logged after handoff to
+the field (gate is ==1, unaffected). Same log caught the quit-cursor
+stale "Yes" at menu open — fixed v2.30.40 (research §8), verify
+passively: menu opens speak only the row, log line says "seeded".
+
+Original issue (fixed v2.30.38): TITLE_CURSOR is BSS-zero pre-title
+and the old gate was FIELD_ID==0 only, so "New Game" spoke during the
+company-logo splash. TITLE_STATE 0xDD74E0 ==1 is the gate (research
+§8 v2.30.38); the v2.30.37 game-over prompt detection rides it too.
 
 [GAMEOVER] Game-over sequence accessibility — SHIPPED v2.30.37 (2026-07-27), awaiting play-test
 ------------------------------------------------------------------------

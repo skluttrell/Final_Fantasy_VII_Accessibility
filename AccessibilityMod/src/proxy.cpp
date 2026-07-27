@@ -738,7 +738,10 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 
     uint8_t last_cursor      = 0xFF;  // main-menu cursor; 0xFF = none announced
     uint8_t last_menu_open   = 0;
-    uint8_t last_quit_cursor = 0xFF;  // quit-dialog cursor; 0xFF = none announced
+    uint8_t last_quit_cursor = 0xFF;  // quit-dialog cursor; 0xFF = reset, seed
+                                      // next valid read silently; 0xFE = saw
+                                      // garbage, next valid read speaks
+                                      // (dialog init) — see v2.30.40 note
     // Counts consecutive polls where MENU_OPEN=1. We require at least 2 before
     // treating MENU_OPEN as a real menu open. This prevents a single stale
     // MENU_OPEN=1 poll (the title-screen overlay briefly persisting into the
@@ -883,18 +886,40 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         // was dismissed with No, which caused the main menu to stop announcing.
         // Tracking QUIT_CURSOR in parallel here — without any continue — keeps
         // the main menu cursor logic running at all times.
+        //
+        // v2.30.40: the byte is STALE between quit dialogs, and every reset
+        // above re-arms last_quit_cursor to 0xFF — so the first poll of a
+        // fresh menu open treated the leftover value as a player move and
+        // spoke "Yes" over the menu-open announce whenever the stale byte
+        // happened to be <= kQuitMax (2026-07-27 12:17 launch log: "QUIT
+        // cursor=0 (Yes)" at the same instant as "MENU cursor=0 (Item)";
+        // the same stale speak the game-over prompt heard pre-v2.30.37).
+        // Fix = the v2.30.13 baseline-suppression pattern, with two sentinel
+        // states so the REAL dialog-open announce survives:
+        //   0xFF  "just reset"      -> first valid read is the pre-open
+        //                             stale byte: seed silently.
+        //   0xFE  "saw out-of-range" -> the byte was garbage while we
+        //                             watched; a garbage->valid transition
+        //                             is the quit dialog WRITING its initial
+        //                             cursor — that one must speak (it was
+        //                             the old else-branch's behavior too).
+        // Yes<->No moves inside a live dialog are plain valid->valid
+        // changes and speak exactly as before.
         const uint8_t qcurr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::QUIT_CURSOR);
         if (qcurr != last_quit_cursor) {
             if (qcurr <= kQuitMax) {
+                const bool seed = (last_quit_cursor == 0xFF);
                 last_quit_cursor = qcurr;
                 char qdbg[80];
                 _snprintf_s(qdbg, sizeof(qdbg), _TRUNCATE,
-                    "[FF7Access] QUIT cursor=%u (%ls)", qcurr, kQuitLabels[qcurr]);
+                    "[FF7Access] QUIT cursor=%u (%ls)%s", qcurr,
+                    kQuitLabels[qcurr], seed ? " seeded" : "");
                 Log::Write(qdbg);
-                TTS::Speak(kQuitLabels[qcurr], /*interrupt=*/true);
+                if (!seed)
+                    TTS::Speak(kQuitLabels[qcurr], /*interrupt=*/true);
             } else {
-                last_quit_cursor = 0xFF;
+                last_quit_cursor = 0xFE;
             }
         }
 
