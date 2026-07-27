@@ -131,7 +131,8 @@ every confirmed address — the clustering itself is a discovery tool.
 | `world_opcode_message_sub_75EE86` | `0x75EE86` | FFNx naming convention (v2) |
 | `world_opcode_ask_sub_75EEBB` | `0x75EEBB` | FFNx naming convention (v2) |
 | `display_battle_action_text_42782A` | `0x42782A` | FFNx naming convention (v2) |
-| `TITLE_CURSOR` | `0x00DD6F24` | 0=New Game, 1=Continue — only valid on title screen; guard with FIELD_ID==0 |
+| `TITLE_CURSOR` | `0x00DD6F24` | 0=New Game, 1=Continue. PROVENANCE UPGRADE v2.30.38 (static disasm): = ROW (+4) of a cursor WIDGET at 0xDD6F20 (the shop-mapped ctor 0x6F4D30, 2 rows × 1 col, built in title init 0x720E64) — why no direct writer exists. Gate announces on TITLE_STATE==1, not FIELD_ID alone |
+| `TITLE_STATE` | `0x00DD74E0` | dword, the title module's lifecycle (v2.30.38 static disasm; per-frame main 0x722393, draw 0x7212FB): **0**=fading in / module not yet run (BSS boot value through the logo movies — the splash-announce window), **1**=title menu INTERACTIVE (holds through the NEW GAME/Continue prompt AND the Continue save-grid; subscreen switch = 0xDD7704 0..7), **2**=choice accepted/fading out, **-1**=module exited (stale through gameplay — ==1 can't false-fire). Init guard 0xDD76F8 cleared at teardown (0x722441) ⇒ every title re-entry (boot/post-game-over/quit) re-cycles 0→1. ⚠ disasm-derived — first launch logs ("TITLE state=") are the live verification |
 | `NAME_ENTRY_COL` | `0x00DD4538` | u8 (LOW byte of a 4-byte-spaced slot — read as u8, NOT u32: the three high bytes are unverified and a u32 read would fail the bounds check silently), grid column 0–9 on the naming screen. Adjacent X/Y pair with ROW below (v2.8, live-confirmed 2026-07-12) |
 | `NAME_ENTRY_ROW` | `0x00DD453C` | u8 (same low-byte-only caveat as COL above), grid row 0–6 (A–J / K–T / U–Z,.+- / a–j / k–t / u–z:;'" / 0–9) |
 | `NAME_ENTRY_BUFFER` | `0x00DD45F0` | Name-in-progress, FF7-encoded, 0xFF-terminated, ≥9 chars capacity. ⚠ the first scan found 0xDD45F5 — that was just the first byte that CHANGED; the "Cloud" prefix masked F0–F4 until the Barret-screen handoff rewrote them |
@@ -3898,6 +3899,62 @@ reported.
 
 Deployed both installs, hash-verified (3619DBD91C8B9989).
 
+### v2.30.38 (2026-07-27): TITLE_STATE — the launch-splash false "New Game" closed statically
+
+**User request** (same morning as v2.30.37): fix the boot-time bug where
+"New Game" is announced during the company-logo splash, before the title
+menu exists — and then the real menu appears silently (same cursor
+value, change-check). Documented since v2.0 as a KNOWN LIMITATION with
+the claim "there is no in-process signal that distinguishes splash from
+title screen." That claim is now DISPROVED — one static session, no
+live scans, no play-test rounds spent.
+
+**Hunt** (3 scripts, ~20 min): ff7_title_phase_static.py swept every
+executable byte for references to TITLE_CURSOR 0xDD6F24 — only THREE,
+all reads, all in 0x721xxx-0x722xxx (title module): two draw sites
+(cursor Y = base + cursor×stride, hi/lo-res) and the OK-confirm switch
+(case 0 = New Game, case 1 = Continue → builds the Continue grid widget
+0xDD6D98 with the shop-mapped ctor 0x6F4D30). The reveal:
+`push 0xDD6F20; call 0x6F4DB2` — **TITLE_CURSOR is the +4 ROW field of
+a cursor widget at 0xDD6F20** (why no writer instruction exists).
+⚠ trap logged for posterity: a raw-byte E8 caller scan "found" call
+sites at 0x713703/0x71375D that were actually E8 bytes INSIDE
+`cmp [0xDD17E8],…` operands — raw E8 scans need disasm confirmation
+(ff7_title_callers_disasm.py replaced it with a proper sweep).
+
+**The state machine** (title_callers_disasm + title_state_writers logs):
+per-frame main 0x722393 — first tick per session (guard [0xDD76F8]==0)
+resets **[0xDD74E0]=0** and runs init 0x720E64 (widget ctor, music,
+saves-exist probe → 0xDD76FC); draw 0x7212FB then fades in
+(0x722BB0(-0xF) per frame) until **[0xDD74E0]=1 = menu interactive**;
+a confirmed choice writes 2 (fade out), then -1 (exit) — and teardown
+clears the 0xDD76F8 guard, so EVERY entry (boot, post-game-over,
+quit-to-title) re-cycles 0→1. -1 stays stale through gameplay, so a
+==1 gate cannot false-fire outside the title. Subscreens (menu vs
+Continue grid) switch on [0xDD7704] 0..7 under a constant ==1.
+
+**Shipped**: TITLE_STATE/TITLE_STATE_INTERACTIVE in ff7_addresses.h
+(full state machine documented); TitleCursorThread announces only at
+TITLE_STATE==1 — kills the splash announce AND lands the first
+announce exactly when the menu fades in, now prefixed "Title screen."
+on every fresh session (generalizing v2.30.37's game-over-only
+prefix); "TITLE state=%d" transition logging (the disasm semantics'
+live verification rides the next launch's log for free);
+GameOverWatchThread's prompt detection upgraded from the once-observed
+MENU_OPEN==1 proxy to (MENU_OPEN==1 || TITLE_STATE==1), with the latch
+clear requiring the title to have LEFT state 1 — closes v2.30.37's
+open questions (2) and (3) statically (same byte at the post-game-over
+prompt: proven, same module; MENU_OPEN-vs-input ambiguity: moot).
+
+**VERIFY next launch** (log): "TITLE state=" shows 0→1 at menu-appear
+(no announce before 1); "Title screen. New Game" spoken AT the menu,
+nothing during logos; Up/Down announces unchanged; after game over the
+prompt still announces (now via TITLE_STATE). If state=1 appears
+during the logos, the disasm read of the fade path is wrong — capture
+the log and re-derive.
+
+Deployed both installs, hash-verified (A6E96D2C7033B770).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -4545,8 +4602,13 @@ any of these bytes.
 | `0xDD6D9C` | LOADMENU_GRID_ROW | grid row at +4 (0=top/1=bottom, v2.29.4 play-corrected polarity); LIVE-CONFIRMED by the grid probe (v2.29.3) |
 | `0xDD6DD4` | LOADMENU_SLOT_CURSOR | Continue menu slot-list visible ROW 0..2 (3-row window, not absolute); grid+0x3C — same struct spacing as the save-menu instance (v2.29.1/2) |
 | `0xDD6DE4` | LOADMENU_SLOT_SCROLL | u8 0..12 scroll offset, LIVE-CONFIRMED by the scroll probe; absolute slot = row + scroll. +0x74 = scroll-anim tween (0xFFFFFFxx transients), +0x80 = direction flag — noise, never read (v2.29.2) |
-| `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; unrelated BSS data outside title screen |
-| `0xDD7700` | LOADMENU_LIST_PTR | u32, 0 in file grid / heap ptr to the selected file's loaded data in slot list — both menus' phase passes agree; nonzero-check only, never dereference. +0x04 byte flips 0→1 with it (runner-up flag) (v2.29.1) |
+| `0xDD6F20` | TITLE_WIDGET | cursor widget (ctor 0x6F4D30, 2 rows × 1 col) built by title init 0x720E64; +0 col / **+4 row = TITLE_CURSOR** / +0x14 scroll (v2.30.38 static disasm — settles why TITLE_CURSOR has no direct writer) |
+| `0xDD6F24` | TITLE_CURSOR | 0=New Game, 1=Continue; = TITLE_WIDGET+4 (see above); unrelated BSS data outside title screen |
+| `0xDD74E0` | TITLE_STATE | dword title lifecycle: 0=fading in/module not run (BSS boot value through logos), **1=menu interactive** (the announce gate, v2.30.38), 2=fading out after choice, -1=exited (stale through gameplay). Reset to 0 by every title entry (init guard 0xDD76F8 cleared at teardown 0x722441) |
+| `0xDD76F8` | title init-once guard | 0 = title main 0x722393 runs init on next tick; set 1 after init, cleared at module exit — the mechanism that guarantees TITLE_STATE re-cycles 0→1 per entry (v2.30.38 disasm) |
+| `0xDD76FC` | title saves-exist flag | set at init from file probe 0x720F6E; Continue confirm buzzes (sound 3) when 0, opens the grid when nonzero (v2.30.38 disasm; context only, not consumed by the mod) |
+| `0xDD7700` | LOADMENU_LIST_PTR | u32, 0 in file grid / heap ptr to the selected file's loaded data in slot list — both menus' phase passes agree; nonzero-check only, never dereference. +0x04 byte flips 0→1 with it (runner-up flag) (v2.29.1). v2.30.38 disasm corroborates: written by loader sub 0x720EF0, freed+zeroed by 0x720F2F |
+| `0xDD7704` | title subscreen switch | dword 0..7, jump table 0x72231A in draw 0x7212FB; init writes 7; 0 = Continue save-grid subscreen; other values = menu/preview phases (per-value map unharvested — context only, v2.30.38 disasm) |
 
 ### Discovery techniques ranked by success rate (as of 2026-07-16)
 

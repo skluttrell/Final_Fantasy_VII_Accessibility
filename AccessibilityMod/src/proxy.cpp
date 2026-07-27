@@ -448,23 +448,30 @@ static void SetupSoundIATHook()
 //   could pin last_cursor, silencing the announcement when the title screen
 //   later shows the same cursor position.
 //
-// KNOWN LIMITATION — initial splash announce:
-//   Windows zero-initializes the 0xDD BSS segment before process start, so
-//   TITLE_CURSOR == 0x00 (= New Game) during the company logo splash (~350ms).
-//   With FIELD_ID also zero at that point, the first poll fires a "New Game"
-//   announcement during the splash. last_cursor then equals 0, so when the
-//   actual title screen appears with cursor=0, the change-check suppresses a
-//   second announce. The user hears one premature cue and then must navigate
-//   (Up/Down) to hear the position on the real title screen. This is an
-//   inherent limitation of reading a BSS byte before the title module
-//   initializes it; there is no in-process signal that distinguishes "splash"
-//   from "title screen" at the byte level.
+// SPLASH FALSE-ANNOUNCE — FIXED v2.30.38 (was "KNOWN LIMITATION"):
+//   Windows zero-initializes the 0xDD BSS segment, so TITLE_CURSOR reads 0
+//   (= New Game) during the company logo splash with FIELD_ID also 0 — the
+//   thread used to announce "New Game" ~350ms into the splash and then stay
+//   silent when the real title menu appeared (same value, change-check).
+//   The old comment claimed "there is no in-process signal that
+//   distinguishes splash from title screen" — static disasm (2026-07-27)
+//   found it: TITLE_STATE (0xDD74E0), the title module's own lifecycle
+//   dword, is 1 exactly while the menu is on screen and interactive (full
+//   state machine at its declaration in ff7_addresses.h). The thread now
+//   announces only at TITLE_STATE==1, which both kills the splash announce
+//   AND lands the first announce at the moment the menu fades in — with a
+//   "Title screen." orientation prefix on every fresh title entry (boot,
+//   post-game-over, quit-to-title all re-cycle the state through 0 -> 1).
 //
 // Gated by Config::Get().speak_menus.
 // ---------------------------------------------------------------------------
 static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 {
     uint8_t last_cursor = 0xFF;  // 0xFF = sentinel; triggers announce on first valid read
+    // v2.30.38: last observed TITLE_STATE, logged on change while in title
+    // context (debug builds) — the state machine is disasm-derived, so its
+    // first few launch logs double as the live verification pass.
+    int32_t last_tstate = INT32_MIN;
 
     for (;;) {
         // Sleep 150ms, or wake immediately if Proxy::Shutdown() signals us.
@@ -491,20 +498,29 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
             continue;
         }
 
-        // v2.30.37: while latched, announce only once the title prompt is
-        // actually up (MENU_OPEN==1, raised at the reel→prompt transition in
-        // the observed log). During the ~40s GAME OVER film reel the cursor
-        // byte still holds boot-title residue — announcing it there would
-        // narrate a cursor that is not on screen. Boot path (field_id==0)
-        // is untouched: MENU_OPEN reads 0 on the cold-boot title until first
-        // input (09:57:06 log), and that path has worked since v2.0.
-        if (GameOverTitleContext()) {
-            const uint8_t menu_open =
-                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
-            if (menu_open != 1) {
-                last_cursor = 0xFF;
-                continue;
-            }
+        // v2.30.38: the title module's own lifecycle state (0xDD74E0) is the
+        // authoritative "menu on screen" test — 1 only while the NEW GAME/
+        // Continue prompt (or its Continue save-grid subscreen) is displayed
+        // and interactive. Anything else means splash/logo movies (0, the
+        // BSS boot value — the module hasn't run), the backdrop still fading
+        // in (0), a choice fading out (2), or the module exited (-1, stale
+        // through gameplay). This replaces v2.30.37's MENU_OPEN==1 check in
+        // the game-over path (MENU_OPEN was a proxy observed once; this is
+        // the disasm-proven source) and finally closes the launch-splash
+        // false "New Game" (the old FIELD_ID==0-only gate). Transition log
+        // doubles as the live verification of the disasm-derived semantics.
+        const int32_t tstate =
+            *reinterpret_cast<const volatile int32_t*>(FF7Addr::TITLE_STATE);
+        if (tstate != last_tstate) {
+            last_tstate = tstate;
+            char dbg[64];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] TITLE state=%ld", static_cast<long>(tstate));
+            Log::Write(dbg);
+        }
+        if (tstate != FF7Addr::TITLE_STATE_INTERACTIVE) {
+            last_cursor = 0xFF;
+            continue;
         }
 
         // Safe dereference: 0x00DD6F24 is in the statically-allocated game BSS.
@@ -513,12 +529,14 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 
         if (curr == last_cursor) continue;
 
-        // v2.30.37: first announce after a game over gets a "Title screen."
-        // prefix — the player last heard "Game over." 40s of film reel ago;
-        // a bare "New Game" gives no clue the SCREEN changed. last_cursor is
-        // still the 0xFF sentinel exactly at that first valid read, so later
-        // cursor moves on the same prompt stay terse.
-        const bool orient = GameOverTitleContext() && last_cursor == 0xFF;
+        // v2.30.38 (generalizing v2.30.37's game-over prefix): the FIRST
+        // announce of every title session says "Title screen." — at boot the
+        // menu has just faded in after silent logo movies, after a game over
+        // the player last heard "Game over." 40s of film reel ago, and after
+        // a quit the context also changed screens. last_cursor is still the
+        // 0xFF sentinel exactly at that first valid read, so later cursor
+        // moves in the same session stay terse.
+        const bool orient = last_cursor == 0xFF;
 
         // Update last_cursor only for values we announce, so non-0/1 BSS values
         // cannot pin the sentinel and cause a false negative on title re-entry.
@@ -600,20 +618,27 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+        // v2.30.38: TITLE_STATE==1 (the title module's own "menu is up"
+        // dword, disasm-proven — see ff7_addresses.h) joins MENU_OPEN as a
+        // prompt-up signal. MENU_OPEN=1 was observed at the prompt exactly
+        // once (10:03:03 log); if some path never raises it, the latch
+        // would have deadlocked open. TITLE_STATE is authoritative, and the
+        // clear now also requires it to have LEFT 1 (title fading out or
+        // exited), so a menu-byte flicker while the prompt is still up
+        // cannot clear the latch early.
+        const int32_t tstate =
+            *reinterpret_cast<const volatile int32_t*>(FF7Addr::TITLE_STATE);
 
-        if (menu_open == 1) {
+        if (menu_open == 1 || tstate == FF7Addr::TITLE_STATE_INTERACTIVE) {
             if (!prompt_seen) {
                 prompt_seen = true;
-                // The prompt raised MENU_OPEN 42s after the blip in the
-                // observed log (the reel runs in between, menu=0). Logged so
-                // a play-test can confirm the title prompt is what raises it.
-                Log::Write("[FF7Access] GAMEOVER: MENU_OPEN=1 (title prompt "
-                           "up) — latch clears when it drops");
+                Log::Write("[FF7Access] GAMEOVER: title prompt up "
+                           "(menu/title-state) — latch clears when it ends");
             }
             continue;
         }
 
-        const bool prompt_closed = prompt_seen;            // menu_open == 0 here
+        const bool prompt_closed = prompt_seen;  // menu==0 AND tstate!=1 here
         const bool new_field     = field_id != 0 && field_id != dead_field_id;
         if (prompt_closed || new_field) {
             g_game_over_latch = 0;

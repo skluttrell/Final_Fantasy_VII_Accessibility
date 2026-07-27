@@ -5,6 +5,25 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TITLE] Launch-splash false "New Game" — FIXED v2.30.38 (2026-07-27), awaiting launch log
+------------------------------------------------------------------------
+User request: stop announcing "New Game" during the company-logo splash
+(then silence when the real menu appeared). Root cause: TITLE_CURSOR is
+BSS-zero pre-title and the old gate was FIELD_ID==0 only. Static disasm
+(research §8 v2.30.38) found the title module's own lifecycle dword
+TITLE_STATE 0xDD74E0: 1 = menu on screen and interactive, everything
+else = splash/fades/exited. Announces now gate on ==1, and the first
+announce each title session says "Title screen. New Game/Continue"
+exactly as the menu fades in. Also upgraded the v2.30.37 game-over
+prompt detection to this signal.
+VERIFY on the next launch (debug log): (1) silence through the logos;
+(2) "Title screen. New Game" right as the buster-sword menu appears;
+(3) log "TITLE state=" lines go 0 -> 1 at that moment (this line IS
+the live verification of the disasm — if state=1 shows during the
+logos, report the log); (4) Up/Down still announce; (5) after a game
+over the prompt announces as before. Note: this feature is disasm-
+derived with zero live samples yet — the transition log is deliberate.
+
 [GAMEOVER] Game-over sequence accessibility — SHIPPED v2.30.37 (2026-07-27), awaiting play-test
 ------------------------------------------------------------------------
 Play report (Screenshots/game_over/ + 10:02-10:03 log): party wipe →
@@ -20,8 +39,9 @@ reel starts (log "GAMEOVER: mode=26 observed" — if a wipe shows NO
 such line, the 30ms poll missed the blip: report, the battle-side
 fallback is the planned fix); (2) NO "Yes"/"Item"/stale-menu speech
 at the prompt; (3) the prompt speaks "Title screen. New Game" (or
-Continue) once it's up, cursor tracks Up/Down — if this NEVER fires,
-the post-game-over prompt has its own cursor byte (report + log);
+Continue) once it's up, cursor tracks Up/Down — the separate-cursor
+worry is SETTLED statically by v2.30.38 (same title module, same
+widget, prompt detection now rides TITLE_STATE);
 (4) Continue → save grid speaks slots like a cold boot; (5) loading
 a save returns everything to normal (menus/nav/dialog all speak —
 log "latch cleared"); (6) G on the reel/prompt is silent; (7) J/L/K

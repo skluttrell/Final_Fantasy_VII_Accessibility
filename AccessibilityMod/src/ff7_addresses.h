@@ -205,7 +205,43 @@ constexpr uint32_t FIELD_ID = 0xCC15D0;
 // name-entry section below.)
 // During field/menu/battle modes this address holds unrelated BSS data —
 // the polling thread guards against this by only speaking for values 0 or 1.
+// PROVENANCE UPGRADE (v2.30.38, static disasm 2026-07-27, ff7_title_phase_
+// static.py + ff7_title_callers_disasm.py): 0xDD6F24 is the ROW field (+4)
+// of a cursor WIDGET at 0xDD6F20, constructed by the same widget ctor
+// 0x6F4D30 the shop work mapped (+0 col / +4 row / +0x14 scroll) — built
+// with 2 rows x 1 column in the title module's init 0x720E64, updated by
+// widget-nav 0x6F4DB2, read by the title draw (cursor Y = base + row*
+// stride) and the OK handler (switch: 0=New Game, 1=Continue). This is
+// why no direct writer instruction exists for the byte.
 constexpr uint32_t TITLE_CURSOR = 0x00DD6F24;
+
+// Title module lifecycle state (dword) — the "is the title menu actually
+// on screen" signal the launch-splash bug needed (v2.30.38, 2026-07-27).
+// STATIC provenance (disasm windows in title_callers_disasm_20260727 +
+// title_state_writers_20260727 logs):
+//   The title module's per-frame main is 0x722393. First tick of every
+//   title session (guard [0xDD76F8]==0) it resets THIS dword to 0 and
+//   runs init 0x720E64 (builds the title cursor widget above); the
+//   per-frame draw 0x7212FB then advances it:
+//     0  = fading in — logo/splash/pre-title (BSS boot value) or the
+//          title backdrop still brightening (fade helper 0x722BB0(-0xF)
+//          stepped each frame until done);
+//     1  = TITLE MENU INTERACTIVE — fade-in complete (write 0x721325).
+//          Holds 1 through the NEW GAME/Continue prompt AND the Continue
+//          save-grid (the grid is a title-module subscreen, [0xDD7704]
+//          switches); this is the announce-gate value.
+//     2  = choice accepted, fading out (writes 0x7221FF/0x72229A);
+//     -1 = fade-out done, module exiting (0x72134B) — teardown clears
+//          the [0xDD76F8] init guard (0x722441), so EVERY re-entry
+//          (cold boot, post-game-over, quit-to-title) re-runs init and
+//          re-cycles 0 -> 1. Stays -1 (stale) during gameplay: a ==1
+//          gate cannot false-fire outside the title.
+//   Values are only ever written by the title module; the boot logo
+//   movies play BEFORE the module starts, so the dword is still 0 there
+//   — exactly the window where the old FIELD_ID==0-only gate spoke a
+//   premature "New Game" over the splash.
+constexpr uint32_t TITLE_STATE             = 0x00DD74E0;
+constexpr int32_t  TITLE_STATE_INTERACTIVE = 1;
 
 // ---------------------------------------------------------------------------
 // Name-entry screen ("Please enter a name") addresses.
