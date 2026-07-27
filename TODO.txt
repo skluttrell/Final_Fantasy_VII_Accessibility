@@ -5,6 +5,21 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[CFG] Config restructure + DLL-created default — SHIPPED v2.30.39 (2026-07-27)
+------------------------------------------------------------------------
+User request: all settings at the top of ffvii_accessibility.cfg one
+per line, descriptions/examples in a glossary below; the DLL now
+CREATES that canonical file when the cfg is missing (it never wrote
+one before). Single source of truth: CMake embeds the repo cfg into
+the DLL at build time (default_config.h byte array — the cfg is 16.5KB,
+over MSVC's ~16K string-literal cap). Both installs redeployed in the
+new format with live values kept (debug_log=true,
+speak_enemy_hp_always=true). RULE for future settings: add the key to
+the TOP list and its description to the GLOSSARY (commented # lines
+ONLY — an uncommented key=value example in the glossary would override
+the top list, parser is last-one-wins). VERIFY (quick): rename the cfg
+away, launch, confirm a new-format default file appears.
+
 [TITLE] Launch-splash false "New Game" — FIXED v2.30.38 (2026-07-27), awaiting launch log
 ------------------------------------------------------------------------
 User request: stop announcing "New Game" during the company-logo splash

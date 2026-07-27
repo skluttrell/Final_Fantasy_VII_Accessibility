@@ -3955,6 +3955,48 @@ the log and re-derive.
 
 Deployed both installs, hash-verified (A6E96D2C7033B770).
 
+### v2.30.39 (2026-07-27): config file restructured — settings list + glossary, DLL creates the default
+
+**User request**: rearrange ffvii_accessibility.cfg so all configurable
+items sit at the top one after another, with descriptions and examples
+in a glossary below — easier for users to find the knobs — and make
+this the default the mod produces going forward.
+
+**Restructure**: the canonical AccessibilityMod/ffvii_accessibility.cfg
+now opens with the 17 bare `key = value` lines (header comment points
+to the glossary), followed by a per-setting glossary preserving all the
+existing documentation. Every glossary line is `#`-commented — load-
+bearing, not cosmetic: the parser is last-one-wins, so an uncommented
+`key = value` example in the glossary would silently override the
+user's setting at the top. Wall-bump glossary gained the v2.30.22
+"<Name> is in the way" behavior; speak_menus's coverage list updated
+to the 2026 menu family (Item/Materia/Equip/Status/Order/Limit/Save/
+shops).
+
+**DLL now creates the default** (it previously never wrote a config —
+missing file just meant silent compiled defaults): Config::Load() on a
+missing cfg writes the canonical file next to the DLL, then runs on
+the compiled defaults (identical by construction). Single source of
+truth enforced at BUILD time: CMake embeds the repo cfg into
+default_config.h as a byte array (file(READ HEX) + configure_file;
+CMAKE_CONFIGURE_DEPENDS re-generates on cfg edits) — no second copy of
+the text to drift (the stale-comment lesson applied to config). Byte
+array, not a string literal, because the cfg is 16,514 bytes and MSVC
+caps a single string literal at ~16K (C2026) — the file is ALREADY
+over that line. Write is best-effort (unwritable folder → silent
+defaults, the old behavior) and CRLF-normalized regardless of git's
+checkout line endings ('\r' stripped, text-mode write). Embed verified
+byte-identical to the canonical file post-build.
+
+**Deploys**: both installs got the new-format cfg with their live
+overrides preserved (debug_log=true, speak_enemy_hp_always=true — the
+two places they differ from defaults; the 2013 install's previously
+missing keys now explicit). No addresses involved — no §4/§14 changes.
+VERIFY (trivial): rename the cfg away, launch, confirm the mod
+recreates it in the new format with default values.
+
+Deployed both installs, hash-verified (770ED59415B1475D).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

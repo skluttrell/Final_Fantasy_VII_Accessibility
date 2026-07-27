@@ -53,6 +53,29 @@ set(MOD_SOURCES
 )
 
 # ---------------------------------------------------------------------------
+# Embed the canonical config file (v2.30.39).
+#
+# Config::Load() creates ffvii_accessibility.cfg next to the DLL when the
+# file is missing. The content it writes is THIS repo's canonical cfg,
+# embedded at configure time as a byte array — one source of truth, so the
+# generated default can never drift from the committed file. A byte array
+# (not a string literal) because MSVC caps a single string literal at ~16K
+# (C2026) and the cfg sits near that size.
+#
+# CMAKE_CONFIGURE_DEPENDS makes an edit to the cfg re-run CMake (and thus
+# regenerate the header) on the next build automatically.
+# ---------------------------------------------------------------------------
+
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/ffvii_accessibility.cfg" DEFAULT_CFG_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," DEFAULT_CFG_BYTES "${DEFAULT_CFG_HEX}")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/default_config.h.in"
+    "${CMAKE_BINARY_DIR}/generated/default_config.h"
+    @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffvii_accessibility.cfg")
+
+# ---------------------------------------------------------------------------
 # DLL target
 # ---------------------------------------------------------------------------
 
@@ -71,6 +94,7 @@ set_target_properties(ff7access PROPERTIES
 target_include_directories(ff7access PRIVATE
     src                   # for cross-module includes within our own source
     deps/tolk             # for Tolk.h (the Tolk screen reader library C API)
+    "${CMAKE_BINARY_DIR}/generated"   # default_config.h (embedded cfg, see above)
 )
 
 # ---------------------------------------------------------------------------
