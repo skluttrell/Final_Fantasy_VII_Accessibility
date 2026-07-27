@@ -213,7 +213,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). ⚠ Useless in battle: reads menu-module scratch (0x9A13C8 via u16 table 0x9A7FC8) which is EMPTY during battle. v2.7 reads the heap text sections directly instead |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) — but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** — PSX comments identify unnamed PC fields |
-| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 6=name entry, 9=menu**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline — index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens** — the two live-confirmed values (6, 9) both match the decode, validating the table. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable) |
+| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 2=battle, 6=name entry, 9=menu, 26=game-over handoff (TRANSIENT ~60ms — v2.30.37, 2026-07-27 wipe log)**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline — index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens** — the two live-confirmed values (6, 9) both match the decode, validating the table. ⚠ FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable). ⚠ the GAME OVER film reel + post-game-over title prompt read as mode **0** with FIELD_ID **stale** at the dead field — the 26 blip is the only positive game-over signal (GameOverWatchThread polls it at 30ms) |
 | `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
 | `FIELD_BGMOVIE_FLAG` | `0x00CC0DC2` | +0x3A, u8. Movie is background-only (player walkable) |
 | `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
@@ -3823,6 +3823,81 @@ scripts and whitelist those — queued as a future investigation.
 (2 candidates refuted); fixes compiled clean and deployed to both
 installs hash-verified. No addresses touched, so no §4/§14 changes.
 
+### v2.30.37 (2026-07-27): game-over sequence accessibility — the silent death screen
+
+**Play evidence** (Screenshots/game_over/death_1–3.jpg + session log
+09:57–10:03): Cloud wiped in a train-graveyard battle (field 145).
+The mod spoke "Cloud is down" (10:02:14, the v2.30 defeat announce
+working), then NOTHING for the entire sequence that follows: the
+GAME OVER film-reel screen (~40s), then the title NEW GAME / Continue
+prompt — where, worse than silence, three stale menu threads woke up
+at 10:03:03 and spoke garbage over it: `QUIT cursor=0 (Yes)` and
+`MENU cursor=0 (Item)` (ORDER logged focus but spoke nothing). A blind
+player heard "Cloud is down … Yes … Item" and had no way to know the
+run had ended, what screen they were on, or that Continue was one
+Down-press away.
+
+**Root cause — FIELD_ID is never cleared by a game over.** Every
+title/field context test in proxy.cpp assumed `FIELD_ID==0 ⇔ title`:
+the engine instead returns to the title with FIELD_ID stale at the
+dead field (145 through the reel, the prompt, and beyond — WALL gates
+log). So TitleCursorThread (wants 0) stayed dead while the six
+main-menu threads (want nonzero) sailed through the prompt's
+MENU_OPEN=1 with every byte stale. The reel itself is the v2.30.1
+scenario byte-for-byte: mode=0, menu=0, movie=0, frozen field —
+only the movement-arming kept the wall tone quiet there.
+
+**The one positive signal**: GAME_MODE (0xCC0D89) blips to **26** for
+~60ms at the battle→game-over handoff (10:02:20.946→10:02:21.008,
+caught by the wall thread's 50ms poll; §4 GAME_MODE row updated —
+single-session evidence, provenance noted there). The reel and prompt
+read mode 0 — the blip is all there is.
+
+**Fix — GameOverWatchThread + title-context latch** (all proxy.cpp,
+plus GAME_MODE_GAMEOVER=26 in ff7_addresses.h):
+- **GameOverWatchThread** (new, 30ms poll — fastest in the file, two
+  chances at the observed blip width): mode==26 sets
+  `g_game_over_latch`, logs the dead field id, and speaks **"Game
+  over."** (interrupt=false so a still-playing defeat announce isn't
+  cut; speech gated speak_menus, the latch itself unconditional —
+  its suppression duties must not depend on config).
+- **Latch semantics**: "field state is a corpse; title sequence owns
+  the screen." Consumers: TitleCursorThread accepts the latch as
+  title context but additionally requires MENU_OPEN==1 (the prompt
+  raised it at 10:03:03; during the reel the title cursor byte is
+  boot residue and must stay quiet), and prefixes the first announce
+  "**Title screen.** New Game" for orientation; all six main-menu
+  threads + Config + Order stand down (the v2.30.32 foreign-screen
+  rule — same stale-bytes class); SaveMenuThread's LOAD branch
+  accepts the latch (post-game-over Continue grid IS the title-block
+  instance) while save_mode requires !latch (a stale MENU_CURSOR==9
+  would fake the save-menu signature); wall-bump + field-nav gates
+  add the latch (J/L/K no longer browse the dead field over the
+  reel); G key treats the game as not loaded (the dead run's gil).
+- **Latch clear**: observed reload shape is reel (menu=0) → prompt
+  (menu=1, held through save-select per the boot log) → load commit
+  (menu→0). So: MENU_OPEN=1 seen while latched arms the clear; the
+  next MENU_OPEN==0 fires it. Safety net: FIELD_ID changing to a
+  DIFFERENT nonzero value also clears (covers prompt-skipping paths;
+  same-id reload is covered by the menu edge).
+
+**Assumptions to verify in play-test** (log markers "GAMEOVER:"):
+(1) the 30ms poll actually catches the blip on every wipe — a wipe
+with no GAMEOVER line means the blip can be shorter and needs the
+battle-side all-party-dead fallback; (2) the post-game-over prompt
+uses the SAME title cursor byte 0xDD6F24 as cold boot (the
+save-vs-title Continue lesson says separate instances are possible —
+if "Title screen. New Game" never fires while the prompt is up, the
+post-GO title has its own cursor to hunt); (3) MENU_OPEN=1 is raised
+by the prompt itself, not first input (if the log shows a long
+prompt-visible gap before menu=1, cursor announces are input-delayed
+— acceptable but worth knowing); (4) Continue → save grid speaks via
+the LOAD instance. Quit-to-title remains an un-latched stale path
+(G-key caption residual documented in v2.30.36) — future work if
+reported.
+
+Deployed both installs, hash-verified (3619DBD91C8B9989).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
@@ -4274,7 +4349,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 
 | Offset | Address | Field | Confirmed? |
 |--------|---------|-------|------------|
-| +0x01 | `0xCC0D89` | game_mode: 0=field, 2=battle, 6=name entry, 9=menu (live) | ✓ live |
+| +0x01 | `0xCC0D89` | game_mode: 0=field, 2=battle, 6=name entry, 9=menu, 26=game-over handoff (transient ~60ms; reel+post-GO title read 0 with stale FIELD_ID — v2.30.37) | ✓ live |
 | +0x02 | `0xCC0D8A` | battle_id | FFNx label only |
 | +0x04/06 | `0xCC0D8C/8E` | field_model_pos_x/y (u16) | FFNx label only |
 | +0x22 | `0xCC0DAA` | field_model_triangle_id | FFNx label only |

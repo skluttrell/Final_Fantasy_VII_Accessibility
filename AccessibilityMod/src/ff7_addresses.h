@@ -1743,8 +1743,22 @@ constexpr uint32_t FIELD_N_MODELS          = 0x00CFF73E; // uint16 model count
 //   does NOT describe this byte — that enum belongs to a different variable
 //   (the graphics/game-object mode). Gating on ==1 (the enum's FIELD) made
 //   the tone never fire; only the live-observed values above can be trusted.
-//   Values during the pre-battle swirl, FMVs, world map, and game over are
-//   not yet observed; the movie/UC/FIELD_ID gates cover those independently.
+//   Values during the pre-battle swirl, FMVs, and world map are not yet
+//   observed; the movie/UC/FIELD_ID gates cover those independently.
+//   GAME OVER (live-observed 2026-07-27, party wipe in a train-graveyard
+//   battle): the byte holds 26 only BRIEFLY (~60ms — one 50ms wall-thread
+//   poll caught it) while the engine hands off from the dead battle to the
+//   game-over sequence, then returns to 0 for the whole GAME OVER film-reel
+//   screen (~40s in the log) with the FIELD module frozen and FIELD_ID
+//   STALE at the dead field — byte-for-byte indistinguishable from field
+//   play, which is exactly why the v2.30.1 wall-tone fix had to gate on
+//   observed movement. The transient 26 is currently the ONLY positive
+//   in-memory signal that a game over began; GameOverWatchThread (proxy.cpp)
+//   polls at 30ms to catch it and latches "title context" until the game
+//   reloads. Single-session evidence — if a play-test log ever shows a
+//   missed game over (no "GAMEOVER" line after a wipe), the blip can be
+//   shorter than 30ms in some paths and needs a second trigger (e.g. the
+//   battle-side all-party-dead signal).
 //   WHY NEEDED: when a random battle starts, the FIELD module freezes with
 //   current_key_input_status stuck at whatever direction the player was
 //   holding while walking, and the player position frozen — the wall
@@ -1776,6 +1790,9 @@ constexpr uint32_t FIELD_N_MODELS          = 0x00CFF73E; // uint16 model count
 constexpr uint32_t GAME_MODE            = 0x00CC0D89; // modules_global_object + 0x01
 constexpr uint8_t  GAME_MODE_FIELD      = 0;          // live-observed field-play value
                                                       // (NOT FFNx's enum; see above)
+constexpr uint8_t  GAME_MODE_GAMEOVER   = 26;         // transient (~60ms) game-over
+                                                      // handoff value, live-observed
+                                                      // 2026-07-27 (see block above)
 constexpr uint32_t FIELD_UC_LOCK        = 0x00CC0DBA; // modules_global_object + 0x32
 constexpr uint32_t FIELD_BGMOVIE_FLAG   = 0x00CC0DC2; // modules_global_object + 0x3A
 constexpr uint32_t FIELD_MOVIE_PLAYING  = 0x00CC1638; // word_CC1638 (FFNx name)

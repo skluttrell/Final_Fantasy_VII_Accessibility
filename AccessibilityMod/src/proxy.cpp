@@ -184,6 +184,61 @@ static HANDLE g_wallbump_thread   = nullptr;
 static HANDLE g_dialogtone_thread = nullptr;
 static HANDLE g_fieldnav_thread   = nullptr;
 static HANDLE g_nameentry_thread  = nullptr;
+static HANDLE g_gameover_thread   = nullptr;
+
+// ---------------------------------------------------------------------------
+// v2.30.37: game-over "title context" latch.
+//
+// THE PROBLEM (play report 2026-07-27, Screenshots/game_over/ + session log
+// 10:02-10:03): after a party wipe the engine shows the GAME OVER film reel
+// and then returns to the title screen's NEW GAME / Continue prompt — but it
+// NEVER clears the field state. FIELD_ID stays at the dead field (145 in the
+// log) through the reel, the prompt, and the save-select screen. Every
+// "which world am I in" test in this file assumed FIELD_ID==0 means title
+// and FIELD_ID!=0 means gameplay, so the whole title path inverted:
+//   - TitleCursorThread (gate: FIELD_ID==0) stayed SILENT on the prompt;
+//   - MenuCursorThread (gate: FIELD_ID!=0) saw the prompt's MENU_OPEN=1 and
+//     spoke the STALE quit cursor ("Yes") and menu row ("Item") over a
+//     screen that actually says NEW GAME / Continue;
+//   - SaveMenuThread's LOAD mode (gate: FIELD_ID==0) would have been silent
+//     had the player continued into the save grid.
+// A blind player heard "Cloud is down", then 40s of silence, then "Yes...
+// Item" — with no way to know the run had ended.
+//
+// THE SIGNAL: GAME_MODE (0xCC0D89) blips to 26 for ~60ms at the battle→
+// game-over handoff (the only positive in-memory evidence; the reel itself
+// reads as frozen field play — see GAME_MODE_GAMEOVER in ff7_addresses.h).
+// GameOverWatchThread polls at 30ms, latches here, and speaks "Game over."
+//
+// LATCH SEMANTICS: nonzero = "the field state is a corpse; we are in the
+// title sequence even though FIELD_ID says otherwise". Consumers:
+//   - TitleCursorThread treats the latch as title context (with an extra
+//     MENU_OPEN==1 requirement so the reel's stale cursor byte stays quiet);
+//   - every main-menu-family thread stands down (the v2.30.32 rule: stale
+//     main-menu bytes must never narrate a foreign screen);
+//   - SaveMenuThread's LOAD mode accepts the latch as title context;
+//   - the wall-bump and field-navigation threads stand down (the frozen
+//     field passes all their byte gates);
+//   - the G key treats the game as not loaded (the dead run's gil is gone).
+//
+// CLEARING: the observed reload sequence is reel (MENU_OPEN=0) → prompt
+// (MENU_OPEN=1, held through save-select — boot log 09:57:12→09:57:36) →
+// load commit (MENU_OPEN→0, field alive). So: once MENU_OPEN=1 has been
+// seen while latched, the next MENU_OPEN==0 clears the latch. Safety net:
+// FIELD_ID changing to a DIFFERENT nonzero value also clears (a new field
+// definitely loaded; covers any path that skips the prompt).
+//
+// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity) — same
+// contract as g_victory_active above.
+// ---------------------------------------------------------------------------
+static volatile LONG g_game_over_latch = 0;
+
+// True while the post-game-over title sequence owns the screen. See the
+// latch comment above for what every consumer must do about it.
+static bool GameOverTitleContext()
+{
+    return g_game_over_latch != 0;
+}
 
 // ---------------------------------------------------------------------------
 // Sound sub-menu volume cache.
@@ -424,11 +479,32 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
         // FIELD_ID is non-zero while in a named field map. When non-zero the
         // player is not on the title screen: reset the sentinel and skip.
         // Safe dereference: 0xCC15D0 is in the statically-allocated game BSS.
+        //
+        // v2.30.37: EXCEPT after a game over — the engine returns to the
+        // title prompt with FIELD_ID still STALE at the dead field (play
+        // report 2026-07-27: the prompt was completely silent). The latch
+        // says "this IS title context despite FIELD_ID".
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
-        if (field_id != 0) {
+        if (field_id != 0 && !GameOverTitleContext()) {
             last_cursor = 0xFF;
             continue;
+        }
+
+        // v2.30.37: while latched, announce only once the title prompt is
+        // actually up (MENU_OPEN==1, raised at the reel→prompt transition in
+        // the observed log). During the ~40s GAME OVER film reel the cursor
+        // byte still holds boot-title residue — announcing it there would
+        // narrate a cursor that is not on screen. Boot path (field_id==0)
+        // is untouched: MENU_OPEN reads 0 on the cold-boot title until first
+        // input (09:57:06 log), and that path has worked since v2.0.
+        if (GameOverTitleContext()) {
+            const uint8_t menu_open =
+                *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+            if (menu_open != 1) {
+                last_cursor = 0xFF;
+                continue;
+            }
         }
 
         // Safe dereference: 0x00DD6F24 is in the statically-allocated game BSS.
@@ -437,19 +513,117 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 
         if (curr == last_cursor) continue;
 
+        // v2.30.37: first announce after a game over gets a "Title screen."
+        // prefix — the player last heard "Game over." 40s of film reel ago;
+        // a bare "New Game" gives no clue the SCREEN changed. last_cursor is
+        // still the 0xFF sentinel exactly at that first valid read, so later
+        // cursor moves on the same prompt stay terse.
+        const bool orient = GameOverTitleContext() && last_cursor == 0xFF;
+
         // Update last_cursor only for values we announce, so non-0/1 BSS values
         // cannot pin the sentinel and cause a false negative on title re-entry.
         if (curr == 1) {
             last_cursor = curr;
             Log::Write("[FF7Access] TITLE cursor=1 (Continue)");
-            TTS::Speak(L"Continue", /*interrupt=*/true);
+            TTS::Speak(orient ? L"Title screen. Continue" : L"Continue",
+                       /*interrupt=*/true);
         } else if (curr == 0) {
             last_cursor = curr;
             Log::Write("[FF7Access] TITLE cursor=0 (New Game)");
-            TTS::Speak(L"New Game", /*interrupt=*/true);
+            TTS::Speak(orient ? L"Title screen. New Game" : L"New Game",
+                       /*interrupt=*/true);
         }
         // Other values are BSS data from unrelated modules — do not announce
         // and do not update last_cursor.
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Game-over watch thread (v2.30.37).
+//
+// Sets/clears g_game_over_latch (full rationale at its declaration). Runs at
+// 30ms — faster than every other poll loop in this file — because the ONLY
+// positive game-over signal is GAME_MODE holding 26 for ~60ms (one observed
+// sample; a 30ms poll gives two chances at the observed width, but the true
+// minimum width is unknown — if a log ever shows a wipe with no "GAMEOVER"
+// line, this poll missed the blip and a second trigger is needed).
+//
+// The thread always runs regardless of speech config: the latch's job is
+// mostly SUPPRESSION (keeping stale-menu narration off a title screen), and
+// that correctness must not depend on which speech families are enabled.
+// Only the "Game over." announcement itself is config-gated (speak_menus —
+// the same family that owns the title screen narration this latch hands
+// off to).
+//
+// interrupt=false on the announce: a party wipe fires the battle defeat
+// announce ("Cloud is down") ~5s before the mode blip in the observed log,
+// but TTS may still be speaking it in slower configs — queueing preserves
+// the causal order (downed → game over) instead of eating the cause.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
+{
+    // MENU_OPEN==1 seen since the latch set — arms the "prompt closed ⇒
+    // game is reloading" clear. Reset at every latch set.
+    bool prompt_seen = false;
+    // FIELD_ID captured at latch time (the dead field). A DIFFERENT nonzero
+    // value later means a new field really loaded — the safety-net clear.
+    int16_t dead_field_id = 0;
+
+    for (;;) {
+        if (WaitForSingleObject(g_cursor_stop_event, 30) == WAIT_OBJECT_0)
+            break;
+
+        const uint8_t mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+
+        if (g_game_over_latch == 0) {
+            if (mode == FF7Addr::GAME_MODE_GAMEOVER) {
+                prompt_seen   = false;
+                dead_field_id = *reinterpret_cast<const volatile int16_t*>(
+                    FF7Addr::FIELD_ID);
+                g_game_over_latch = 1;
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] GAMEOVER: mode=26 observed (dead field=%d) "
+                    "— title-context latch set", static_cast<int>(dead_field_id));
+                Log::Write(dbg);
+                if (Config::Get().speak_menus)
+                    TTS::Speak(L"Game over.", /*interrupt=*/false);
+            }
+            continue;
+        }
+
+        // ── Latched: watch for the game coming back to life ──────────────
+        const uint8_t menu_open =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
+        const int16_t field_id =
+            *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
+
+        if (menu_open == 1) {
+            if (!prompt_seen) {
+                prompt_seen = true;
+                // The prompt raised MENU_OPEN 42s after the blip in the
+                // observed log (the reel runs in between, menu=0). Logged so
+                // a play-test can confirm the title prompt is what raises it.
+                Log::Write("[FF7Access] GAMEOVER: MENU_OPEN=1 (title prompt "
+                           "up) — latch clears when it drops");
+            }
+            continue;
+        }
+
+        const bool prompt_closed = prompt_seen;            // menu_open == 0 here
+        const bool new_field     = field_id != 0 && field_id != dead_field_id;
+        if (prompt_closed || new_field) {
+            g_game_over_latch = 0;
+            prompt_seen       = false;
+            Log::Write(prompt_closed
+                ? "[FF7Access] GAMEOVER: title menu closed — latch cleared "
+                  "(game reloading)"
+                : "[FF7Access] GAMEOVER: new field id — latch cleared "
+                  "(safety net)");
+        }
     }
 
     return 0;
@@ -583,6 +757,20 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         // live-evidenced rather than requiring GAME_MODE==9, because
         // other MENU_OPEN contexts haven't been mode-sampled).
         if (MenuModuleForeignScreen()) {
+            last_cursor      = 0xFF;
+            last_menu_open   = 0;
+            last_quit_cursor = 0xFF;
+            menu_open_streak = 0;
+            continue;
+        }
+
+        // v2.30.37: post-game-over title sequence. FIELD_ID is STALE nonzero
+        // (so the gate above let us through) and the title prompt raises
+        // MENU_OPEN=1 — exactly the combination that made this thread speak
+        // the stale quit cursor ("Yes") and menu row ("Item") over the
+        // NEW GAME / Continue prompt (2026-07-27 log, 10:03:03). Same
+        // stale-bytes situation as a foreign menu screen: stand down.
+        if (GameOverTitleContext()) {
             last_cursor      = 0xFF;
             last_menu_open   = 0;
             last_quit_cursor = 0xFF;
@@ -805,8 +993,10 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
 
         // v2.30.32: MENU_CURSOR is stale on the menu module's foreign
         // screens (shop/PHS/name entry) — the ==7 Config-row proxy below
-        // would trust it (see MenuModuleForeignScreen).
-        if (MenuModuleForeignScreen()) continue;
+        // would trust it (see MenuModuleForeignScreen). v2.30.37: same for
+        // the post-game-over title sequence (stale MENU_CURSOR + MENU_OPEN=1
+        // + stale nonzero FIELD_ID pass every gate below).
+        if (MenuModuleForeignScreen() || GameOverTitleContext()) continue;
 
         // Field must be active — config sub-menu only reachable from a field map.
         const int16_t field_id =
@@ -1225,8 +1415,14 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
         // the probe's baseline of 1 was the player already PARKED on the
         // bottom row, not the top; their play report of Save 6 spoken on
         // the top row is the decisive observation.)
+        // v2.30.37: !GameOverTitleContext() — the post-game-over title
+        // prompt raises MENU_OPEN with FIELD_ID stale nonzero, and if the
+        // player's last main-menu visit parked MENU_CURSOR on the Save row
+        // (row 9 — exactly the 2026-07-26 shop false-"Save" signature) this
+        // gate would select the WRONG menu instance for the Continue grid.
         const bool save_mode =
-            menu_open == 1 && menu_cursor == 9 && field_id != 0;
+            menu_open == 1 && menu_cursor == 9 && field_id != 0 &&
+            !GameOverTitleContext();
 
         // v2.29.5: the "Are you sure you want to save?" Yes/No dialog.
         // Widget-state byte 0xDCA028 == 7 while it is open (1 = slot
@@ -1278,7 +1474,11 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
                 FF7Addr::SAVEMENU_SLOT_CURSOR);
             scroll = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::SAVEMENU_SLOT_SCROLL);
-        } else if (field_id == 0) {
+        } else if (field_id == 0 || GameOverTitleContext()) {
+            // v2.30.37: GameOverTitleContext — the post-game-over Continue
+            // grid IS the title-block LOAD instance, but FIELD_ID stays
+            // stale nonzero there (the whole point of the latch). Without
+            // this the Continue path after a game over browsed silently.
             col = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::LOADMENU_GRID_CURSOR);
             grow = *reinterpret_cast<const volatile uint8_t*>(
@@ -2695,8 +2895,12 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
+        // v2.30.37: GameOverTitleContext — the post-game-over title prompt
+        // raises MENU_OPEN with EVERY menu byte below stale (incl. a stale
+        // dispatch index that can equal this screen's) — stand down, the
+        // v2.30.32 foreign-screen rule.
         if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
-            Hooks::TutorialActive()) {
+            GameOverTitleContext() || Hooks::TutorialActive()) {
             was_open = false;
             continue;
         }
@@ -3008,8 +3212,10 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
+        // v2.30.37: GameOverTitleContext — stale menu bytes on the
+        // post-game-over title prompt; see MateriaMenuThread's gate.
         if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
-            Hooks::TutorialActive()) {
+            GameOverTitleContext() || Hooks::TutorialActive()) {
             was_open = false;
             continue;
         }
@@ -3230,8 +3436,10 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
+        // v2.30.37: GameOverTitleContext — stale menu bytes on the
+        // post-game-over title prompt; see MateriaMenuThread's gate.
         if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
-            Hooks::TutorialActive()) {
+            GameOverTitleContext() || Hooks::TutorialActive()) {
             was_open = false;
             continue;
         }
@@ -3452,10 +3660,17 @@ static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
         // on the title screen can speak the just-quit game's gil — a
         // cosmetic slip, chosen over a functionally dead key on the
         // world map.
+        // v2.30.37: !GameOverTitleContext() — after a game over BOTH halves
+        // of the test go stale-positive (dead FIELD_ID, dead savemap
+        // caption): G on the game-over reel or title prompt would speak the
+        // dead run's gil. The run is over; silence is the truthful answer.
+        // (The quit-to-title stale caption stays an accepted residual —
+        // there is no latch for that path yet.)
         const uint8_t caption0 = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::LOCATION_NAME_BUFFER);
         const bool game_loaded =
-            (field_id != 0) || (caption0 != 0x00 && caption0 != 0xFF);
+            !GameOverTitleContext() &&
+            ((field_id != 0) || (caption0 != 0x00 && caption0 != 0xFF));
         if (g_edge && game_loaded &&
             game_mode != FF7Addr::GAME_MODE_NAME_ENTRY) {
             const uint32_t gil = *reinterpret_cast<const volatile uint32_t*>(
@@ -3721,7 +3936,9 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
 
         // v2.30.32: the dispatch index is stale on foreign menu screens
         // (shop/PHS/name entry) — a leftover 1 would fake "item screen".
-        if (MenuModuleForeignScreen()) {
+        // v2.30.37: the post-game-over title prompt is the same stale-bytes
+        // situation (MENU_OPEN=1, stale dispatch index, stale FIELD_ID).
+        if (MenuModuleForeignScreen() || GameOverTitleContext()) {
             was_open = false;
             continue;
         }
@@ -3979,7 +4196,9 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
 
         // v2.30.32: MENU_FOCUS_MODE and the Order-pane bytes are stale on
         // foreign menu screens (shop/PHS/name entry) — stand down.
-        if (MenuModuleForeignScreen()) {
+        // v2.30.37: same for the post-game-over title prompt (its MENU_OPEN=1
+        // woke this thread with a stale FOCUS_MODE — 2026-07-27 log 10:03:03).
+        if (MenuModuleForeignScreen() || GameOverTitleContext()) {
             last_focus = 0xFF;
             continue;
         }
@@ -4659,8 +4878,9 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
         }
 
         // v2.30.32: stale dispatch index on foreign menu screens — see
-        // the ItemMenuThread gate.
-        if (MenuModuleForeignScreen()) {
+        // the ItemMenuThread gate. v2.30.37: same for the post-game-over
+        // title prompt.
+        if (MenuModuleForeignScreen() || GameOverTitleContext()) {
             was_open = false;
             continue;
         }
@@ -5952,8 +6172,14 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             Log::Write(dbg);
         }
 
+        // v2.30.37: GameOverTitleContext — the GAME OVER film reel reads as
+        // frozen field play in every byte above (mode=0, menu=0, movie=0,
+        // stale FIELD_ID). The movement-arming below already kept the tone
+        // quiet there (v2.30.1's whole point), but the latch is positive
+        // knowledge — use it.
         if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
-            menu_open != 0 || uc_lock != 0 || movie_playing) {
+            menu_open != 0 || uc_lock != 0 || movie_playing ||
+            GameOverTitleContext()) {
             have_last = false;
             blocked_streak = 0;
             armed = false;
@@ -8354,8 +8580,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             FF7Addr::GAME_MODE);
         const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::MENU_OPEN);
+        // v2.30.37: GameOverTitleContext — the GAME OVER film reel passes
+        // every byte gate above (frozen field, stale FIELD_ID): without the
+        // latch, J/L/K would still browse and route the DEAD field's
+        // destinations over the game-over screen.
         if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
-            menu_open != 0) {
+            menu_open != 0 || GameOverTitleContext()) {
             memset(was_down, 0, sizeof(was_down));
             GamepadNav::Reset();
             calib_have_last = false;
@@ -9987,6 +10217,17 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start title cursor thread.");
         }
 
+        // Game-over watch (v2.30.37): 30ms GAME_MODE poll for the ~60ms
+        // game-over blip (value 26). Must start before the field module can
+        // run — a wipe is reachable in the first battle. See the
+        // g_game_over_latch declaration for the full design.
+        g_gameover_thread = CreateThread(nullptr, 0, GameOverWatchThread, nullptr, 0, nullptr);
+        if (g_gameover_thread) {
+            Log::Write("[FF7Access] Game-over watch thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start game-over watch thread.");
+        }
+
         // Confirmed cursor address: 0x00DC1154 (see ff7_addresses.h MENU_CURSOR).
         // Found by ff7_menu_cursor_isolate.py (2026-07-01): both snapshot phases
         // ran inside the already-open menu so field scripts were frozen, then we
@@ -10348,6 +10589,11 @@ void Shutdown()
         WaitForSingleObject(g_title_thread, 500);
         CloseHandle(g_title_thread);
         g_title_thread = nullptr;
+    }
+    if (g_gameover_thread) {
+        WaitForSingleObject(g_gameover_thread, 500);
+        CloseHandle(g_gameover_thread);
+        g_gameover_thread = nullptr;
     }
     if (g_menu_thread) {
         WaitForSingleObject(g_menu_thread, 500);

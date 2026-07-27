@@ -5,6 +5,29 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[GAMEOVER] Game-over sequence accessibility — SHIPPED v2.30.37 (2026-07-27), awaiting play-test
+------------------------------------------------------------------------
+Play report (Screenshots/game_over/ + 10:02-10:03 log): party wipe →
+"Cloud is down" → 40s of SILENCE over the GAME OVER reel → stale
+"Yes"/"Item" spoken over the NEW GAME/Continue prompt. Root cause:
+game over never clears FIELD_ID, inverting every title/field gate.
+Fix: GameOverWatchThread latches on the transient GAME_MODE==26 blip
+(the only positive signal; research §8 v2.30.37), speaks "Game over.",
+hands the title threads the context, stands down the stale menu
+family, and clears when the game reloads.
+VERIFY on the next deliberate death: (1) "Game over." spoken as the
+reel starts (log "GAMEOVER: mode=26 observed" — if a wipe shows NO
+such line, the 30ms poll missed the blip: report, the battle-side
+fallback is the planned fix); (2) NO "Yes"/"Item"/stale-menu speech
+at the prompt; (3) the prompt speaks "Title screen. New Game" (or
+Continue) once it's up, cursor tracks Up/Down — if this NEVER fires,
+the post-game-over prompt has its own cursor byte (report + log);
+(4) Continue → save grid speaks slots like a cold boot; (5) loading
+a save returns everything to normal (menus/nav/dialog all speak —
+log "latch cleared"); (6) G on the reel/prompt is silent; (7) J/L/K
+on the reel are silent. New Game path clears the latch too (intro
+movies → field).
+
 [REVIEW] v2.30.36 review-sweep fixes (2026-07-26), awaiting play-test
 ------------------------------------------------------------------------
 Nine fixes from the multi-agent code review (research §8 v2.30.36 has
