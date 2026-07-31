@@ -250,11 +250,13 @@ every confirmed address — the clustering itself is a discovery tool.
 | `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) — engine's parsed field-file SECTION 8: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2× s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) — ff7_field_triggers_static.py, v2.14 |
 | *(control_direction semantics)* | — | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg − 180, a PURE ROTATION — left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124→174.4°; Up motion 5.6°, Down −174.4°. First guess world − control was 180° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | — | field_event_data model_pos = walkmesh coords × 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking ≈ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
-| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled — handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), **+0x72 s16 COLLISION RADIUS** (CONFIRMED 2026-07-25 v2.30.24: the v2.30.22 rc-candidate dump showed per-model radius-like values — Tifa 30, Barret 48, AVALANCHE trio 34 — and body-block rest distances fit player_r+npc_r with Cloud ≈32 on two independent anchors, 64 vs Tifa and 81 vs Barret; +0x6E ≡ 0 and +0x70 flaps 0/1, both rejected. ⚠ DYNAMIC — scripts change it (SLIDR family): 0 = intangible right now, Tifa read 20 in a hideout scene state, a prop briefly 120 — always read LIVE, never cache), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1/v2.26/v2.30.24) |
+| *(field_event_data offsets)* | — | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled — handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), **+0x62 u8 VISIBILITY** (1=visible, 0=script-hidden; v2.30.45 — the VISI opcode (0xA4) handler 0x618A01 writes its operand here and the CHAR bind path stores 1 at 0x6143D2, so every bound model STARTS visible and 0 is always a deliberate hide; pickup scripts hide collected items exactly this way (game-wide walk, ff7_prop_interact_catalog.py) — the Items category and prox chirp filter on it; FFNx's unnamed field_62), +0x63 s8 movement_type (LADER-confirmed), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL — see v2.18.1), +0x6C s16 character_id (⚠ LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" — do NOT name from it, v2.15.2), **+0x72 s16 COLLISION RADIUS** (CONFIRMED 2026-07-25 v2.30.24: the v2.30.22 rc-candidate dump showed per-model radius-like values — Tifa 30, Barret 48, AVALANCHE trio 34 — and body-block rest distances fit player_r+npc_r with Cloud ≈32 on two independent anchors, 64 vs Tifa and 81 vs Barret; +0x6E ≡ 0 and +0x70 flaps 0/1, both rejected. ⚠ DYNAMIC — scripts change it (SLIDR family): 0 = intangible right now, Tifa read 20 in a hideout scene state, a prop briefly 120 — always read LIVE, never cache), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh — v2.15 People filter)** (v2.15/v2.18.1/v2.26/v2.30.24) |
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0–0x20; the LINE handler refuses past 32). Per-field value — LIVE-CONFIRMED 2026-07-14 (0 on fields 116–119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 × 0x18: **+0x00 s16×6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id → index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
-| `FIELD_ENTITY_MODEL_MAP` | `0x00CBFB70` | u8 per entity id → model slot, 0xFF = the entity has no model. Bonus find from the TLKON handler disasm (0x618A80) — that handler resolves its executing entity through this table to reach the talk-disabled byte. Not yet used by the mod directly (v2.26) |
+| `FIELD_ENTITY_MODEL_MAP` | `0x00CBFB70` | u8 per entity id → model slot, 0xFF = the entity has no model. Bonus find from the TLKON handler disasm (0x618A80) — that handler resolves its executing entity through this table to reach the talk-disabled byte. Re-confirmed by TWO more handlers 2026-07-31 (VISI 0x618A01, CHAR bind 0x6143A5-region — v2.30.45 hunts). Not yet used by the mod directly (v2.26) |
+| `FIELD_CURRENT_ENTITY` | `0x00CC0964` | u8 — index of the script entity whose opcode is EXECUTING right now; every field opcode handler disasm'd to date (TLKON/VISI/CHAR/MPNAM...) starts by loading it. Not consumed by the mod (our hooks receive context from the engine call); recorded 2026-07-31 (v2.30.45 VISI hunt) |
+| `FIELD_SCRIPT_PC_ARRAY` | `0x00CC0CF8` | u16 per entity — each entity's current script program counter (offset into the section-0 code block at FIELD_SCRIPT_PTR 0xCBF5E8). Handlers read their operands via it and advance it by their instruction length (VISI: +2 at 0x618A73; CHAR: +2 at 0x614418). Not consumed by the mod; recorded 2026-07-31 |
 | `SAVEMAP_CHAR_RECORDS` | `0xDBFD8C` | First of 9 savemap character records (Cloud), stride 0x84; **FF7-encoded live name (renames included) at +0x10, 12 bytes, 0xFF-terminated**. Derived, not scanned (v2.19): 7thHeaven equipment blocks at savemap+0x70 start with the weapon byte = record offset 0x1C → records at +0x54; 9·0x84 ends exactly at the party IDs below — two anchors agree. v2.33 screenshot-verified field map (status_record_verify log): +0x01 level, +0x02..+0x07 **BASE** str/vit/mag/spr/dex/luck (dex FFNx-named; screen shows EFFECTIVE — see BATTLE_CHAR_BLOCK), +0x0E limit level, +0x1C/+0x1D/+0x1E weapon/armor/accessory ids (0xFF = none), +0x20 row byte (v2.32), +0x2C/+0x38 HP/maxHP, +0x30/+0x3A MP/maxMP, +0x3C exp u32, +0x40 materia[16] u32, +0x80 exp-to-next u32 |
 | `PARTY_LEADER` | `0xDC09E5` | u8 character ID of the current party leader (7th Heaven `PartyLeader` var). Consumed by PartySlotLabel's self-verification: SAVEMAP_PARTY_IDS slot 0 must equal it or naming falls back to positional "ally N" (v2.19). Was previously documented only inline in the SAVEMAP_PARTY_IDS row (2026-07-23 audit) |
 | `STORY_PROGRESS` | `0xDC08DC` | s16 story-progress counter advanced by field scripts (7th Heaven `PPV` var). Defined in ff7_addresses.h since early research; NOT yet consumed by any mod code — recorded for future story-aware features (e.g., suppressing story-locked exits). Was missing from this table entirely (2026-07-23 audit) |
@@ -4278,6 +4280,65 @@ No addresses; no §4/§14 changes. Deployed both installs, hash-verified
 
 ---
 
+### v2.30.45 (2026-07-31): three tester reports — system messages, taken items, wall switches
+
+**Report 1 — speak_dialog=false silenced item pick-ups.** The voice-mod
+config again (the v2.30.36 lesson's config). Voice mods voice CHARACTER
+dialog, never system notices, so the speaker-vs-speakerless distinction
+is what the player wants — implemented as
+hooks.cpp LooksLikeCharacterSpeech(): (a) party-name token 0xEA-0xF2 in
+the first 24 raw bytes; (b) Echo-S literal style `Name "…"` — early
+quote after a name-like run AND the last page ENDS with a quote (what
+separates it from 'Received "Potion"!', which ends '!'); (c) vanilla
+literal style — first decoded LINE a bare name-like word with more
+lines following. All-miss = system message = speaks in EVERY config.
+Error direction deliberate: uncertain → system (re-speaking one voiced
+line is mild; silencing a pick-up is the reported bug). ⚠ pages are now
+decoded UNGATED for classification — the v2.30.17 pages-remaining
+re-arm branch needed a dialog_speaks gate or muted speaker dialogs
+would never re-arm re-talk detection (caught in-edit; the pre-change
+code relied on the cache being EMPTY in the muted config).
+
+**Report 2 — collected items stayed listed.** Offline game-wide script
+walk (NEW ff7_prop_interact_catalog.py: 702 fields, 5454 model
+entities, 0 walk errors) proved the hide mechanism: pickup talk scripts
+(nmkin_3 potion 'po0', nmkin_5 materia 'mtr') are LOOT+VISI. Handler
+disasm (NEW ff7_visi_handler_disasm.py) pinned the byte: **VISI (0xA4)
+writes its operand to field_event_data +0x62**; CHAR-bind disasm (NEW
+ff7_char_handler_disasm.py) proved bound models START at 1 (store at
+0x6143D2) — ==0 is a safe "script hid it" test. Items pass + prox
+chirp now skip vis==0 items/devices (AFTER label assignment — ordinals
+stay reserved, the v2.18.2 identity rule); People deliberately NOT
+filtered yet (scenes hide/show people constantly — needs play evidence
+first; NAV debug line now logs vis= for exactly that). Bonus statics:
+FIELD_CURRENT_ENTITY 0xCC0964, FIELD_SCRIPT_PC_ARRAY 0xCC0CF8 (§4+§14).
+
+**Report 3 — wall switches missing from the pathfinder.** Two-part
+truth: (a) the reactor elevator button ('evb', nmkin_1 ent 12 — NEW
+ff7_reactor_button_probe.py) is a LINE entity, ALREADY listed under
+Triggers but as cryptic "evb, scene" (its action lives in a move slot,
+so the line catalog files it SCENE) — fixed by name translation
+('evb' → "elevator button"); reclassifying SCENE-vs-device lines
+automatically was rejected — cutscene triggers also reach MES, no
+honest offline discriminator found. (b) switch/lever MODELS were
+MC_SCENERY-filtered — the v2.30.36 deferred whitelist, now delivered:
+ff7_prop_catalog.h (1341 talk-scripted model entities, generated) +
+MC_PROP class: scenery whose (field, entity) is cataloged resurrects
+as a Trigger-category "…, device" entry; prox chirp covers it for free
+(class-agnostic talk-radius loop). One classifier stays in one place:
+the catalog only ever RESURRECTS scenery, never reclassifies.
+
+VERIFY (play): with speak_dialog=false — pick-ups speak, story speech
+doesn't, log shows "[SYSTEM, dialog off]" / "speaker dialog" tags;
+grab the reactor potion — it vanishes from Items (no chirp on the
+spot); nmkin fields list door devices ("nmkdr…, device") and the
+elevator button speaks "elevator button, scene"; People lists
+unchanged (vis= column in the log for the follow-up).
+
+Deployed both installs, hash-verified (7C1EA3C0BB40F163).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview
@@ -4622,6 +4683,8 @@ Proven payoffs of cluster reasoning so far:
 | `0x61E29F` | opcode IDLCK handler (table[0x6D]) | args u16 triangle_id + u8 flag; sets/clears bit (tri&7) of byte [0xCBF9D8]+0xB2+(tri>>3) — the triangle-lock bitfield (= static 0xCC0E3A). ff7_idlck_static.py 2026-07-23, v2.30.21 |
 | `0x6369E8` / `0x636AAF` / `0x636B76` | movement edge-crossing lock tests | one branch per triangle edge: neighbor id from the parsed access pool [0xCFF748] (stride 3×u16), then the >>3/&7 bit test against 0xCC0E3A — crossing REFUSED when set. Also writes u16 0xCC1630 (new current triangle?, unconfirmed) (ff7_idlck_bitmath.py 2026-07-23) |
 | `0x615EC6` | opcode LADER handler (table[0xC2]) | disasm bonus (same log): confirms field_event_data +0x63 movement_type, +0x7C/80/84 target pos <<12, and reads anim-data ptr 0xCFF738 with stride 0x190 |
+| `0x618A01` | opcode VISI handler (table[0xA4]) | entity from 0xCC0964 → model via 0xCBFB70 (0xFF-guarded) → imul 0x88 → base [0xCC0B60] → **writes operand to +0x62 (0x618A54) = the model VISIBILITY byte**; PC advance +2 via 0xCC0CF8 (ff7_visi_handler_disasm.py 2026-07-31, v2.30.45 — the picked-up-items-stay-listed hunt) |
+| `0x6143A5`-region | CHAR (0xA1) bind path | same addressing chain; **stores 1 to +0x62 at 0x6143D2** (bound models start VISIBLE — what makes ==0 a safe hidden test), entity id to +0x5D at 0x6143F9 (independent re-proof of FIELD_EVENT_ENTITY_ID), opcode operand word to +0x6C (ff7_char_handler_disasm.py 2026-07-31) |
 | `0x6388EE` | field_sub_6388EE | v2.14 chain anchor (FFNx name embeds address); grc(+0x11) → field_draw_everything 0x63A60B |
 | `0x63A60B` / `0x640F22` / `0x640F95` | field_draw_everything / field_pick_tiles_make_vertices / field_layer3_pick_tiles | v2.14 chain to FIELD_TRIGGERS_HEADER_PTR (gav(0x640F95, 0x134) = 0xCFF454); 3 name-embedded cross-checks passed |
 | `0x6CDA83` | menu-TYPE dispatcher | switch on GAME_MODE byte 0xCC0D89 — jump table decoded offline (index bytes 0x6CDBE4, targets 0x6CDBC4): 6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19=further screens; both live-confirmed values (6, 9) match the decode (ff7_shop_static.py, v2.30.28) |

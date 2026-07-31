@@ -5,6 +5,22 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[FIELD3] System messages + taken items + switches — SHIPPED v2.30.45 (2026-07-31), awaiting play-test
+------------------------------------------------------------------------
+Three tester reports, one version (research §8 v2.30.45 has the full
+derivations). VERIFY: (1) speak_dialog=false → pick-up messages speak,
+story speech muted, wait tones unaffected; watch for MISCLASSIFIED
+speaker dialogs sneaking through (log tags every decision). (2) Taken
+items vanish from Items + stop chirping; ordinals stable ("Item 2"
+keeps its name after "Item" is taken). (3) nmkin door props list as
+", device" under Triggers; reactor elevator button speaks "elevator
+button, scene". RESIDUALS: People NOT vis-filtered yet (collect vis=
+log evidence of scene hide/show churn first — invisible NPCs are
+still listed); SCENE-vs-device line reclassification rejected for
+lack of an honest offline discriminator (buttons and cutscene lines
+both reach MES) — revisit if more line-buttons get reported; device
+naming leans on dev labels (only 'evb' hand-translated so far).
+
 [TESTMODE] debug_log defaults ON — v2.30.44 (2026-07-31), REVERT WHEN TEST PHASE ENDS
 ------------------------------------------------------------------------
 User decision: mod is a test mod until further notice; logging on by

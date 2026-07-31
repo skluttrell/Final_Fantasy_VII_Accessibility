@@ -23,6 +23,11 @@ struct Settings {
     // speak_dialog: If true, story dialog text (MESSAGE opcode) is read aloud
     // by the screen reader. Set to false if you have a voice acting mod
     // installed and prefer the voice actors over TTS.
+    //
+    // v2.30.45: SPEAKER-LESS system messages (item pick-ups, "Received X")
+    // speak regardless of this setting — voice mods never voice those, so
+    // muting them with the story text left pick-ups silent in the
+    // voice-mod configuration (see hooks.cpp LooksLikeCharacterSpeech).
     // Default: true.
     bool speak_dialog = true;
 

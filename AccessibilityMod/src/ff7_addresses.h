@@ -1885,6 +1885,25 @@ constexpr uint32_t FIELD_EVENT_COLLISION_RADIUS = 0x72; // s16, walkmesh units
 // state is definitive, so the mod only ever announces that side.
 constexpr uint32_t FIELD_EVENT_TALK_OFF = 0x61;    // u8, 1 = talk disabled
 
+// +0x62: model VISIBILITY (u8) — 1 = visible, 0 = hidden (v2.30.45).
+// PROVENANCE (both static, disasm'd from the exe on disk 2026-07-31):
+//   - the VISI opcode (0xA4) handler at 0x618A01 writes its script
+//     operand here: current entity from 0xCC0964, entity->model-index
+//     table at 0xCBFB70 (0xFF = no model bound), imul 0x88, base from
+//     [0xCC0B60] (= FIELD_EVENT_DATA_PTR — the [ptr]+offset==static
+//     cross-proof pattern), store at +0x62 (0x618A54).
+//   - the CHAR (0xA1) bind path stores 1 here at 0x6143D2 (same
+//     0xCBFB70/imul-0x88 addressing; it also writes the entity id to
+//     +0x5D at 0x6143F9, independently re-confirming
+//     FIELD_EVENT_ENTITY_ID) — every bound model STARTS visible, so 0
+//     is always a deliberate script hide, never an uninitialized state.
+// WHY THE MOD READS IT: pickup scripts hide collected ground items with
+// VISI 0 (game-wide offline proof: ff7_prop_interact_catalog.py — the
+// reactor potion/materia talk scripts are LOOT+VISI), so this byte is
+// the live "already taken" signal the Items category filters on.
+// FFNx calls this struct member field_62 (unnamed there).
+constexpr uint32_t FIELD_EVENT_VISIBLE = 0x62;
+
 // Entity id → model slot map (bonus find from the same disasm): u8 per
 // entity, 0xFF = the entity has no model. The TLKON handler resolves its
 // executing entity through this table. Not yet used by the mod.

@@ -80,6 +80,8 @@
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
 #include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
+#include "ff7_prop_catalog.h" // generated: talk-scripted model entities
+                              // (device whitelist for MC_PROP, v2.30.45)
                                       // (exit/climb/OK/scene, v2.30.23)
 #include <string>
 #include <fstream>   // visited-places cache file IO (v2.25)
@@ -7492,6 +7494,16 @@ enum ModelClass : uint8_t {
     MC_SCENERY,      // background prop — not browsable under ANY category
                      // (v2.30.18: unknown "fieldbg" labels + a small list
                      // of observed non-fieldbg props; see ClassifyModelLabel)
+    MC_PROP,         // v2.30.45: a SCENERY model whose script entity has a
+                     // real talk script (offline game-wide walk —
+                     // ff7_prop_catalog.h): a button/lever/valve style
+                     // DEVICE. The v2.30.36 review's deliberately deferred
+                     // whitelist, delivered after the tester asked for the
+                     // reactor switches. Browses under Triggers, spoken
+                     // with a ", device" suffix. Promotion happens AFTER
+                     // ClassifyModelLabel (one classifier, one place —
+                     // the catalog only ever RESURRECTS filtered scenery,
+                     // never reclassifies people/chests/items/saves).
 };
 
 // Classify a model's speakable label and pick its spoken base name.
@@ -7569,6 +7581,8 @@ static int CategoryForModelClass(ModelClass c)
         case MC_SAVE:  return CAT_SAVE;
         case MC_CHEST:
         case MC_ITEM:  return CAT_ITEMS;
+        case MC_PROP:  return CAT_TRIGGERS;  // devices sit with the other
+                                             // "things you operate" (v2.30.45)
         default:       return CAT_PEOPLE;
     }
 }
@@ -7668,6 +7682,11 @@ static const DevWord kDevWords[] = {
     { L"cf", L"" }, { L"island", L"" }, { L"gon", L"" }, { L"rocket", L"" },
     { L"junon", L"" }, { L"towerutai", L"" }, { L"sbwy", L"" },
     { L"min", L"" }, { L"md", L"" },
+    // -- devices (v2.30.45; 'evb' = the No.1 reactor elevator button
+    //    line, ff7_reactor_button_probe.py 2026-07-31 — the tester's
+    //    "wall switches" report; 'switch' itself already passes through
+    //    unchanged, 11 occurrences game-wide in the entity catalog) --
+    { L"evb", L"elevator button" },
     // -- named NPCs (romaji / dev spellings of localized names) --
     { L"sefiro", L"Sephiroth" }, { L"cefiro", L"Sephiroth" },
     { L"cefiros", L"Sephiroth" }, { L"cefi", L"Sephiroth" },
@@ -8967,7 +8986,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const float dy = static_cast<float>((mp[1] >> 12) - py);
                 const float dist = sqrtf(dx * dx + dy * dy);
                 const int32_t dz = (mp[2] >> 12) - pzv;
+                // v2.30.45: a script-hidden model (VISI 0 — collected
+                // pickups above all) shows a sighted player NOTHING, so
+                // it must not ping. The chirp's promise is "something
+                // usable is here"; a hidden model isn't.
+                const uint8_t mvis = *reinterpret_cast<const uint8_t*>(
+                    me + FF7Addr::FIELD_EVENT_VISIBLE);
                 const bool reachable = tri >= 0 && radius > 0 && !talk_off &&
+                                       mvis != 0 &&
                                        dz > -PROX_Z_GATE && dz < PROX_Z_GATE;
                 if (reachable && dist <= eff) {
                     if (prox_armed_m[m]) {
@@ -9300,6 +9326,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const int32_t mx = mpos[0] >> 12;
                 const int32_t my = mpos[1] >> 12;
 
+                // v2.30.45: entity id (for the prop-catalog lookup) and
+                // the VISI visibility byte (+0x62). Provenance: the VISI
+                // opcode handler (0x618A01) writes its operand here, and
+                // the CHAR bind handler stores 1 at 0x6143D2 — every
+                // bound model STARTS visible, so 0 can only mean a script
+                // hid it (both disasm'd 2026-07-31; see FIELD_EVENT_VISIBLE
+                // in ff7_addresses.h). Pickup scripts hide collected
+                // items exactly this way (offline proof: nmkin_3 'po0' /
+                // nmkin_5 'mtr' talk scripts are LOOT+VISI —
+                // ff7_prop_interact_catalog.py).
+                const uint8_t ent_id = *reinterpret_cast<const uint8_t*>(
+                    me + FF7Addr::FIELD_EVENT_ENTITY_ID);
+                const uint8_t vis = *reinterpret_cast<const uint8_t*>(
+                    me + FF7Addr::FIELD_EVENT_VISIBLE);
+
                 std::wstring lbl;
                 const bool have_lbl = FieldModelLabel(m, fname, lbl);
 
@@ -9310,11 +9351,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     char dbg[224];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] NAV person m=%u tri=%d ent=%u talk=%d "
-                        "col=%d pos=(%ld,%ld) label='%ls'",
-                        m, tri,
-                        *reinterpret_cast<const uint8_t*>(me + FF7Addr::FIELD_EVENT_ENTITY_ID),
+                        "col=%d vis=%u pos=(%ld,%ld) label='%ls'",
+                        m, tri, ent_id,
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_TALK_RADIUS),
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS),
+                        vis,
                         static_cast<long>(mx), static_cast<long>(my),
                         have_lbl ? lbl.c_str() : L"(none)");
                     Log::Write(dbg);
@@ -9333,6 +9374,15 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     // differed only by their meaningless digit suffixes).
                     const wchar_t* friendly = nullptr;
                     cls[m] = ClassifyModelLabel(lbl, &friendly);
+                    // v2.30.45: resurrect talk-scripted scenery as a
+                    // DEVICE (button/lever/valve). The offline catalog is
+                    // keyed by (field, script entity) — see MC_PROP's
+                    // enum comment. Only scenery consults it: everything
+                    // else is already browsable somewhere.
+                    if (cls[m] == MC_SCENERY && field_id > 0 &&
+                        FF7PropCatalog::Find(
+                            static_cast<uint16_t>(field_id), ent_id))
+                        cls[m] = MC_PROP;
                     wcsncpy_s(labels[m],
                               friendly ? friendly
                                        : TranslateDevLabel(lbl).c_str(),
@@ -9377,6 +9427,18 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // gains a real position and appears — hiding is dynamic,
                 // not permanent.
                 if (tri == 0 && mx == 0 && my == 0)
+                    continue;
+
+                // v2.30.45: a hidden pickup/device is GONE for the player
+                // (tester report: collected items stayed listed all
+                // visit). Placed AFTER the label/ordinal assignment so a
+                // taken "Item" still reserves its ordinal and "Item 2"
+                // keeps its name (v2.18.2 identity-stability rule), and
+                // scoped to items/devices only: people are script-hidden
+                // and re-shown constantly during scenes, and this filter
+                // must not make the People list flap (their VISI churn
+                // is a documented follow-up, not an accident).
+                if ((cls[m] == MC_ITEM || cls[m] == MC_PROP) && vis == 0)
                     continue;
 
                 eligible[m] = true;
@@ -9453,6 +9515,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // entity has a talk script, so silence stays honest.
                 if (cls[m] == MC_PERSON && talk_off[m])
                     wcsncat_s(d.name, _countof(d.name), L", talk disabled",
+                              _TRUNCATE);
+                // v2.30.45: devices say what they are — the label alone
+                // ("nmkdr 3") reads like scenery; the suffix is the cue
+                // that OK does something here. Same suffix philosophy as
+                // the line catalog's ", press OK".
+                if (cls[m] == MC_PROP)
+                    wcsncat_s(d.name, _countof(d.name), L", device",
                               _TRUNCATE);
                 d.line_x1 = d.line_x2 = ex[m];
                 d.line_y1 = d.line_y2 = ey[m];

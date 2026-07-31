@@ -282,6 +282,92 @@ static volatile LONG s_sttim_seen = 0;
 // The game supports up to 8 simultaneous dialog windows (window IDs 0–7).
 // We maintain a parallel state struct for each to detect transitions.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// LooksLikeCharacterSpeech (v2.30.45): does this MESSAGE have a SPEAKER?
+//
+// WHY: speak_dialog=false exists for voice acting mods (Echo-S), which
+// voice character dialog but never the game's system notices ("Received
+// "Potion"!", gil pick-ups, save reminders). Gating ALL MESSAGE speech on
+// speak_dialog therefore left pick-ups totally silent in the voice-mod
+// configuration (tester report 2026-07-31). The distinction the player
+// actually wants is speaker vs speaker-less, so that is what we detect.
+//
+// SIGNALS (any hit = character speech; all miss = system message):
+//   a. RAW party-name token 0xEA-0xF2 in the first 24 bytes — vanilla
+//      speaker lines lead with the token ("{Barret}" newline "text"), and
+//      Echo-S uses the tokens for party members too.
+//   b. Echo-S literal-name style: 'Biggs "Text..."' — an opening quote
+//      within the first ~26 chars, preceded by a space and a short
+//      name-like word run, AND the LAST page's text ENDS with a closing
+//      quote (speech is fully quoted). The end-quote requirement is what
+//      separates this from system messages that QUOTE AN ITEM mid-line:
+//      'Received "Potion"!' ends with '!', not '"'.
+//   c. Vanilla literal-name style: the first decoded LINE is a bare
+//      name-like word (short, no digits/quotes/punctuation) with more
+//      lines following — minor NPCs ("Biggs") get literal names instead
+//      of tokens in the vanilla text.
+//
+// ERROR DIRECTION IS DELIBERATE: misreading speech as a system message
+// re-speaks one voiced line (mild); misreading a system message as speech
+// silences a pick-up entirely (the reported bug). When unsure, classify
+// as system — every rule above must POSITIVELY identify a speaker.
+// ---------------------------------------------------------------------------
+static bool LooksLikeCharacterSpeech(const char* raw_text,
+                                     const std::vector<std::wstring>& pages)
+{
+    // (a) party-name token near the head of the raw stream.
+    if (raw_text) {
+        for (int i = 0; i < 24; ++i) {
+            const uint8_t b = static_cast<uint8_t>(raw_text[i]);
+            if (b == 0xFF) break;                    // end of string
+            if (b >= 0xEA && b <= 0xF2) return true; // Cloud..Cid token
+        }
+    }
+
+    if (pages.empty() || pages[0].empty())
+        return false;
+    const std::wstring& p0 = pages[0];
+
+    // (b) 'Name "speech..."' with the final page closing the quote.
+    const size_t q = p0.find(L'"');
+    if (q != std::wstring::npos && q >= 2 && q <= 26 && p0[q - 1] == L' ') {
+        bool name_like = true;
+        for (size_t i = 0; i + 1 < q; ++i) {
+            const wchar_t c = p0[i];
+            const bool ok = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')
+                         || c == L' ' || c == L'.' || c == L'-';
+            if (!ok) { name_like = false; break; }
+        }
+        if (name_like) {
+            const std::wstring& last = pages.back();
+            const size_t end = last.find_last_not_of(L' ');
+            if (end != std::wstring::npos && last[end] == L'"')
+                return true;
+        }
+    }
+
+    // (c) bare literal name alone on the first LINE, more text following.
+    // Re-decode as lines (cheap, once per dialog): pages merge lines with
+    // spaces, which would make "Biggs\nWatch out!" indistinguishable from
+    // a sentence starting with the word Biggs.
+    if (raw_text) {
+        const std::vector<std::wstring> lines = FF7Text::DecodeLines(raw_text);
+        if (lines.size() >= 2 && !lines[0].empty() && lines[0].size() <= 20) {
+            bool bare_name = true;
+            int spaces = 0;
+            for (const wchar_t c : lines[0]) {
+                if (c == L' ') { if (++spaces > 1) { bare_name = false; break; } continue; }
+                const bool ok = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')
+                             || c == L'.' || c == L'-';
+                if (!ok) { bare_name = false; break; }
+            }
+            if (bare_name) return true;
+        }
+    }
+
+    return false;
+}
+
 struct WindowState {
     // State byte from the previous frame. Used to detect state machine transitions
     // (starting, paging, closing) by comparing last vs. current each frame.
@@ -319,6 +405,16 @@ struct WindowState {
     std::vector<size_t> page_offsets;
     const char*         msg_base = nullptr;
     bool                state_static = true;
+
+    // v2.30.45: true = this dialog was classified as a SYSTEM MESSAGE
+    // (item pick-up, "Received X", other speaker-less field notices) by
+    // LooksLikeCharacterSpeech() at decode time. System messages speak
+    // even when speak_dialog=false: voice acting mods voice CHARACTER
+    // dialog, never the system notices, so muting these with the story
+    // text left pick-ups completely silent in the voice-mod
+    // configuration (tester report 2026-07-31 — the same config the
+    // v2.30.36 lesson says to audit end-to-end).
+    bool is_system_msg = false;
 
     // v2.30.31: live typewriter-pointer stillness tracking — the
     // style-independent "waiting for input" signal the wait tone needs.
@@ -930,8 +1026,19 @@ static int __cdecl hook_message()
             !s_window[window_id].pending_speak) {
             WindowState& w = s_window[window_id];
             const DWORD since_speak = GetTickCount() - w.last_speak_tick;
-            if (w.next_page < w.pages.size()) {
-                if (since_speak > 600 && Config::Get().speak_dialog) {
+            // v2.30.45: pages are now decoded for EVERY dialog (the
+            // system-message classification needs them), so "unspoken
+            // pages remain" alone no longer implies this dialog is being
+            // paced out loud — a MUTED speaker dialog (speak_dialog off)
+            // parks next_page at 0 with a full cache. Without this gate
+            // the muted case would sit in the page-rerun branch forever
+            // and the v2.30.15 re-talk re-arm would never fire again in
+            // the voice-mod configuration (the pre-v2.30.45 behavior fell
+            // through naturally because the cache stayed EMPTY there).
+            const bool dialog_speaks =
+                Config::Get().speak_dialog || w.is_system_msg;
+            if (dialog_speaks && w.next_page < w.pages.size()) {
+                if (since_speak > 600) {
                     char pg[96];
                     _snprintf_s(pg, sizeof(pg), _TRUNCATE,
                         "[FF7Access] MSG win=%u counter-style PAGE %zu/%zu",
@@ -971,6 +1078,7 @@ static int __cdecl hook_message()
             s_window[window_id].page_offsets.clear();   // v2.30.19
             s_window[window_id].msg_base = nullptr;
             s_window[window_id].state_static = true;
+            s_window[window_id].is_system_msg = false;  // v2.30.45: re-classified at PENDING
             // v2.30.5: some windows' state byte never reaches CLOSE (win=2/3
             // — see the STATE MACHINE comment above), so DLGID is the only
             // reliable "this is a fresh dialog" edge for them; reset here too
@@ -1026,23 +1134,34 @@ static int __cdecl hook_message()
                 // (v2.30.32), which must work with dialog TTS off. Only
                 // the decode + speak below stay behind speak_dialog.
                 s_window[window_id].msg_base = raw_text;   // v2.30.19
-                if (Config::Get().speak_dialog) {
-                    s_window[window_id].pages = FF7Text::DecodeMessagePages(
-                        raw_text, &s_window[window_id].page_offsets);
-                    char dbg[80];
+                // v2.30.45: decode UNGATED — the speaker-vs-system
+                // classification needs the pages even with speak_dialog
+                // off, because SYSTEM messages (pick-ups) speak in every
+                // configuration. Decode cost is per-dialog noise.
+                s_window[window_id].pages = FF7Text::DecodeMessagePages(
+                    raw_text, &s_window[window_id].page_offsets);
+                s_window[window_id].is_system_msg =
+                    !LooksLikeCharacterSpeech(raw_text,
+                                              s_window[window_id].pages);
+                if (Config::Get().speak_dialog ||
+                    s_window[window_id].is_system_msg) {
+                    char dbg[96];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)",
+                        "[FF7Access] MSG win=%u id=%u [PENDING] speaking (%zu pages)%s",
                         window_id, s_window[window_id].last_dialog_id,
-                        s_window[window_id].pages.size());
+                        s_window[window_id].pages.size(),
+                        (!Config::Get().speak_dialog &&
+                         s_window[window_id].is_system_msg)
+                            ? " [SYSTEM, dialog off]" : "");
                     Log::Write(dbg);
                     log_raw_bytes("PENDING", raw_text);
                     log_lines("MSG PAGE", s_window[window_id].pages);
                     speak_page(s_window[window_id], /*interrupt=*/true);
                 } else {
-                    char dbg[80];
+                    char dbg[96];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] MSG win=%u id=%u [PENDING] tracked "
-                        "(speech off)", window_id,
+                        "(speech off, speaker dialog)", window_id,
                         s_window[window_id].last_dialog_id);
                     Log::Write(dbg);
                 }
@@ -1057,7 +1176,8 @@ static int __cdecl hook_message()
         // more page of it out to TTS per advance, instead of re-decoding (and
         // previously, re-speaking) the whole rawptr again.
         // ------------------------------------------------------------------
-        else if (paging && Config::Get().speak_dialog) {
+        else if (paging && (Config::Get().speak_dialog ||
+                            s_window[window_id].is_system_msg)) {
             speak_page(s_window[window_id], /*interrupt=*/true);
         }
         // ------------------------------------------------------------------
@@ -1078,6 +1198,7 @@ static int __cdecl hook_message()
             s_window[window_id].pages.clear();          // v2.30.4
             s_window[window_id].next_page = 0;
             s_window[window_id].wait_tone_armed = false; // v2.30.5
+            s_window[window_id].is_system_msg = false;   // v2.30.45
             // v2.30.36: also drop the pointer-liveness evidence. Leaving
             // msg_base set kept ptr_rel > 0 through the close animation,
             // and the typewriter pointer has been still since the final
@@ -1122,7 +1243,8 @@ static int __cdecl hook_message()
             s_window[window_id].page_offsets.size() ==
                 s_window[window_id].pages.size() &&
             is_valid_dialog_rawptr(raw_text) &&
-            Config::Get().speak_dialog) {
+            (Config::Get().speak_dialog ||
+             s_window[window_id].is_system_msg)) {
             const ptrdiff_t rel = raw_text - s_window[window_id].msg_base;
             if (rel > 0 && rel < 4096) {
                 // Furthest page whose content the display has entered —
