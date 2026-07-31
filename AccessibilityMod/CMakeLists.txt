@@ -46,6 +46,9 @@ set(MOD_SOURCES
                             # loaded dynamically from System32 at runtime,
                             # so winmm.lib is deliberately NOT linked —
                             # see "SELF-PROXY SAFETY" in tones.h.
+    src/settings_menu.cpp   # F8 in-game audio-only accessibility menu
+                            # (v2.30.42): browse/edit every cfg setting by
+                            # ear, live apply + live save, no restart.
     src/tts.cpp
     src/gamepad.cpp         # right-analog-stick pathfinder input (v2.21).
                             # XInput is loaded dynamically at runtime, so no

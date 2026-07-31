@@ -38,6 +38,10 @@ namespace {
     static FILE*            g_file = nullptr;
     static CRITICAL_SECTION g_cs;
     static bool             g_cs_init = false;
+    // True once the file has been created/truncated this session. Lets a
+    // runtime re-enable (F8 menu, v2.30.42) reopen in APPEND mode so an
+    // off/on toggle can't wipe the session lines already captured.
+    static bool             g_opened_this_session = false;
 
     // ---------------------------------------------------------------------------
     // get_log_path: Determine the full path for ffvii_accessibility.log.
@@ -104,6 +108,7 @@ void Init(bool enabled)
         g_file = nullptr;
         return;
     }
+    g_opened_this_session = true;
 
     // Write a header so the log file has clear session boundaries.
     SYSTEMTIME st;
@@ -116,6 +121,43 @@ void Init(bool enabled)
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond);
     fflush(g_file);
+}
+
+void SetEnabled(bool enabled)
+{
+    // The critical section may not exist if this somehow ran before Init();
+    // Init() is always called at startup (with whatever the cfg said), so
+    // in practice g_cs_init is true here. Guarded anyway.
+    if (g_cs_init) EnterCriticalSection(&g_cs);
+
+    if (enabled && !g_file) {
+        char log_path[MAX_PATH] = {};
+        if (get_log_path(log_path, MAX_PATH)) {
+            // First enable this session truncates like Init(true) would
+            // have (a clean current-session log); a RE-enable appends so
+            // the earlier part of this session's capture survives the
+            // toggle (see the g_opened_this_session comment).
+            const char* mode = g_opened_this_session ? "a" : "w";
+            if (fopen_s(&g_file, log_path, mode) != 0) g_file = nullptr;
+            if (g_file) {
+                g_opened_this_session = true;
+                SYSTEMTIME st;
+                GetLocalTime(&st);
+                fprintf(g_file,
+                    "# Debug logging enabled from the in-game menu: "
+                    "%04u-%02u-%02u %02u:%02u:%02u\n",
+                    st.wYear, st.wMonth, st.wDay,
+                    st.wHour, st.wMinute, st.wSecond);
+                fflush(g_file);
+            }
+        }
+    } else if (!enabled && g_file) {
+        fputs("# Debug logging disabled from the in-game menu.\n", g_file);
+        fclose(g_file);
+        g_file = nullptr;
+    }
+
+    if (g_cs_init) LeaveCriticalSection(&g_cs);
 }
 
 void Write(const char* msg)

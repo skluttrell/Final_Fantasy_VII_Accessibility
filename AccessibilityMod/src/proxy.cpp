@@ -76,6 +76,7 @@
 #include "config.h"
 #include "log.h"
 #include "tones.h"   // waveOut tone playback (v2.30.41) — replaces Beep()
+#include "settings_menu.h" // F8 in-game audio-only settings menu (v2.30.42)
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
 #include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
@@ -184,6 +185,7 @@ static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
 static HANDLE g_dialogtone_thread = nullptr;
 static HANDLE g_fieldnav_thread   = nullptr;
+static HANDLE g_settingsmenu_thread = nullptr;   // F8 menu (v2.30.42)
 static HANDLE g_nameentry_thread  = nullptr;
 static HANDLE g_gameover_thread   = nullptr;
 
@@ -2819,7 +2821,10 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
         const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
-        const bool i_edge  = focused && i_down && !i_was_down;
+        // v2.30.42: the F8 settings menu owns I while open (same
+        // stand-down rule as the pathfinder's whole key set).
+        const bool i_edge  = focused && !SettingsMenu::IsOpen() &&
+                             i_down && !i_was_down;
         i_was_down = i_down;
         if (i_edge) {
             std::wstring desc;
@@ -3117,7 +3122,10 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
         const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
-        const bool i_edge  = focused && i_down && !i_was_down;
+        // v2.30.42: the F8 settings menu owns I while open (same
+        // stand-down rule as the pathfinder's whole key set).
+        const bool i_edge  = focused && !SettingsMenu::IsOpen() &&
+                             i_down && !i_was_down;
         i_was_down = i_down;
         if (i_edge) {
             uint32_t w = 0xFFFFFFFF;
@@ -3377,7 +3385,10 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
         const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
-        const bool i_edge  = focused && i_down && !i_was_down;
+        // v2.30.42: the F8 settings menu owns I while open (same
+        // stand-down rule as the pathfinder's whole key set).
+        const bool i_edge  = focused && !SettingsMenu::IsOpen() &&
+                             i_down && !i_was_down;
         i_was_down = i_down;
         if (i_edge) {
             uint32_t full_id = 0xFFFFFFFF;
@@ -8937,11 +8948,18 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
 
+        // v2.30.42: while the F8 settings menu is open it OWNS J/L/K and
+        // the bracket/minus/equals aliases — one keypress must never both
+        // change a setting and cycle a destination. Suppress edges the
+        // same way unfocus does (state still tracked, so closing the menu
+        // cannot manufacture a stale edge here).
+        const bool settings_menu_open = SettingsMenu::IsOpen();
+
         bool pressed[KEY_COUNT] = {};
         bool any_pressed = false;
         for (int k = 0; k < KEY_COUNT; ++k) {
             const bool down = (GetAsyncKeyState(kVKs[k]) & 0x8000) != 0;
-            pressed[k] = focused && down && !was_down[k];
+            pressed[k] = focused && !settings_menu_open && down && !was_down[k];
             was_down[k] = down;
             any_pressed = any_pressed || pressed[k];
         }
@@ -8954,7 +8972,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // (verified — see gamepad.h). gamepad_nav=false skips even the poll.
         GamepadNav::Actions pad = {};
         if (Config::Get().gamepad_nav)
-            pad = GamepadNav::Poll(focused);
+            pad = GamepadNav::Poll(focused && !settings_menu_open);
 
         if (!any_pressed && !pad.Any())
             continue;
@@ -10513,6 +10531,18 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start field navigation thread.");
         }
 
+        // F8 in-game accessibility menu (v2.30.42). Started here — not
+        // gated on any game state — because settings should be reachable
+        // from the title screen onward (the menu itself refuses only the
+        // naming screen). Takes the shared stop event like every other
+        // polling thread.
+        g_settingsmenu_thread = SettingsMenu::Start(g_cursor_stop_event);
+        if (g_settingsmenu_thread) {
+            Log::Write("[FF7Access] Settings menu (F8) thread started.");
+        } else {
+            Log::Write("[FF7Access] Warning: could not start settings menu thread.");
+        }
+
         // Name-entry screen TTS (v2.8). Grid cursor + name buffer confirmed
         // live 2026-07-12 (ff7_name_entry_scan.py / ff7_name_entry_verify.py):
         // NAME_ENTRY_COL=0xDD4538, NAME_ENTRY_ROW=0xDD453C,
@@ -10754,6 +10784,11 @@ void Shutdown()
         WaitForSingleObject(g_wallbump_thread, 500);
         CloseHandle(g_wallbump_thread);
         g_wallbump_thread = nullptr;
+    }
+    if (g_settingsmenu_thread) {
+        WaitForSingleObject(g_settingsmenu_thread, 500);
+        CloseHandle(g_settingsmenu_thread);
+        g_settingsmenu_thread = nullptr;
     }
     if (g_dialogtone_thread) {
         WaitForSingleObject(g_dialogtone_thread, 500);

@@ -197,7 +197,36 @@ struct Settings {
 void Load();
 
 // Get returns a const reference to the active settings.
-// Settings are read-only after Load() returns.
+//
+// Settings were strictly read-only after Load() until v2.30.42; the F8
+// in-game accessibility menu now mutates them at runtime through
+// GetMutable() below. Consumers need no changes: every reader already
+// re-reads Config::Get().<field> at its point of use (audited 2026-07-31
+// while building the menu — that audit is what makes live application
+// work with no restart), and every field is a bool or int, 4-byte-or-
+// smaller and naturally aligned, so a concurrent read sees either the
+// old or the new value — never a torn one — on x86.
 const Settings& Get();
+
+// GetMutable returns the same global instance writable. SINGLE-WRITER
+// CONTRACT: only the settings-menu thread (settings_menu.cpp) may write,
+// and only one such thread exists — that is what makes the lock-free
+// x86 word-write model above sound. Do not write from hooks or other
+// polling threads; add a proper lock first if a second writer ever
+// becomes necessary.
+Settings& GetMutable();
+
+// SaveSetting rewrites ONE key's value inside ffvii_accessibility.cfg,
+// preserving every other byte of the file (user comments, the glossary,
+// formatting). Strategy: replace the first ACTIVE (uncommented)
+// "key = ..." line; if the key has no active line (hand-trimmed or
+// pre-v2.30.39 cfg), append "key = value" at the end of the file, which
+// wins because the parser is last-one-wins. If the cfg is missing
+// entirely, the canonical default file is created first, then edited.
+// Returns false when the file cannot be written (read-only install dir)
+// — the in-memory change still applies for the session; callers should
+// tell the user the change will not survive a restart.
+// Called from the settings-menu thread only.
+bool SaveSetting(const char* key, const char* value);
 
 } // namespace Config

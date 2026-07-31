@@ -4108,6 +4108,78 @@ Deployed both installs, hash-verified (CA96B2A4658FBD66).
 
 ---
 
+### v2.30.42 (2026-07-31): F8 in-game audio-only accessibility menu
+
+**User request**: change every mod setting from inside the game — spoken,
+no graphics, changes live immediately, saved immediately, no restarts.
+
+**F8 verified free before claiming it**: accessiblity_keys.txt already
+designates "F8: Open mod menu." (parity, not invention); the engine's
+ff7input.cfg contains no DIK_F8 (0x42) byte; FFNx's only hotkey is
+devtools on F12 (0x7B, read from the live FFNx.toml); game keyboard
+defaults are numpad-centric.
+
+**Why the in-menu keys are J/L/K/I, not arrows**: a version.dll proxy
+cannot eat keys — the game keeps receiving everything while the menu is
+open. Arrows would walk the character while browsing. J/L/K/I carry no
+game function (pathfinder-proven since v2.14), and the verbs map 1:1
+onto the established scheme (J/L cycle, Shift+J/L modify, K announce,
+I describe — same I as the shop/config description key). One modal at a
+time: FieldNavThread and the three I-key description handlers stand
+down on SettingsMenu::IsOpen() (edge state still tracked so close can't
+manufacture stale edges); the gamepad stick is suppressed the same way.
+The ONE context where the menu stands down is the naming screen
+(GAME_MODE 6 — J/L/K are letters there and would type into the name):
+F8 refuses with speech, and the menu auto-closes if naming appears.
+
+**New module settings_menu.cpp/h**: table-driven (18 entries: cfg key,
+spoken name, kind bool/volume/dirstyle, member pointer, one-line I-key
+description). 40ms poll, focus-gated, Ctrl chords ignored (reserved by
+the parity file). Selection persists across open/close within a session
+(toggle-test-toggle-back loops). Open speaks the full key help every
+time + current setting QUEUED (interrupt=false — two interrupt=true
+utterances back-to-back would cut the help off; caught in review before
+deploy). tone_volume changes play an 880 Hz demo at the new loudness.
+
+**Live apply**: audited every consumer — all read Config::Get().<field>
+at point of use, so changes are live within one poll by construction.
+ONE exception found: debug_log (file handle opened once at startup) →
+new Log::SetEnabled(bool): first enable this session truncates like
+Init(true), re-enable appends (an off/on toggle must not wipe the very
+capture the user is making), disable closes flushed.
+
+**Live save**: new Config::SaveSetting(key, value) — line-based in-place
+rewrite of the cfg; replaces the first ACTIVE assignment line (comments
+can't match — the glossary stays inert per the v2.30.39 rule); appends
+at end (last-one-wins) if no active line exists; recreates the canonical
+default first if the cfg was deleted mid-session. Save failure (read-only
+dir) is spoken: "change lasts until the game closes." Config::GetMutable()
+breaks the old settings-are-immutable contract DELIBERATELY, with a
+single-writer rule (menu thread only) — all fields are ≤4-byte aligned,
+so concurrent readers see old-or-new, never torn, on x86.
+
+**Offline dry-run before deploy** (the SaveSetting harness compiled
+against the REAL config.cpp, run on a copy of the canonical cfg):
+4 targeted lines replaced in place, unknown key appended under its
+comment, all 378 other lines byte-identical (glossary untouched),
+values reload correctly, and the speak_battle write did NOT touch
+speak_battle_menu (the prefix hazard is what the '=' check after the
+key match is for).
+
+No addresses involved — no §4/§14 changes (GAME_MODE/NAME_ENTRY
+constants already existed). VERIFY (play): F8 opens/closes with speech
+everywhere but naming; J/L wrap through 18 settings; Shift+L on Tone
+volume steps +10 with a demo tone; wall tone toggle takes effect at the
+next wall; pathfinder ignores J/L while the menu is open and works
+again after close; cfg file shows the new values immediately (check
+while the game still runs); debug_log toggled off then on mid-session
+appends rather than truncating; F8 on the naming screen refuses with
+speech.
+
+Deployed both installs, hash-verified (B5365D596CD2E58F).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

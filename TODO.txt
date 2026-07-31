@@ -5,6 +5,25 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[F8MENU] In-game audio settings menu — SHIPPED v2.30.42 (2026-07-31), awaiting play-test
+------------------------------------------------------------------------
+F8 toggles a spoken settings menu (no graphics): J/L or [ ] move
+through all 18 cfg settings, Shift+J/L or - = change (volume steps 10
+with a demo tone), K repeats, I describes, F8 closes. Changes apply
+live (all consumers re-read Config::Get() — audited; debug_log via new
+Log::SetEnabled) and save to the cfg instantly (SaveSetting in-place
+line rewrite, offline-verified surgical on the canonical cfg).
+Pathfinder + shop/materia/equip I-keys stand down while open; naming
+screen refuses the menu (J/L/K would type letters). VERIFY: full
+checklist in research §8 v2.30.42 — especially: J/L wrap + position
+speech, save-failure warning absent on normal installs, cfg updated
+while game still running, pathfinder resumes after close, F8 refusal
+speech on naming screen, mid-session debug_log off/on appends.
+RESIDUALS (deliberate): no gamepad binding for the menu itself
+(keyboard-only; stick still suspended while open); menu speech honors
+interrupt=false queuing (user preference, may feel slow when browsing
+fast — revisit only if reported).
+
 [TONES] waveOut tone player — SHIPPED v2.30.41 (2026-07-31), awaiting tester verify
 ------------------------------------------------------------------------
 Remote tester (Win11 ARM VM on Apple Silicon, 7th Heaven + Echo-S):

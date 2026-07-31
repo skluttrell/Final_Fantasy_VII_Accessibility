@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>    // strtol — tone_volume numeric parse (v2.30.41)
+#include <vector>     // SaveSetting's line buffer (v2.30.42)
 
 namespace Config {
 
@@ -70,33 +71,38 @@ namespace {
             if (c != '\r') out.put(c);
         }
     }
+
+    // Full path of ffvii_accessibility.cfg, next to this DLL. Factored out
+    // of Load() in v2.30.42 because SaveSetting() needs the identical path
+    // — two copies of the own-module-directory dance would eventually
+    // drift. Empty string on failure.
+    std::string config_file_path() {
+        HMODULE hSelf = NULL;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&config_file_path),
+            &hSelf);
+
+        char dll_path[MAX_PATH] = {};
+        if (!GetModuleFileNameA(hSelf, dll_path, MAX_PATH)) return {};
+
+        std::string path(dll_path);
+        const size_t last_sep = path.find_last_of("\\/");
+        if (last_sep != std::string::npos) {
+            path = path.substr(0, last_sep + 1);
+        }
+        path += "ffvii_accessibility.cfg";
+        return path;
+    }
 } // anonymous namespace
 
 void Load()
 {
-    // Find the directory containing this DLL so we can locate the config file
-    // next to it. GetModuleFileNameA with a NULL HMODULE would give the EXE path.
-    // We need to pass our own HMODULE. We obtain it via a dummy call to
-    // GetModuleHandleExA using the address of this function as an anchor —
-    // this is the standard portable pattern for a DLL to find its own path.
-    HMODULE hSelf = NULL;
-    GetModuleHandleExA(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCSTR>(&Load),
-        &hSelf
-    );
-
-    char dll_path[MAX_PATH] = {};
-    GetModuleFileNameA(hSelf, dll_path, MAX_PATH);
-
-    // Strip the DLL filename to get just the directory.
-    // e.g. "C:\Games\FF7\winmm.dll" → "C:\Games\FF7\"
-    std::string config_path(dll_path);
-    const size_t last_sep = config_path.find_last_of("\\/");
-    if (last_sep != std::string::npos) {
-        config_path = config_path.substr(0, last_sep + 1);
-    }
-    config_path += "ffvii_accessibility.cfg";
+    // Locate the config file next to this DLL (own-module-directory
+    // pattern — see config_file_path() above, factored out in v2.30.42).
+    const std::string config_path = config_file_path();
+    if (config_path.empty()) return;   // keep compiled defaults
 
     // If the config file doesn't exist, create the documented default file
     // (v2.30.39) and keep the compiled defaults — which are, by
@@ -187,6 +193,93 @@ void Load()
 const Settings& Get()
 {
     return g_settings;
+}
+
+Settings& GetMutable()
+{
+    // Single-writer contract documented in config.h: the settings-menu
+    // thread is the only caller allowed to WRITE through this reference.
+    return g_settings;
+}
+
+bool SaveSetting(const char* key, const char* value)
+{
+    if (!key || !value) return false;
+    const std::string path = config_file_path();
+    if (path.empty()) return false;
+
+    // Read the whole file as lines. Text mode strips CRLF on the way in;
+    // the rewrite below re-expands '\n' to CRLF, so the file stays
+    // Notepad-friendly regardless of how it was created.
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(path);
+        if (!in.is_open()) {
+            // Cfg deleted mid-session: recreate the canonical default
+            // (same behavior as Load() on first run), then edit that.
+            write_default_config(path);
+            in.open(path);
+            if (!in.is_open()) return false;   // unwritable directory
+        }
+        std::string line;
+        while (std::getline(in, line)) lines.push_back(line);
+    }
+
+    // Find the first ACTIVE assignment line for this key: optional leading
+    // whitespace, the key (case-insensitive), optional whitespace, '='.
+    // Commented glossary lines start with '#' and can never match, which
+    // is exactly the v2.30.39 rule (glossary must stay inert).
+    std::string want(key);
+    std::transform(want.begin(), want.end(), want.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    size_t match = lines.size();
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string& l = lines[i];
+        size_t p = 0;
+        while (p < l.size() && std::isspace(static_cast<unsigned char>(l[p]))) ++p;
+        if (p + want.size() > l.size()) continue;
+        bool eq = true;
+        for (size_t k = 0; k < want.size(); ++k) {
+            if (std::tolower(static_cast<unsigned char>(l[p + k])) != want[k]) {
+                eq = false;
+                break;
+            }
+        }
+        if (!eq) continue;
+        size_t q = p + want.size();
+        while (q < l.size() && std::isspace(static_cast<unsigned char>(l[q]))) ++q;
+        if (q < l.size() && l[q] == '=') {
+            match = i;
+            break;
+        }
+    }
+
+    const std::string assignment = std::string(key) + " = " + value;
+    if (match < lines.size()) {
+        // Replace the line wholesale. Any trailing same-line comment is
+        // dropped — the canonical top list has none (descriptions live in
+        // the glossary), and a hand-added one describing the OLD value
+        // would be exactly the stale-comment hazard we avoid elsewhere.
+        lines[match] = assignment;
+    } else {
+        // No active line (hand-trimmed or ancient cfg): append at the end,
+        // where last-one-wins parsing guarantees it takes effect.
+        lines.push_back("");
+        lines.push_back("# Set by the in-game accessibility menu (F8):");
+        lines.push_back(assignment);
+    }
+
+    // Rewrite in place. A crash mid-write could truncate the file, but the
+    // exposure is a handful of milliseconds for a ~17 KB file, the mod
+    // recreates the canonical default on the next launch if the file is
+    // lost, and a temp+rename dance would double the failure modes in the
+    // one directory (Program Files) where creating extra files is most
+    // likely to be denied. Simple rewrite is the right trade here.
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) return false;
+    for (const std::string& l : lines) out << l << '\n';
+    return out.good();
 }
 
 } // namespace Config

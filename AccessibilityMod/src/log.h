@@ -48,6 +48,22 @@ void Init(bool enabled);
 void Write(const char* msg);
 
 /*
+ * SetEnabled: turn FILE logging on or off at runtime (v2.30.42 — the F8
+ * in-game accessibility menu lets the user flip debug_log mid-session,
+ * and a log toggle that only takes effect after a restart would defeat
+ * the menu's whole no-restart promise).
+ *
+ * Enabling when the file was never opened this session creates/truncates
+ * it exactly like Init(true) (fresh session log). Re-enabling after a
+ * mid-session disable REOPENS IN APPEND mode, so toggling off and on
+ * again cannot destroy the earlier lines of the very session the user is
+ * trying to capture. Disabling closes the file (flushed); DebugView
+ * output is unaffected either way. Thread-safe; no-op if the state
+ * already matches.
+ */
+void SetEnabled(bool enabled);
+
+/*
  * Shutdown: Flush and close the log file.
  * Called from DllMain on DLL_PROCESS_DETACH. Safe to call even if Init()
  * was never called or file logging was disabled.
