@@ -597,7 +597,8 @@ static volatile DWORD s_last_dialog_tick = 0;
 
 // v2.30.5: edge-triggered "please beep" signals for the two dialog audio
 // cues. hook_message/hook_ask run on the GAME's main thread every frame —
-// Beep() blocks for its whole duration, so calling it directly from here
+// tone playback (Tones::Play, waveOut since v2.30.41) blocks for the
+// tone's whole duration, so calling it directly from here
 // would stall the game itself (same reasoning as every other tone in this
 // mod: WallBumpThread and the proximity/wander chirps in proxy.cpp all poll
 // a background thread instead of beeping inline). These are LONGs (not

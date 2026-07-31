@@ -5,6 +5,22 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TONES] waveOut tone player — SHIPPED v2.30.41 (2026-07-31), awaiting tester verify
+------------------------------------------------------------------------
+Remote tester (Win11 ARM VM on Apple Silicon, 7th Heaven + Echo-S):
+NO tones audible, but their log PROVED every tone path fired (WALL
+body lines print inside the Beep-calling block) — kernel32 Beep() is
+silent in their VM. All 7 tone sites now route through Tones::Play
+(tones.cpp: waveOut sine on WAVE_MAPPER, blocking, 5ms fades, Beep()
+fallback on any failure; winmm loaded from System32 by absolute path,
+never linked). New cfg setting tone_volume (0-100, default 60, master
+mute at 0) — in the canonical cfg list + glossary per the [CFG] rule.
+VERIFY (tester): new build audible in the VM; log shows "Tone player:
+waveOut ready". VERIFY (local): tones unchanged-but-cleaner, follow
+the game's Volume Mixer slider, tone_volume=30 quieter. Watch for:
+first-tone latency (per-call waveOutOpen on a slow driver), overlap
+of simultaneous tones (now mixes instead of queuing).
+
 [CFG] Config restructure + DLL-created default — SHIPPED v2.30.39 (2026-07-27)
 ------------------------------------------------------------------------
 User request: all settings at the top of ffvii_accessibility.cfg one

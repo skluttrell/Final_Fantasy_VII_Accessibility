@@ -4048,6 +4048,66 @@ Deployed both installs, hash-verified (64BF90FD00FDFF17).
 
 ---
 
+### v2.30.41 (2026-07-31): waveOut tone player — Beep() silent on tester's VM
+
+**The report**: a remote tester (running the Echo-S voice mod via 7th
+Heaven) heard NO wall tones and NO interaction tones. Their FFNx.log
+identified the machine: Windows 11 ARM Insider VM on Apple Silicon,
+VMware virtual audio/GPU.
+
+**The diagnosis came entirely from their existing logs** — no new build
+needed: the `WALL body:` lines ('Shinra guard'/'Biggs'/'Jessie'/'Wedge',
+a dozen-plus across the session) print INSIDE the block that has just
+called `Beep()` (proxy.cpp WallBumpThread), and `MSG wait tone` lines
+fired too — so every tone code path was executing and calling Beep();
+the tester simply never heard it. The two audio paths they COULD hear
+(Tolk→NVDA speech, DirectSound/FFNx game audio incl. footsteps) are
+exactly the two paths the mod's tones didn't use. kernel32 Beep()'s
+legacy system-beep route returns success with no audible output in many
+VMs/remote sessions and when the Volume Mixer's "System Sounds" slider
+is muted. 7th Heaven / footstep sounds: red herrings (game-side audio
+cannot intercept a kernel32 call in our DLL).
+
+**Fix — new tones.cpp/h module**: all 7 tone call sites (wall thud 220,
+prox chirp 1175, wander cue 880, dialog wait/choice 1568 Hz) now go
+through `Tones::Play(freq, ms)` — a synthesized 16-bit mono 44.1 kHz
+sine played via winmm waveOut on WAVE_MAPPER, i.e. the same default-
+endpoint route as the audio the tester demonstrably hears. Design:
+BLOCKING like Beep() (drop-in: the 300ms wall repeat gate and the
+choice tone's Sleep(60) double-beep gap keep their timing by
+construction); per-call waveOutOpen so a mid-session default-device
+switch is followed (Beep parity); 5ms fade in/out inside the duration
+(kills Beep's edge click); winmm resolved from System32 by ABSOLUTE
+PATH, never linked (self-proxy safety — the winmm_proxy.cpp technique);
+winmm pinned for process lifetime (tone threads join with 500ms
+timeouts at shutdown — FreeLibrary could unmap under a live
+waveOutWrite); every failure path falls back to Beep() with a
+once-per-session log line, so no system behaves worse than before.
+
+**New config setting `tone_volume` (0-100, default 60)**: master
+loudness for ALL tones (0 = master mute; per-tone bools unchanged) —
+amplitude = full-scale·(v/100)² (perceptually even steps; 60 ≈ -9 dB
+≈ Beep's perceived level). Beep() had no volume control at all. Added
+to the canonical cfg in BOTH places (list + commented glossary, per the
+v2.30.39 rule) + strtol parse with garbage-keeps-default and clamping.
+Behavior shift native users may notice: tones now live in the game's
+audio session (game slider in Volume Mixer), not "System Sounds".
+
+**Diagnostics**: `Tones::Init()` (after Log::Init, before any tone
+thread) logs `Tone player: waveOut ready (system winmm).` or the
+fallback line — every future "no tones" report now states its playback
+path up front. Runtime waveOut failures log ONCE per session.
+
+No addresses involved — no §4/§14 changes. VERIFY (tester): send the
+new build; tones should be audible in the VM; their log should show
+the `waveOut ready` line. VERIFY (local, passive): tones sound the
+same (slightly cleaner edges), follow the game's mixer slider, and
+`tone_volume = 30` in the cfg audibly quiets them.
+
+Deployed both installs, hash-verified (CA96B2A4658FBD66).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

@@ -75,6 +75,7 @@
 #include "tts.h"
 #include "config.h"
 #include "log.h"
+#include "tones.h"   // waveOut tone playback (v2.30.41) — replaces Beep()
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
 #include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
@@ -6090,14 +6091,17 @@ static float HeldDirInputDeg(uint32_t keys);
 //     hook call, so the gate also covers the frame gap between dialog pages.
 //
 // THE TONE:
-//   Beep(220 Hz, 60 ms) — kernel32's synthesized tone through the default
-//   audio device. Chosen over TTS because a tone is instant, language-free,
-//   and doesn't interrupt any speech in progress. 220 Hz sits well below
-//   both the cue beeps used by investigation scripts (800/1400 Hz) and
-//   typical screen reader speech fundamentals, so it reads as a distinct
-//   "thud". Beep() blocks this thread for the 60ms duration — acceptable,
-//   since the next poll simply happens a frame later. Repeats every 300ms
-//   for as long as contact continues (continuous-but-not-frantic feedback).
+//   Tones::Play(220 Hz, 60 ms) — a waveOut sine on the default audio
+//   device (v2.30.41; formerly kernel32 Beep(), whose system-beep route is
+//   silent on some systems — VMs and remote sessions — see tones.h).
+//   Chosen over TTS because a tone is instant, language-free, and doesn't
+//   interrupt any speech in progress. 220 Hz sits well below both the cue
+//   beeps used by investigation scripts (800/1400 Hz) and typical screen
+//   reader speech fundamentals, so it reads as a distinct "thud". Play()
+//   blocks this thread for the 60ms duration exactly as Beep() did —
+//   acceptable, since the next poll simply happens a frame later. Repeats
+//   every 300ms for as long as contact continues (continuous-but-not-
+//   frantic feedback).
 //
 // MEMORY SAFETY:
 //   Every poll re-reads the array pointer (the engine owns it; on this
@@ -6328,7 +6332,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             last_beep_tick = now;
             // One-time log per contact episode would require more state; log
             // nothing here — at 3+ beeps/second even debug logging would spam.
-            Beep(kBeepFreqHz, kBeepDurMs);
+            Tones::Play(kBeepFreqHz, kBeepDurMs);
 
             // v2.30.22: if a PERSON stands in the held direction, this
             // "wall" is a body — say who, once per contact episode (see the
@@ -6379,14 +6383,15 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // DialogToneThread (v2.30.5): plays the two story-dialog audio cues.
 //
 // hook_message/hook_ask (hooks.cpp) run on the GAME's main thread every
-// frame and can only SET edge-triggered flags — Beep() blocks for its whole
-// duration, so calling it directly from an opcode hook would stall the game
-// itself every time it fires (the same reasoning behind every other tone in
-// this file: WallBumpThread above, and the proximity/wander chirps further
-// down, all poll a background thread instead of beeping inline from a
-// hook). This thread just polls Hooks::ConsumeDialogWaitTone/
-// ConsumeDialogChoiceTone and does the actual (blocking, but only THIS
-// thread blocks) Beep() calls.
+// frame and can only SET edge-triggered flags — Tones::Play() blocks for
+// the tone's whole duration (as Beep() did before v2.30.41), so calling it
+// directly from an opcode hook would stall the game itself every time it
+// fires (the same reasoning behind every other tone in this file:
+// WallBumpThread above, and the proximity/wander chirps further down, all
+// poll a background thread instead of beeping inline from a hook). This
+// thread just polls Hooks::ConsumeDialogWaitTone/ConsumeDialogChoiceTone
+// and does the actual (blocking, but only THIS thread blocks) Tones::Play
+// calls.
 //
 // Both cues use the SAME pitch (1568 Hz, distinct from every other tone in
 // this mod: 220 Hz wall thud, 880 Hz wandering cue, 1175 Hz proximity
@@ -6409,12 +6414,14 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
             break;
 
         if (Hooks::ConsumeDialogWaitTone())
-            Beep(kToneHz, kToneMs);
+            Tones::Play(kToneHz, kToneMs);
 
         if (Hooks::ConsumeDialogChoiceTone()) {
-            Beep(kToneHz, kToneMs);
+            // Play() blocks until the first beep finishes (like Beep()
+            // did), so the Sleep is purely the audible gap between the two.
+            Tones::Play(kToneHz, kToneMs);
             Sleep(kDoubleGapMs);
-            Beep(kToneHz, kToneMs);
+            Tones::Play(kToneHz, kToneMs);
         }
     }
 
@@ -8812,7 +8819,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             const auto try_beep = [&]() {
                 if (quiet_ok &&
                     GetTickCount64() - last_prox_beep >= PROX_MIN_GAP_MS) {
-                    Beep(PROX_BEEP_HZ, PROX_BEEP_MS);
+                    Tones::Play(PROX_BEEP_HZ, PROX_BEEP_MS);
                     last_prox_beep = GetTickCount64();
                 }
             };
@@ -9552,7 +9559,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // Wandering cue: speech is async, so the beep overlaps the
             // start of the announcement instead of delaying it.
             if (is_wandering(dests[selection].model_slot))
-                Beep(WANDER_BEEP_HZ, WANDER_BEEP_MS);
+                Tones::Play(WANDER_BEEP_HZ, WANDER_BEEP_MS);
         };
 
         // Category changes were applied BEFORE the list build (v2.15.2 fix)
@@ -9804,7 +9811,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // Wandering cue on the directions query too — a moving target's
         // direction is a snapshot, and the beep says exactly that.
         if (is_wandering(d.model_slot))
-            Beep(WANDER_BEEP_HZ, WANDER_BEEP_MS);
+            Tones::Play(WANDER_BEEP_HZ, WANDER_BEEP_MS);
     }
 
     return 0;
@@ -10250,6 +10257,14 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     // and after the loader lock is released (we call GetModuleHandleA and
     // VirtualProtect).  The 200ms sleep above satisfies both requirements.
     SetupSoundIATHook();
+
+    // Resolve the waveOut tone player (v2.30.41). Must run after Log::Init
+    // (its ready/fallback line is a diagnostic we want in every bug-report
+    // log — the 2026-07-31 "no tones" report was undebuggable without
+    // knowing which playback path was active) and BEFORE any of the tone-
+    // playing threads below are created, so Tones::Play never races the
+    // one-time pointer resolution.
+    Tones::Init();
 
     // Create the shared stop event used by both TitleCursorThread and
     // MenuCursorThread. It is a manual-reset event: one SetEvent() in

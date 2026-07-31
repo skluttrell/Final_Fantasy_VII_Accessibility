@@ -40,6 +40,12 @@ set(MOD_SOURCES
     src/ff7_text.cpp
     src/config.cpp
     src/log.cpp             # debug logging: file output + OutputDebugStringA
+    src/tones.cpp           # waveOut tone playback (v2.30.41). Replaces
+                            # kernel32 Beep(), which is silent on some
+                            # systems (VMs/remote desktops). winmm is
+                            # loaded dynamically from System32 at runtime,
+                            # so winmm.lib is deliberately NOT linked —
+                            # see "SELF-PROXY SAFETY" in tones.h.
     src/tts.cpp
     src/gamepad.cpp         # right-analog-stick pathfinder input (v2.21).
                             # XInput is loaded dynamically at runtime, so no

@@ -94,7 +94,8 @@ unsigned long LastDialogActivityTick();
  *
  * WHY "CONSUME" (test-and-clear) INSTEAD OF A PLAIN GETTER:
  *   hook_message/hook_ask run on the GAME's main thread and can only SET
- *   these flags — Beep() blocks for its whole duration, so calling it
+ *   these flags — tone playback (Tones::Play, waveOut since v2.30.41)
+ *   blocks for the tone's whole duration, so calling it
  *   directly from an opcode hook would stall the game itself every time
  *   (same reasoning as WallBumpThread and the proximity/wander chirps in
  *   proxy.cpp: all of this mod's tones are played from a background polling

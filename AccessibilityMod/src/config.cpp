@@ -20,6 +20,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>    // strtol — tone_volume numeric parse (v2.30.41)
 
 namespace Config {
 
@@ -159,6 +160,20 @@ void Load()
                 g_settings.turn_by_turn = false;
             else if (v == "turns" || v == "turn_by_turn" || v == "path")
                 g_settings.turn_by_turn = true;
+        }
+        // tone_volume takes a NUMBER (0-100), not a boolean. strtol with an
+        // end-pointer check so garbage ("loud", "") keeps the compiled
+        // default instead of atoi's silent 0 — a typo must not mute every
+        // tone in the mod (same keep-the-default stance as direction_style).
+        // Out-of-range numbers clamp rather than reject: the user's intent
+        // ("150" = loud, "-5" = off) is unambiguous.
+        else if (key == "tone_volume") {
+            char* end = nullptr;
+            const long v = strtol(value.c_str(), &end, 10);
+            if (end != value.c_str()) {
+                g_settings.tone_volume =
+                    static_cast<int>(v < 0 ? 0 : (v > 100 ? 100 : v));
+            }
         }
         else if (key == "gamepad_nav")   g_settings.gamepad_nav    = parse_bool(value);
         else if (key == "announce_map_change")

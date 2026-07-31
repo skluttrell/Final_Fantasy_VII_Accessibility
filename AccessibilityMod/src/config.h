@@ -164,6 +164,17 @@ struct Settings {
     // Default: true.
     bool wall_bump_tone = true;
 
+    // tone_volume: Loudness of ALL the mod's audio cues (wall thud,
+    // proximity chirp, wandering cue, dialog wait/choice tones) on a 0-100
+    // scale. Exists since v2.30.41, when tone playback moved from kernel32
+    // Beep() (fixed loudness, silently broken in VMs/remote sessions) to a
+    // waveOut stream on the default audio device (tones.cpp). 0 silences
+    // every tone without touching the individual tone switches; the
+    // per-tone bools above still control WHICH cues fire. Values outside
+    // 0-100 are clamped at load.
+    // Default: 60 (chosen to sit near Beep()'s perceived loudness).
+    int tone_volume = 60;
+
     // interrupt: If true, new TTS output interrupts currently-playing speech.
     // In menus and dialog, this gives faster, more responsive feedback.
     // Set to false if your screen reader handles queuing better than interruption.
