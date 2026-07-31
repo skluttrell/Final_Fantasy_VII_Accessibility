@@ -15,7 +15,9 @@ under AccessibilityMod/. Users can opt out live via F8 > Debug log.
 
 [K2SCAN] Kernel2 scanner crash fix — SHIPPED v2.30.43 (2026-07-31), awaiting tester verify
 ------------------------------------------------------------------------
-Tester crash at the scorpion boss (Echo-S/7th Heaven, VM): TOCTOU in
+Tester crash at the scorpion boss (NATIVE Win11, i5/GTX1650, FFNx
+stable — NOT the VM tester; environment corrected by user 2026-07-31,
+see research §8): TOCTOU in
 ScanKernel2Sections — region freed mid-memchr-sweep => AV on the
 BattleMenuThread (FFNx dump symbolicated via new /MAP linker map;
 research §8 v2.30.43 has the full derivation). Fix: SEH guard per

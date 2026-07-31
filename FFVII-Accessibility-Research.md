@@ -4182,10 +4182,26 @@ Deployed both installs, hash-verified (B5365D596CD2E58F).
 
 ### v2.30.43 (2026-07-31): kernel2 scanner crash — SEH guard + fruitless backoff
 
-**The report**: tester (Echo-S via 7th Heaven, Win11 ARM VM, low memory)
-crashed at the Guard Scorpion fight. FFNx.log: access violation
-0xC0000005 at 0x6D7EACE2, ~13s after `[BATTLE] Scene# 324` began, stack
-frames all in VERSION.dll (base 0x6D7C0000).
+**The report**: tester crashed at the Guard Scorpion fight. FFNx.log:
+access violation 0xC0000005 at 0x6D7EACE2, ~13s after
+`[BATTLE] Scene# 324` began, stack frames all in VERSION.dll (base
+0x6D7C0000).
+
+**⚠ ENVIRONMENT CORRECTION (2026-07-31, user)**: this crash happened on
+NATIVE Windows — i5-10300H, GTX 1650, Win11 Home, 8GB (1.87GB free),
+FFNx 1.24.3.0 stable — NOT the Apple-silicon VM from the silent-tones
+report (that log had FFNx 1.24.3.172 and a different username; possibly
+a different tester entirely). The original write-up assumed the same
+machine and blamed "VM memory pressure + Echo-S streaming churn" as
+aggravators; both claims were unverified carry-over. The correct
+reading is STRONGER, not weaker: the TOCTOU race lands under ordinary
+boss-load heap churn on stock hardware — no exotic conditions needed —
+which the fix (SEH guard) covers regardless. LESSON: never assume two
+reports share an environment; read each FFNx.log's PC SPECS header
+(CPU/GPU/OS/RAM), FFNx version line, and the SymInit UserName before
+reasoning about causes. The wrong assumption did not change the fix
+here, but it skewed the "why now" narrative and could have misdirected
+a diagnosis where environment mattered.
 
 **Symbolication method (NEW CAPABILITY)**: added `/MAP` to the link
 (permanent). Relinked DLL verified byte-identical to the shipped
@@ -4202,8 +4218,9 @@ call chain.
 a region, then FindSectionBase sweeps the WHOLE region with
 memchr/memcmp for milliseconds while the game's threads allocate/free
 freely. Region freed/decommitted mid-sweep ⇒ AV. Boss-fight start =
-peak churn (battle assets + Echo-S streaming voice) + VM memory
-pressure (allocator actually releases pages). Every prior battle ran
+peak churn from battle-asset loading alone (native stock hardware —
+see the environment correction above; no VM or voice-mod conditions
+required). Every prior battle ran
 the same dice roll and won; scene 324 lost. Aggravator discovered
 while fixing: the MENU-thread call sites retry every 3 SECONDS (not
 60s) while their sections are missing — on retranslated installs where
