@@ -5,8 +5,10 @@
  * user sets "debug_log = true" in ffvii_accessibility.cfg, messages are also
  * written to ffvii_accessibility.log in the FF7 install folder.
  *
- * File logging is OFF by default so normal users see no overhead. When a user
- * reports a bug, they enable debug_log, reproduce the issue, and send the log.
+ * File logging is ON by default during the mod's testing period (user
+ * decision 2026-07-31 — see config.h debug_log; revert both together when
+ * the test phase ends). Users can turn it off via the cfg or the F8 menu;
+ * when off, a bug reporter re-enables it, reproduces, and sends the log.
  *
  * USAGE:
  *   Log::Write("[FF7Access] Something happened.");  // no trailing newline

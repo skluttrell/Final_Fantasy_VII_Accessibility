@@ -5,6 +5,14 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TESTMODE] debug_log defaults ON — v2.30.44 (2026-07-31), REVERT WHEN TEST PHASE ENDS
+------------------------------------------------------------------------
+User decision: mod is a test mod until further notice; logging on by
+default so tester reports carry evidence. Revert (one commit) when the
+user calls the test phase over: config.h debug_log default, canonical
+cfg list line + glossary text, log.h comment — grep "test period"
+under AccessibilityMod/. Users can opt out live via F8 > Debug log.
+
 [K2SCAN] Kernel2 scanner crash fix — SHIPPED v2.30.43 (2026-07-31), awaiting tester verify
 ------------------------------------------------------------------------
 Tester crash at the scorpion boss (Echo-S/7th Heaven, VM): TOCTOU in

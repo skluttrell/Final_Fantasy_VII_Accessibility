@@ -4237,6 +4237,30 @@ Deployed both installs, hash-verified (90C6445101587967).
 
 ---
 
+### v2.30.44 (2026-07-31): debug_log defaults ON — test-mod period
+
+**User decision**: the mod is a TEST MOD until further notice; debug
+logging defaults on so every tester report arrives with its evidence
+(the v2.30.41 silent-tones and v2.30.43 scorpion-crash diagnoses both
+hinged entirely on session logs — and the crash session had NO
+accessibility log because the tester's default was off).
+
+Changed: config.h compiled default (`debug_log = true`), canonical cfg
+list line + glossary (explains the test period, points at the F8 menu
+toggle for opting out), log.h header comment. The CMake embed keeps the
+DLL-created default cfg in sync automatically. ⚠ REVERT CHECKLIST when
+the test phase ends (one commit): config.h default, cfg list line, cfg
+glossary text, log.h comment — grep "test period" in AccessibilityMod/.
+
+Log overhead is modest (line-buffered, flushed per line, overwritten
+each session) and users can opt out live via the F8 menu (Debug log →
+off, saved persistently).
+
+No addresses; no §4/§14 changes. Deployed both installs, hash-verified
+(8BF3475B76BD60EC).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

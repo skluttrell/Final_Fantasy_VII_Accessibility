@@ -187,8 +187,13 @@ struct Settings {
     //
     // Enable this when reporting a bug: reproduce the issue, then send the
     // ffvii_accessibility.log file alongside your bug report.
-    // Default: false.
-    bool debug_log = false;
+    //
+    // Default: true FOR THE TEST PERIOD (user decision 2026-07-31: the mod
+    // is considered a test mod until further notice, and every tester
+    // report so far was only diagnosable because a log existed — the
+    // v2.30.41 silent tones and the v2.30.43 scorpion crash both hinged on
+    // session logs). Revert to false when the mod leaves its test phase.
+    bool debug_log = true;
 };
 
 // Load reads ffvii_accessibility.cfg from the DLL's own directory.
