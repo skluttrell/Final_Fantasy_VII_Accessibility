@@ -4180,6 +4180,63 @@ Deployed both installs, hash-verified (B5365D596CD2E58F).
 
 ---
 
+### v2.30.43 (2026-07-31): kernel2 scanner crash — SEH guard + fruitless backoff
+
+**The report**: tester (Echo-S via 7th Heaven, Win11 ARM VM, low memory)
+crashed at the Guard Scorpion fight. FFNx.log: access violation
+0xC0000005 at 0x6D7EACE2, ~13s after `[BATTLE] Scene# 324` began, stack
+frames all in VERSION.dll (base 0x6D7C0000).
+
+**Symbolication method (NEW CAPABILITY)**: added `/MAP` to the link
+(permanent). Relinked DLL verified byte-identical to the shipped
+release binary except 2 timestamp bytes ⇒ the map is authoritative for
+the tester's crash addresses. (FFNx's module 'size' is SizeOfImage —
+507904 vs 466944 file size confused this briefly.) RVA floors:
+0x6A89 = BattleMenuThread (thread entry), 0x16D93 = ScanKernel2Sections
+(FindSectionBase inlined), 0x2ACE2 = static-CRT region (the
+memchr/memcmp of the sweep). ⚠ map "Publics" exclude static functions —
+floor-symbol attribution near statics needs a sanity check against the
+call chain.
+
+**Root cause**: TOCTOU in ScanKernel2Sections — VirtualQuery snapshots
+a region, then FindSectionBase sweeps the WHOLE region with
+memchr/memcmp for milliseconds while the game's threads allocate/free
+freely. Region freed/decommitted mid-sweep ⇒ AV. Boss-fight start =
+peak churn (battle assets + Echo-S streaming voice) + VM memory
+pressure (allocator actually releases pages). Every prior battle ran
+the same dice roll and won; scene 324 lost. Aggravator discovered
+while fixing: the MENU-thread call sites retry every 3 SECONDS (not
+60s) while their sections are missing — on retranslated installs where
+signatures never match, that was a full address-space sweep every 3s
+forever, precisely on the modded installs with the most churn.
+
+**Fix**: (1) FindSectionBaseSafe — noinline SEH wrapper (__try/__except
+filtering ACCESS_VIOLATION only; separate function per C2712), AV ⇒
+skip region, InterlockedIncrement counter, next retry rescans; nothing
+permanently lost. (2) Fruitless-scan backoff INSIDE the scanner: no new
+section this pass ⇒ next non-urgent scan waits 30s·2^(streak-1) capped
+10 min; ANY progress resets. Healthy installs never engage it (first
+scan succeeds, triggers go quiet). (3) `urgent=true` from the two
+BATTLE call sites — the COMMAND section is a transient battle
+allocation re-found every battle; battle scans bypass backoff armed by
+field-menu retries (their own 60s local limits still apply). Scan log
+line now appends `avs=N streak=N`.
+
+⚠ CLASS LESSON: IsReadableSpan-then-read is a race everywhere, but the
+window is microseconds for small spans — the scanner was the outlier
+(megabytes, milliseconds). Any future whole-region sweep of live heap
+must go through an SEH guard, not more VirtualQuery checks.
+
+No addresses involved — no §4/§14 changes. VERIFY (tester): replay the
+scorpion fight on v2.30.43 — no crash; log's scan line may show avs>0
+(the guard working). VERIFY (local): battles still speak
+command/magic/item names (urgent path unharmed); scan log shows
+streak=0 on our installs.
+
+Deployed both installs, hash-verified (90C6445101587967).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

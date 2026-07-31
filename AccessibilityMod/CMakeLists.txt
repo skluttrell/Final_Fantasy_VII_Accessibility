@@ -139,6 +139,13 @@ target_link_libraries(ff7access PRIVATE
     user32       # GetSystemDirectoryA, OutputDebugStringA
 )
 
+# Emit a linker map (build/dist/Release/version.map). FFNx's crash handler
+# prints raw addresses with the DLL's load base (2026-07-31 tester crash:
+# "Exception 0xc0000005, address 0x6d7eace2" with VERSION.dll at
+# 0x6D7C0000); subtracting the base gives an RVA, and the map turns that
+# RVA into a function name with no PDB needed. Costs nothing at runtime.
+target_link_options(ff7access PRIVATE /MAP)
+
 # Use the static CRT (/MT for Release, /MTd for Debug) to avoid a dependency
 # on a specific MSVC redist version in the FF7 folder.
 set_property(TARGET ff7access PROPERTY

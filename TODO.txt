@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[K2SCAN] Kernel2 scanner crash fix — SHIPPED v2.30.43 (2026-07-31), awaiting tester verify
+------------------------------------------------------------------------
+Tester crash at the scorpion boss (Echo-S/7th Heaven, VM): TOCTOU in
+ScanKernel2Sections — region freed mid-memchr-sweep => AV on the
+BattleMenuThread (FFNx dump symbolicated via new /MAP linker map;
+research §8 v2.30.43 has the full derivation). Fix: SEH guard per
+region sweep (AV => skip region, avs= counter in scan log) +
+exponential backoff on fruitless scans (menu sites were re-sweeping
+the whole address space every 3s on never-match installs) + urgent
+bypass for battle call sites (COMMAND is re-found every battle).
+VERIFY (tester): scorpion fight completes on v2.30.43; their log scan
+line may legitimately show avs>0. VERIFY (local): battle command/
+magic/item names still speak; scan line shows streak=0.
+
 [F8MENU] In-game audio settings menu — SHIPPED v2.30.42 (2026-07-31), awaiting play-test
 ------------------------------------------------------------------------
 F8 toggles a spoken settings menu (no graphics): J/L or [ ] move

@@ -1828,21 +1828,88 @@ static const uint8_t* FindSectionBase(const uint8_t* region, size_t size,
     return nullptr;
 }
 
+// v2.30.43: lifetime count of regions skipped because they vanished
+// mid-sweep (see FindSectionBaseSafe). Appended to the scan log line so a
+// bug-report log shows how hostile the install's heap churn is.
+static volatile LONG g_k2_scan_avs = 0;
+
+// v2.30.43: fruitless-scan backoff. A modded install (retranslated text)
+// can leave trigger sections permanently unfindable, and the menu-thread
+// call sites retry every 3 SECONDS — that was a full address-space sweep
+// of live heap every 3s, forever, on exactly the installs (7th Heaven)
+// with the most allocation churn. Consecutive fruitless scans now back
+// the internal cadence off exponentially; ANY progress resets it, so a
+// healthy install (where scans succeed and the triggers go quiet) never
+// engages the backoff at all.
+static volatile ULONGLONG g_k2_backoff_until    = 0;
+static LONG               g_k2_fruitless_streak = 0;
+
+// Wrap one region sweep in SEH (v2.30.43). ROOT CAUSE of the 2026-07-31
+// tester crash (scorpion boss, Echo-S via 7th Heaven, low-memory VM):
+// VirtualQuery snapshots a region, then FindSectionBase sweeps it with
+// memchr/memcmp for MILLISECONDS while the game's own threads keep
+// allocating and freeing — a region freed or decommitted mid-sweep is an
+// access violation inside the CRT (FFNx dump: BattleMenuThread ->
+// ScanKernel2Sections -> CRT, 13s into the boss load — peak churn from
+// battle assets + streaming voice audio). The check-then-read race is
+// unfixable by more checking (any recheck has the same window); catching
+// the fault and skipping the region is the correct tool for sweeping
+// memory this thread does not own. Skipped regions are rescanned by the
+// next retry, so nothing is permanently missed.
+//
+// Separate noinline function because MSVC forbids __try in a function
+// requiring C++ unwinding (C2712) — this one holds no C++ objects.
+// Filter passes only ACCESS_VIOLATION; anything else propagates (a real
+// bug elsewhere must stay loud, not get eaten by a scanner guard).
+static __declspec(noinline) const uint8_t* FindSectionBaseSafe(
+    const uint8_t* region, size_t size, const uint8_t* sig, size_t sig_len)
+{
+    __try {
+        return FindSectionBase(region, size, sig, sig_len);
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER
+                    : EXCEPTION_CONTINUE_SEARCH) {
+        InterlockedIncrement(&g_k2_scan_avs);
+        return nullptr;
+    }
+}
+
 // Scan this process's committed private read-write memory for the kernel2
 // text sections.  Runs from our own polling thread INSIDE the game process,
 // so all reads are direct pointer reads.  Called lazily on the first battle
 // action and retried (rate-limited) while any section is missing — kernel2
 // is decompressed during startup and stays resident for the process lifetime,
-// so one successful scan is permanent.
+// so one successful scan is permanent. (Exception: the COMMAND section is a
+// transient battle allocation, re-found at each battle start — that is why
+// the battle threads pass urgent=true: their scans must not be deferred by
+// the fruitless-scan backoff armed by field-menu retries. urgent skips only
+// the backoff; the callers' own 3s/60s rate limits still apply.)
 //
 // ENGLISH-ONLY: the signatures are the English section heads.  On a non-
 // English kernel2 the scan finds nothing and every action falls back to the
-// v2.5 generic labels — degraded, never wrong.
-static void ScanKernel2Sections()
+// v2.5 generic labels — degraded, never wrong (and the backoff keeps those
+// futile sweeps rare).
+static void ScanKernel2Sections(bool urgent = false)
 {
+    if (!urgent && GetTickCount64() < g_k2_backoff_until)
+        return;
+
     // Skip if another thread is mid-scan (see g_k2_scan_busy comment).
     if (InterlockedCompareExchange(&g_k2_scan_busy, 1, 0) != 0)
         return;
+
+    // Count found sections before/after: "progress" resets the backoff.
+    const auto count_found = []() {
+        int n = 0;
+        n += g_k2.magic != nullptr;          n += g_k2.item != nullptr;
+        n += g_k2.weapon != nullptr;         n += g_k2.command != nullptr;
+        n += g_k2.armor != nullptr;          n += g_k2.accessory != nullptr;
+        n += g_k2.item_desc != nullptr;      n += g_k2.materia_name != nullptr;
+        n += g_k2.materia_desc != nullptr;   n += g_k2.weapon_desc != nullptr;
+        n += g_k2.accessory_desc != nullptr;
+        return n;
+    };
+    const int found_before = count_found();
 
     uint8_t sig_magic[24], sig_item[24], sig_weapon[24], sig_command[24];
     uint8_t sig_armor[24], sig_access[24], sig_idesc[24];
@@ -1883,31 +1950,52 @@ static void ScanKernel2Sections()
         // the exact protection match.
         if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
             mbi.Protect == PAGE_READWRITE) {
+            // v2.30.43: every sweep goes through the SEH guard — the game
+            // can free this region under us mid-sweep (see
+            // FindSectionBaseSafe). A vanished region just yields nullptr
+            // for the remaining signatures and the walk continues.
             const uint8_t* p = reinterpret_cast<const uint8_t*>(base);
-            if (!g_k2.magic)   g_k2.magic   = FindSectionBase(p, mbi.RegionSize, sig_magic,   len_magic);
-            if (!g_k2.item)    g_k2.item    = FindSectionBase(p, mbi.RegionSize, sig_item,    len_item);
-            if (!g_k2.weapon)  g_k2.weapon  = FindSectionBase(p, mbi.RegionSize, sig_weapon,  len_weapon);
-            if (!g_k2.command) g_k2.command = FindSectionBase(p, mbi.RegionSize, sig_command, len_command);
-            if (!g_k2.armor)     g_k2.armor     = FindSectionBase(p, mbi.RegionSize, sig_armor,  len_armor);
-            if (!g_k2.accessory) g_k2.accessory = FindSectionBase(p, mbi.RegionSize, sig_access, len_access);
-            if (!g_k2.item_desc) g_k2.item_desc = FindSectionBase(p, mbi.RegionSize, sig_idesc,  len_idesc);
-            if (!g_k2.materia_name)   g_k2.materia_name   = FindSectionBase(p, mbi.RegionSize, sig_mname, len_mname);
-            if (!g_k2.materia_desc)   g_k2.materia_desc   = FindSectionBase(p, mbi.RegionSize, sig_mdesc, len_mdesc);
-            if (!g_k2.weapon_desc)    g_k2.weapon_desc    = FindSectionBase(p, mbi.RegionSize, sig_wdesc, len_wdesc);
-            if (!g_k2.accessory_desc) g_k2.accessory_desc = FindSectionBase(p, mbi.RegionSize, kAccessoryDescSig, sizeof(kAccessoryDescSig));
+            if (!g_k2.magic)   g_k2.magic   = FindSectionBaseSafe(p, mbi.RegionSize, sig_magic,   len_magic);
+            if (!g_k2.item)    g_k2.item    = FindSectionBaseSafe(p, mbi.RegionSize, sig_item,    len_item);
+            if (!g_k2.weapon)  g_k2.weapon  = FindSectionBaseSafe(p, mbi.RegionSize, sig_weapon,  len_weapon);
+            if (!g_k2.command) g_k2.command = FindSectionBaseSafe(p, mbi.RegionSize, sig_command, len_command);
+            if (!g_k2.armor)     g_k2.armor     = FindSectionBaseSafe(p, mbi.RegionSize, sig_armor,  len_armor);
+            if (!g_k2.accessory) g_k2.accessory = FindSectionBaseSafe(p, mbi.RegionSize, sig_access, len_access);
+            if (!g_k2.item_desc) g_k2.item_desc = FindSectionBaseSafe(p, mbi.RegionSize, sig_idesc,  len_idesc);
+            if (!g_k2.materia_name)   g_k2.materia_name   = FindSectionBaseSafe(p, mbi.RegionSize, sig_mname, len_mname);
+            if (!g_k2.materia_desc)   g_k2.materia_desc   = FindSectionBaseSafe(p, mbi.RegionSize, sig_mdesc, len_mdesc);
+            if (!g_k2.weapon_desc)    g_k2.weapon_desc    = FindSectionBaseSafe(p, mbi.RegionSize, sig_wdesc, len_wdesc);
+            if (!g_k2.accessory_desc) g_k2.accessory_desc = FindSectionBaseSafe(p, mbi.RegionSize, kAccessoryDescSig, sizeof(kAccessoryDescSig));
         }
         addr = base + mbi.RegionSize;
     }
 
-    char dbg[320];
+    // Fruitless-scan backoff (v2.30.43): no new section this pass doubles
+    // the wait before the NEXT non-urgent scan (30s, 1m, 2m ... capped at
+    // 10 min); any progress clears it. The streak/backoff pair is only
+    // written here, under the busy guard, so plain writes are fine.
+    const int found_after = count_found();
+    if (found_after > found_before) {
+        g_k2_fruitless_streak = 0;
+        g_k2_backoff_until    = 0;
+    } else {
+        if (g_k2_fruitless_streak < 30)   // stop shifting long past the cap
+            ++g_k2_fruitless_streak;
+        ULONGLONG wait_ms = 30000ull << (g_k2_fruitless_streak - 1);
+        if (wait_ms > 600000ull) wait_ms = 600000ull;
+        g_k2_backoff_until = GetTickCount64() + wait_ms;
+    }
+
+    char dbg[368];
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
         "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p "
         "armor=%p accessory=%p item_desc=%p mat_name=%p mat_desc=%p "
-        "weap_desc=%p acc_desc=%p",
+        "weap_desc=%p acc_desc=%p avs=%ld streak=%ld",
         g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command,
         g_k2.armor, g_k2.accessory, g_k2.item_desc,
         g_k2.materia_name, g_k2.materia_desc,
-        g_k2.weapon_desc, g_k2.accessory_desc);
+        g_k2.weapon_desc, g_k2.accessory_desc,
+        g_k2_scan_avs, g_k2_fruitless_streak);
     Log::Write(dbg);
 
     InterlockedExchange(&g_k2_scan_busy, 0);
@@ -5544,9 +5632,12 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         // Lazily locate the kernel2 sections on first use; retry at most
         // once per minute while any is missing (non-English installs never
         // succeed — the rate limit keeps the scans from wasting cycles).
+        // urgent=true (v2.30.43): battle scans bypass the fruitless-scan
+        // backoff that field-menu retries may have armed — see the
+        // ScanKernel2Sections header.
         if ((!g_k2.magic || !g_k2.item || !g_k2.weapon) &&
             GetTickCount64() >= next_scan_tick) {
-            ScanKernel2Sections();
+            ScanKernel2Sections(/*urgent=*/true);
             next_scan_tick = GetTickCount64() + 60000;
         }
 
@@ -5779,9 +5870,12 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
         // the scan guard makes concurrent triggers harmless). The command
         // section is the one this thread depends on most — without it the
         // command menu still speaks via the hardcoded/generic fallbacks.
+        // urgent=true (v2.30.43): the command section is re-found at EVERY
+        // battle start (transient allocation) — this scan must not be
+        // deferred by backoff armed from fruitless field-menu retries.
         if ((!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command) &&
             GetTickCount64() >= next_scan_tick) {
-            ScanKernel2Sections();
+            ScanKernel2Sections(/*urgent=*/true);
             next_scan_tick = GetTickCount64() + 60000;
         }
 
