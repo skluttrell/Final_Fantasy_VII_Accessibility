@@ -4799,6 +4799,46 @@ Deployed both installs, hash-verified (E0B2D04573B2B3E0).
 
 ---
 
+### v2.30.57 (2026-08-01): magic menu completed — MP costs, affordability, descriptions
+
+Closes the v2.30.54 residuals: everything a sighted player reads on the
+spell screen is now spoken.
+
+**MP cost + affordability come from the game's OWN check.** The OK
+handler (0x7137C4..0x7137E5) reads cost = list entry byte **+1** and
+current MP = u16 at [slot·0x440 + 0xDBA4AC] (= char block +0x14, the
+BCHAR_OFF_MP pair) and refuses the cast when MP < cost — precisely when
+the screen dims the spell. The mod now speaks "<name>, N MP", appends
+", not enough MP" on that same comparison, and keeps ", battle only"
+from the exe's grey table. Entry announce gained the character's
+"C of M MP" (on screen the whole time).
+
+**SPELL DESCRIPTIONS — new kernel2 section.** Found by enumerating
+every self-validating section in the decompressed kernel2
+(ff7_kernel2_section_enum.py): base +0x315, **256 entries,
+index-aligned with the magic NAME section** (Cure → "Restores HP",
+Regen → "Gradually restores HP", Esuna → "Cures unusual status",
+Life → "Restores life"). Head signature "Restores HP|Restores HP|"
+(entries 0-2 are all Cure-family) matches twice in the file, so the
+v2.30.47 entry-count band (first_off 0x200) is what pins it. Exposed
+on the **I key**, matching the FF4-scheme parity line and the
+shop/materia/equip readers' focus/edge/F8-standdown discipline;
+answered on any poll, not just when the cursor moves.
+
+All three tabs share the section (summons and enemy skills live in the
+same magic id space), so descriptions work across Magic/Summon/Enemy
+Skill for free.
+
+VERIFY: Magic → entry says "Magic. Cloud. 46 of 46 MP"; each spell
+reads "Cure, 5 MP" (+ "battle only" / "not enough MP" where the screen
+greys); I speaks the description; scan log shows mg_desc= nonzero.
+
+Deployed both installs, hash-verified (E08298AF836D0BCB — the cfg
+glossary edit re-ran the CMake embed, so the shipped DLL is the
+post-embed rebuild).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

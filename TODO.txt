@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MAGICFULL] Magic menu completed — SHIPPED v2.30.57 (2026-08-01), awaiting play-test
+------------------------------------------------------------------------
+Closes the v2.30.54 residuals. MP cost (list entry byte +1) and
+affordability (cur MP at char block +0x14) both taken from the game's
+OWN OK-press check, so "not enough MP" matches the dimming exactly;
+entry announce adds "C of M MP". NEW kernel2 section: SPELL
+DESCRIPTIONS (base +0x315 vanilla, 256 entries, index-aligned with
+magic names; sig "Restores HP|Restores HP|" + entry-count band since
+it matches twice) on the I key — works for all three tabs (summons and
+E.skills share the magic id space). VERIFY: "Cure, 5 MP"; "battle
+only" / "not enough MP" match the greyed rows; I speaks descriptions;
+scan log shows mg_desc= nonzero (if 0 on a 7H install, the mod's
+retranslation fallback rung may be needed for this section too).
+
 [TIMERLOAD] Timer on mid-countdown save load — SHIPPED v2.30.56 (2026-08-01), awaiting tester
 ------------------------------------------------------------------------
 Tester loaded a save made mid-escape: countdown resumed silently and T

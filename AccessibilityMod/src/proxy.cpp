@@ -1701,6 +1701,12 @@ struct Kernel2Sections {
     // descriptions have a BLANK entry 0 (single space) so no signature can
     // find them â€” armor rows just get no description, exactly what a
     // sighted player sees (the bar is blank for armor too).
+    const uint8_t* magic_desc;    // v2.30.57: entries 0-255 SPELL
+                                  // descriptions, index-aligned with
+                                  // `magic` above (kernel2 base +0x315 in
+                                  // the vanilla file: Cure -> "Restores
+                                  // HP", Regen -> "Gradually restores
+                                  // HP" — ff7_kernel2_section_enum.py)
     const uint8_t* materia_name;  // entries 0-95 materia names
     const uint8_t* materia_desc;  // entries 0-95 materia descriptions
     const uint8_t* weapon_desc;   // entries 0-127 weapon descriptions
@@ -1709,7 +1715,7 @@ struct Kernel2Sections {
                                   // colour codes -> raw-byte signature)
 };
 static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr, nullptr,
-                                nullptr, nullptr, nullptr,
+                                nullptr, nullptr, nullptr, nullptr,
                                 nullptr, nullptr, nullptr, nullptr };
 
 // Raw-byte section signature for the accessory descriptions: entry 0 is
@@ -1938,7 +1944,7 @@ static void ScanKernel2Sections(bool urgent = false)
         n += g_k2.armor != nullptr;          n += g_k2.accessory != nullptr;
         n += g_k2.item_desc != nullptr;      n += g_k2.materia_name != nullptr;
         n += g_k2.materia_desc != nullptr;   n += g_k2.weapon_desc != nullptr;
-        n += g_k2.accessory_desc != nullptr;
+        n += g_k2.accessory_desc != nullptr; n += g_k2.magic_desc != nullptr;
         return n;
     };
     const int found_before = count_found();
@@ -1963,6 +1969,15 @@ static void ScanKernel2Sections(bool urgent = false)
     uint8_t sig_magic_fb[8], sig_cmd_fb[8];
     const size_t len_magic_fb = EncodeSignature("Cure|",   sig_magic_fb, sizeof(sig_magic_fb));
     const size_t len_cmd_fb   = EncodeSignature("Attack|", sig_cmd_fb,   sizeof(sig_cmd_fb));
+    // v2.30.57 SPELL DESCRIPTIONS. Head measured from vanilla kernel2
+    // (ff7_kernel2_section_enum.py): entries 0/1/2 are all "Restores HP"
+    // (Cure/Cure2/Cure3), section = 256 entries, index-aligned with the
+    // magic NAME section. The two-entry head matches twice in the file,
+    // so the entry-count band (first_off 0x200) is what pins it — the
+    // same shape-check rung v2.30.47 introduced for retranslations.
+    uint8_t sig_mgdesc[32];
+    const size_t len_mgdesc = EncodeSignature("Restores HP|Restores HP|",
+                                              sig_mgdesc, sizeof(sig_mgdesc));
     // v2.31 item-menu sections. Armor/accessory heads are kernel entry 0
     // ("Bronze Bangle"/"Power Wrist", both present in walkthrough.txt);
     // the item-description head is Potion's caption, ground-truthed by
@@ -1983,7 +1998,7 @@ static void ScanKernel2Sections(bool urgent = false)
            (!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command ||
             !g_k2.armor || !g_k2.accessory || !g_k2.item_desc ||
             !g_k2.materia_name || !g_k2.materia_desc || !g_k2.weapon_desc ||
-            !g_k2.accessory_desc)) {
+            !g_k2.accessory_desc || !g_k2.magic_desc)) {
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
             break;
         const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -2027,6 +2042,10 @@ static void ScanKernel2Sections(bool urgent = false)
             if (!g_k2.armor)     g_k2.armor     = FindSectionBaseSafe(p, mbi.RegionSize, sig_armor,  len_armor);
             if (!g_k2.accessory) g_k2.accessory = FindSectionBaseSafe(p, mbi.RegionSize, sig_access, len_access);
             if (!g_k2.item_desc) g_k2.item_desc = FindSectionBaseSafe(p, mbi.RegionSize, sig_idesc,  len_idesc);
+            if (!g_k2.magic_desc)
+                g_k2.magic_desc = FindSectionBaseSafe(p, mbi.RegionSize,
+                                                      sig_mgdesc, len_mgdesc,
+                                                      0x1F0, 0x210);
             if (!g_k2.materia_name)   g_k2.materia_name   = FindSectionBaseSafe(p, mbi.RegionSize, sig_mname, len_mname);
             if (!g_k2.materia_desc)   g_k2.materia_desc   = FindSectionBaseSafe(p, mbi.RegionSize, sig_mdesc, len_mdesc);
             if (!g_k2.weapon_desc)    g_k2.weapon_desc    = FindSectionBaseSafe(p, mbi.RegionSize, sig_wdesc, len_wdesc);
@@ -2055,11 +2074,11 @@ static void ScanKernel2Sections(bool urgent = false)
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
         "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p "
         "armor=%p accessory=%p item_desc=%p mat_name=%p mat_desc=%p "
-        "weap_desc=%p acc_desc=%p avs=%ld streak=%ld msig='%s' csig='%s'",
+        "weap_desc=%p acc_desc=%p mg_desc=%p avs=%ld streak=%ld msig='%s' csig='%s'",
         g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command,
         g_k2.armor, g_k2.accessory, g_k2.item_desc,
         g_k2.materia_name, g_k2.materia_desc,
-        g_k2.weapon_desc, g_k2.accessory_desc,
+        g_k2.weapon_desc, g_k2.accessory_desc, g_k2.magic_desc,
         g_k2_scan_avs, g_k2_fruitless_streak,
         g_k2_magic_sig, g_k2_command_sig);
     Log::Write(dbg);
@@ -3822,6 +3841,8 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
     uint32_t  last_slot  = 0xFFFFFFFF;
     uint32_t  last_pane  = 0xFFFFFFFF;
     uint32_t  last_trow  = 0xFFFFFFFF;
+    uint32_t  last_id    = 0xFFFFFFFF;   // v2.30.57: spell under the cursor
+    bool      i_was_down = false;        // v2.30.57: I-key edge (descriptions)
     ULONGLONG next_scan_tick = 0;
 
     for (;;) {
@@ -3849,9 +3870,36 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             continue;
         }
 
-        if (!g_k2.magic && GetTickCount64() >= next_scan_tick) {
+        if ((!g_k2.magic || !g_k2.magic_desc) &&
+            GetTickCount64() >= next_scan_tick) {
             next_scan_tick = GetTickCount64() + 3000;
             ScanKernel2Sections();
+        }
+
+        // ---- I key: description of the spell under the cursor -----------
+        // v2.30.57. FF4-scheme parity ("I ... reads description of the
+        // highlighted item"), same focus/edge/settings-menu discipline as
+        // the shop/materia/equip readers. Handled BEFORE the change-driven
+        // returns below so it answers on any poll, not only when the
+        // cursor moved.
+        {
+            DWORD fg_pid = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+            const bool focused = (fg_pid == GetCurrentProcessId());
+            const bool i_down  = (GetAsyncKeyState('I') & 0x8000) != 0;
+            const bool i_edge  = focused && !SettingsMenu::IsOpen() &&
+                                 i_down && !i_was_down;
+            i_was_down = i_down;
+            if (i_edge) {
+                std::wstring d;
+                if (last_id != 0xFFFFFFFF && last_id != 0xFF &&
+                    SectionEntryText(ValidatedSection(&g_k2.magic_desc,
+                                                      "Restores HP|Restores HP|"),
+                                     last_id, d) && !d.empty())
+                    TTS::Speak(d.c_str(), true);
+                else
+                    TTS::Speak(L"No description", true);
+            }
         }
 
         const uint32_t slot = *reinterpret_cast<const volatile uint32_t*>(
@@ -3901,11 +3949,30 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             fresh = true;
             last_sel = last_pane = last_trow = 0xFFFFFFFF;
             last_slot = slot;
+            i_was_down = true;   // v2.30.57: swallow a held I from elsewhere
             wchar_t who[32];
             PartySlotLabel(static_cast<uint8_t>(slot <= 2 ? slot : 0),
                            who, _countof(who));
             std::wstring msg = L"Magic. ";
             msg += who;
+            // v2.30.57: the character's MP is on screen the whole time —
+            // say it on entry so the player can judge affordability
+            // before browsing (same char-block pair the cost check uses).
+            const uint32_t mp0 = FF7Addr::BATTLE_CHAR_BLOCK +
+                                 (slot <= 2 ? slot : 0) *
+                                     FF7Addr::BATTLE_CHAR_SLOT_STRIDE +
+                                 FF7Addr::BCHAR_OFF_MP;
+            if (IsReadableSpan(reinterpret_cast<const void*>(mp0), 4)) {
+                const uint16_t cur = *reinterpret_cast<const volatile uint16_t*>(mp0);
+                const uint16_t max = *reinterpret_cast<const volatile uint16_t*>(mp0 + 2);
+                if (max != 0 && cur <= max && max < 10000) {
+                    wchar_t buf[40];
+                    _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                                 L". %u of %u MP", static_cast<unsigned>(cur),
+                                 static_cast<unsigned>(max));
+                    msg += buf;
+                }
+            }
             TTS::Speak(msg.c_str(), true);
         } else if (slot != last_slot && slot <= 2) {
             last_slot = slot;
@@ -3981,6 +4048,25 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
                              static_cast<unsigned>(id) + 1u);
                 msg = buf;
             }
+            // v2.30.57: MP COST + affordability — the two things printed
+            // beside every spell on screen. Both come from the game's own
+            // OK-press check (0x7137C4..0x7137E5): cost = list entry byte
+            // +1, current MP = u16 at [slot*0x440 + 0xDBA4AC] (= the char
+            // block's +0x14 MP pair), and the handler refuses the cast
+            // when MP < cost — which is exactly when the screen dims the
+            // spell. Speaking both mirrors the sighted readout.
+            const uint8_t cost = *reinterpret_cast<const volatile uint8_t*>(
+                entry + 1);
+            const uint32_t mp_va = FF7Addr::BATTLE_CHAR_BLOCK +
+                                   slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE +
+                                   FF7Addr::BCHAR_OFF_MP;
+            uint16_t cur_mp = 0xFFFF;
+            if (IsReadableSpan(reinterpret_cast<const void*>(mp_va), 4))
+                cur_mp = *reinterpret_cast<const volatile uint16_t*>(mp_va);
+            wchar_t mpbuf[24];
+            _snwprintf_s(mpbuf, _countof(mpbuf), _TRUNCATE, L", %u MP",
+                         static_cast<unsigned>(cost));
+            msg += mpbuf;
             // The renderer's own usable table: cases 0/1/2 = white, case 3
             // (and ids past the table) = grayed battle-only. Reading the
             // exe image in-process — no ASLR, .text is always mapped.
@@ -3992,7 +4078,11 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             }
             if (!usable)
                 msg += L", battle only";
+            else if (cur_mp != 0xFFFF && cur_mp < cost)
+                msg += L", not enough MP";
         }
+
+        last_id = id;   // v2.30.57: the I key describes THIS spell
 
         if (Config::Get().debug_log) {
             char dbg[160];
