@@ -1066,9 +1066,20 @@ constexpr uint32_t MAGICMENU_PARTY_SLOT   = 0x00DD17E8; // u32 0..2
 constexpr uint32_t MAGICMENU_LIST_COL     = 0x00DD1708; // u32 widget +0 (0..2)
 constexpr uint32_t MAGICMENU_LIST_ROW     = 0x00DD170C; // u32 widget +4
 constexpr uint32_t MAGICMENU_LIST_SCROLL  = 0x00DD171C; // u32 widget +0x14
-constexpr uint32_t MAGICMENU_MODE         = 0x00921100; // u32 input mode
-constexpr uint32_t MAGICMENU_MODE_CHARSEL = 0;          // character pane
-constexpr uint32_t MAGICMENU_MODE_LIST    = 1;          // spell grid
+constexpr uint32_t MAGICMENU_MODE         = 0x00921100; // s32 input mode
+// LIVE-MEASURED values (2026-08-01 diag session, v2.30.53 — these
+// supersede every static guess; the jump-table case indices are NOT
+// these numbers, because the OK paths write mode = [0xDD169C] + 2
+// (0x713638/0x713693), so the stored value is offset from the case):
+//   -1 = screen entering (pre-init)
+//    0 = CHARACTER-SELECT pane (party slot moves here)
+//    2 = SPELL GRID  ← the cursor trio moves ONLY here (row 0→1→0
+//        observed against the player's own arrow presses)
+//    3+ = confirm / use-on-whom sub-modes (not yet observed live)
+constexpr int32_t  MAGICMENU_MODE_ENTERING  = -1;
+constexpr int32_t  MAGICMENU_MODE_CHARSEL   = 0;
+constexpr int32_t  MAGICMENU_MODE_LIST      = 2;
+constexpr int32_t  MAGICMENU_MODE_TARGET_MIN = 3;
 constexpr uint32_t MAGICMENU_TARGET_SLOT  = 0x00DD16D4; // u32 party slot the
                                                         // OK path indexes into
                                                         // SAVEMAP_PARTY_IDS

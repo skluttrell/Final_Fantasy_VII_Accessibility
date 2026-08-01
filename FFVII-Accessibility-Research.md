@@ -4650,6 +4650,47 @@ Deployed both installs, hash-verified (AB959BC597EA5026).
 
 ---
 
+### v2.30.53 (2026-08-01): magic grid is mode 2 — measured, not inferred
+
+**Report on v2.30.52**: "it speaks Cloud as if he is a spell — still
+stuck on character select."
+
+**The second diag session is the whole answer** (and this time the
+numbers are LIVE, not derived): screen 2 held throughout;
+mmode −1 → 0 (character pane, slot moved 0→1→0 as the player browsed
+characters) → **2 on OK, and in mode 2 the cursor trio MOVED with the
+player's presses (row 0→1→0)** → back to 0 on cancel. So the grid is
+**mode 2**, the trio is confirmed as its cursor, and v2.30.52's
+`MODE_LIST = 1` sent every grid poll into the character branch — hence
+character names spoken where spells belong.
+
+**Why the static read said 1**: the jump-table case index is NOT the
+stored value. The OK paths write `mode = [0xDD169C] + 2`
+(0x713638/0x713693), so the value parked in 0x921100 is offset from
+the case number the dispatcher uses. Reading the table told me the
+SHAPE of the state machine correctly (a character pane and a grid
+pane, and which handler owns the spell index) but not the ENCODING —
+that only the live values could give.
+
+⚠ LESSON: a jump-table decode yields case indices; if the variable is
+written with an offset (mode+2 here), those indices are NOT the values
+to compare against. Measure the variable, or derive the offset, before
+hard-coding state constants.
+
+**Shipped**: MODE constants now live-measured (−1 entering, 0 char
+select, 2 grid, ≥3 confirm/target); grid branch keyed on 2; a target
+branch added for ≥3 that speaks "Use on whom?" plus the party member
+under MAGICMENU_TARGET_SLOT. Diagnostic kept one more round.
+
+VERIFY: Magic → character names while choosing → OK → spell names
+with "battle only" as the screen greys them → arrows track → cancel
+returns to character names. Log: `MAGICM mode 0 -> 2` then MAGICM
+spell lines.
+
+Deployed both installs, hash-verified (CAA7D3A1AB45D9CD).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

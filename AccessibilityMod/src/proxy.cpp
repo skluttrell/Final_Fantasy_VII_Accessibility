@@ -3910,7 +3910,8 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             FF7Addr::MAGICMENU_LIST_ROW);
         const uint32_t scroll = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MAGICMENU_LIST_SCROLL);
-        const uint32_t pane = *reinterpret_cast<const volatile uint32_t*>(
+        // v2.30.53: SIGNED — the screen parks at -1 while entering.
+        const int32_t pane = *reinterpret_cast<const volatile int32_t*>(
             FF7Addr::MAGICMENU_MODE);
 
         bool fresh = false;
@@ -3937,21 +3938,43 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
         // ---- mode transitions --------------------------------------------
         // v2.30.52: modes CORRECTED (see MAGICMENU_MODE provenance) —
         // 0 = character-select pane, 1 = spell grid, 2/3 = confirm/target.
-        if (pane != last_pane) {
+        if (static_cast<uint32_t>(pane) != last_pane) {
             if (last_pane != 0xFFFFFFFF) {
                 char dbg[64];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] MAGICM mode %ld -> %ld",
-                    static_cast<long>(last_pane), static_cast<long>(pane));
+                    static_cast<long>(static_cast<int32_t>(last_pane)),
+                    static_cast<long>(pane));
                 Log::Write(dbg);
             }
-            last_pane = pane;
+            last_pane = static_cast<uint32_t>(pane);
             last_trow = 0xFFFFFFFF;
             last_sel  = 0xFFFFFFFF;   // re-announce on entering the grid
         }
 
+        // v2.30.53: TARGET sub-mode (OK on a field-usable spell) — the
+        // slot the OK path indexes into SAVEMAP_PARTY_IDS is the
+        // use-on-whom cursor. Announced separately so the grid branch
+        // below stays purely about spells.
+        if (pane >= FF7Addr::MAGICMENU_MODE_TARGET_MIN) {
+            const uint32_t tslot = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MAGICMENU_TARGET_SLOT);
+            if (tslot <= 2 && tslot != last_trow) {
+                const bool first = (last_trow == 0xFFFFFFFF);
+                last_trow = tslot;
+                wchar_t who[32];
+                PartySlotLabel(static_cast<uint8_t>(tslot), who, _countof(who));
+                std::wstring msg;
+                if (first) msg = L"Use on whom? ";
+                msg += who;
+                TTS::Speak(msg.c_str(), true);
+            }
+            continue;
+        }
+
         if (pane != FF7Addr::MAGICMENU_MODE_LIST) {
-            // CHARACTER-SELECT pane (mode 0 / the pre-init -1). The
+            // CHARACTER-SELECT pane (mode 0 / the pre-init -1; the grid
+            // is mode 2 — LIVE-MEASURED, see MAGICMENU_MODE). The
             // player is choosing whose magic to open; the spell grid is
             // not focused, so speaking a spell here was the v2.30.48 bug
             // (it announced "Ice" the moment the screen opened).
