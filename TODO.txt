@@ -5,6 +5,15 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[DEFEND] Defend/Change announced — SHIPPED v2.30.49 (2026-08-01), awaiting play-test
+------------------------------------------------------------------------
+Defend is vanilla-hidden: Right on Attack = Defend, Left = Change (row
+swap) — dedicated widget states 2/3, not table entries (disasm in
+research §8 v2.30.49). BattleMenuThread speaks the labels on state
+entry; cancel re-speaks the command. VERIFY: Attack + Right → "Defend";
++ Left → "Change"; OK executes; Cancel returns voiced. Also worth a
+ReadMe/keys note next release: "On Attack, press Right for Defend."
+
 [MAGICMENU] Magic menu connected — SHIPPED v2.30.48 (2026-08-01), awaiting play-test
 ------------------------------------------------------------------------
 Last main-menu gap besides PHS. Static session (research §8 v2.30.48):

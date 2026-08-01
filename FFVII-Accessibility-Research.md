@@ -4482,6 +4482,43 @@ Deployed both installs, hash-verified (37ADB82E73E2904B).
 
 ---
 
+### v2.30.49 (2026-08-01): Defend/Change spoken — pseudo-commands are widget STATES
+
+**User question**: "should there be a Defend option?" — Defend exists
+in vanilla FF7 but is HIDDEN: Right on the Attack cell swaps its label
+to Defend, Left shows Change (row swap). The v2.9 research knew the
+pseudo-command ids (0x12 Change / 0x13 Defend, never stored in the
+command table) but not where they lived — so the mod, which speaks
+from the table, stayed silent and Defend was undiscoverable by ear.
+
+**Disasm (ff7_defend_toggle_static.py, fn table 0x91E6B8)**: the
+command-state handler fn[1] = 0x6D91FA tests LEFT (0x8000) / RIGHT
+(0x2000) at the grid's EDGE COLUMN and jumps straight to dedicated
+widget states: **state 2 = Change, state 3 = Defend** —
+issued_command_id (0xDC3C70) pre-loaded with 0x12/0x13 at
+0x6D937C/0x6D9429, BATTLE_MENU_STATE (0x91EF9C) written directly, menu
+busy flag set. (Input masks match the tutorial VM's key table —
+LEFT 0x8000 / RIGHT 0x2000 — a nice cross-proof.) So the pseudo-
+commands were never a label swap at all: they are two one-entry
+widgets, fn[2] 0x6D9DBE / fn[3] 0x6D9ED7.
+
+**Fix**: BattleMenuThread already tracks state transitions — states
+2/3 now speak the game's own labels ("Change"/"Defend") on the entry
+edge (speak_battle_menu-gated); Cancel back to state 1 re-announces
+the command via the existing last_cmd_key reset, so the round trip is
+voiced. Both states joined in_turn_session so the whose-turn announce
+doesn't re-arm mid-Defend. Users can now: Attack → Right → hear
+"Defend" → OK.
+
+VERIFY (play): on Attack press Right → "Defend"; Left at the left
+edge → "Change"; Cancel → command re-speaks; OK on Defend → turn
+proceeds (action side already worked). BMENU state log lines show
+1→3/1→2.
+
+Deployed both installs, hash-verified (8DC272CE6FEE4AC7).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

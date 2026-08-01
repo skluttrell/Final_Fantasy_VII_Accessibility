@@ -6092,6 +6092,22 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                     static_cast<unsigned>(slot));
                 Log::Write(dbg);
             }
+
+            // v2.30.49: Defend/Change are dedicated widget states, not
+            // command-table entries (see BMENU_STATE_CHANGE/_DEFEND in
+            // ff7_addresses.h — the handler jumps here from Left/Right at
+            // the command grid's edge, which is why the table announcer
+            // stayed silent and Defend was undiscoverable by ear). Speak
+            // the game's own labels on the entry edge; Cancel back to
+            // state 1 re-announces the command via the last_cmd_key reset
+            // above, so the round trip is fully voiced.
+            if (state == FF7Addr::BMENU_STATE_CHANGE &&
+                Config::Get().speak_battle_menu)
+                TTS::Speak(L"Change", true);
+            else if (state == FF7Addr::BMENU_STATE_DEFEND &&
+                     Config::Get().speak_battle_menu)
+                TTS::Speak(L"Defend", true);
+
             last_state = state;
         }
 
@@ -6106,6 +6122,8 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
         // targeting logic uses) rearms the whose-turn announce.
         const bool in_turn_session =
             state == FF7Addr::BMENU_STATE_COMMAND     ||
+            state == FF7Addr::BMENU_STATE_CHANGE      ||   // v2.30.49
+            state == FF7Addr::BMENU_STATE_DEFEND      ||   // v2.30.49
             state == FF7Addr::BMENU_STATE_ITEM_LIST   ||
             state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
             state == FF7Addr::BMENU_STATE_SUMMON_LIST ||

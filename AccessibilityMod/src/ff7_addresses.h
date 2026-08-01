@@ -1598,6 +1598,15 @@ constexpr uint32_t BATTLE_MENU_BUSY        = 0x00DC35AC; // u32 transition flag
 // Live-confirmed BATTLE_MENU_STATE values the mod reacts to.
 constexpr uint16_t BMENU_STATE_TARGETING   = 0;      // also plain ATB wait
 constexpr uint16_t BMENU_STATE_COMMAND     = 1;
+// v2.30.49: the Defend/Change pseudo-commands are dedicated WIDGET STATES
+// (not command-table entries — the v2.9 note finally resolved): the
+// command handler fn[1] 0x6D91FA tests LEFT (0x8000) / RIGHT (0x2000) at
+// the grid's edge column and jumps straight to state 2 / 3 with
+// issued_command_id (0xDC3C70) pre-loaded to 0x12 / 0x13
+// (writes at 0x6D937C / 0x6D9429 — ff7_defend_toggle_static.py,
+// 2026-08-01). OK there dispatches; Cancel returns to state 1.
+constexpr uint16_t BMENU_STATE_CHANGE      = 2;      // "Change" (row swap)
+constexpr uint16_t BMENU_STATE_DEFEND      = 3;      // "Defend"
 constexpr uint16_t BMENU_STATE_ITEM_LIST   = 5;      // static-only so far
 constexpr uint16_t BMENU_STATE_MAGIC_LIST  = 6;      // live-confirmed
 constexpr uint16_t BMENU_STATE_SUMMON_LIST = 7;      // static-only so far
