@@ -1,4 +1,4 @@
-/*
+﻿/*
  * proxy.cpp -- version.dll proxy: 17 runtime stubs + background hook installer.
  *
  * WHY RUNTIME STUBS (not .def forwarding):
@@ -29,17 +29,17 @@
  *
  *   winver.h uses #ifndef VER_H as its include guard (line 15). By defining
  *   VER_H before any include, winver.h's body is skipped for this translation
- *   unit. We need none of winver.h's declarations here — we never call these
+ *   unit. We need none of winver.h's declarations here â€” we never call these
  *   functions directly, only forward to them. All other windows.h content
  *   (HMODULE, GetSystemDirectoryA, CreateThread, etc.) is unaffected.
  *
  * BACKGROUND THREADS:
  *   Proxy::Init() spawns InitThread (a one-shot thread) that:
  *
- *     1. Sleep(200ms) — loader lock released, FFNx init safe.
- *     2. Config::Load() — parse ffvii_accessibility.cfg (no DLL loading).
- *     3. TTS::Init()   — LoadLibrary("Tolk.dll"); safe past the 200ms mark.
- *     4. Spawn TitleCursorThread — persistent thread for title screen cursor
+ *     1. Sleep(200ms) â€” loader lock released, FFNx init safe.
+ *     2. Config::Load() â€” parse ffvii_accessibility.cfg (no DLL loading).
+ *     3. TTS::Init()   â€” LoadLibrary("Tolk.dll"); safe past the 200ms mark.
+ *     4. Spawn TitleCursorThread â€” persistent thread for title screen cursor
  *        TTS. Must start before step 5 because the title screen appears before
  *        the field module loads (which is what Install() waits for).
  *     5. Loop: Hooks::Install() every 50ms until FF7's field module is ready
@@ -75,7 +75,7 @@
 #include "tts.h"
 #include "config.h"
 #include "log.h"
-#include "tones.h"   // waveOut tone playback (v2.30.41) — replaces Beep()
+#include "tones.h"   // waveOut tone playback (v2.30.41) â€” replaces Beep()
 #include "settings_menu.h" // F8 in-game audio-only settings menu (v2.30.42)
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
@@ -129,13 +129,13 @@ VERSION_FORWARD_FUNCS(DECLARE_FP)
 #undef DECLARE_FP
 
 // ---------------------------------------------------------------------------
-// Pass 2: Naked stub bodies — one per forwarded function.
+// Pass 2: Naked stub bodies â€” one per forwarded function.
 //
 // Each generates FF 25 [&fp_name] (JMP DWORD PTR [abs_addr]).
 // The call passes control to the real function with the exact same stack
 // layout as a direct call. No prologue or epilogue needed.
 //
-// These work without parameter lists because we never touch the stack —
+// These work without parameter lists because we never touch the stack â€”
 // the real function handles its own calling convention cleanup.
 // ---------------------------------------------------------------------------
 #define MAKE_STUB(name) \
@@ -173,12 +173,12 @@ static HANDLE g_battlemsg_thread  = nullptr;
 // observation), which made MenuCursorThread's open-re-announce speak the
 // STALE main-menu row ("Item", "Config") over the victory announcements
 // (player report 2026-07-19). Two cross-thread signals suppress it:
-//   g_last_battle_tick  — GetTickCount() stamped every battle poll while
+//   g_last_battle_tick  â€” GetTickCount() stamped every battle poll while
 //     GAME_MODE==2 (BattleActionThread). A "menu open" within seconds of
-//     battle mode can only be the results screens — the real main menu is
+//     battle mode can only be the results screens â€” the real main menu is
 //     unreachable that fast (fade + results + field control in between).
 //     Covers the race where results appear before the mode byte moves.
-//   g_victory_active    — set by VictoryThread while the results window
+//   g_victory_active    â€” set by VictoryThread while the results window
 //     is live (covers however long the player reads the screens).
 // Plain aligned 32-bit stores/loads; benign racing (x86 atomicity).
 static volatile DWORD g_last_battle_tick = 0;
@@ -196,7 +196,7 @@ static HANDLE g_gameover_thread   = nullptr;
 //
 // THE PROBLEM (play report 2026-07-27, Screenshots/game_over/ + session log
 // 10:02-10:03): after a party wipe the engine shows the GAME OVER film reel
-// and then returns to the title screen's NEW GAME / Continue prompt — but it
+// and then returns to the title screen's NEW GAME / Continue prompt â€” but it
 // NEVER clears the field state. FIELD_ID stays at the dead field (145 in the
 // log) through the reel, the prompt, and the save-select screen. Every
 // "which world am I in" test in this file assumed FIELD_ID==0 means title
@@ -208,11 +208,11 @@ static HANDLE g_gameover_thread   = nullptr;
 //   - SaveMenuThread's LOAD mode (gate: FIELD_ID==0) would have been silent
 //     had the player continued into the save grid.
 // A blind player heard "Cloud is down", then 40s of silence, then "Yes...
-// Item" — with no way to know the run had ended.
+// Item" â€” with no way to know the run had ended.
 //
-// THE SIGNAL: GAME_MODE (0xCC0D89) blips to 26 for ~60ms at the battle→
+// THE SIGNAL: GAME_MODE (0xCC0D89) blips to 26 for ~60ms at the battleâ†’
 // game-over handoff (the only positive in-memory evidence; the reel itself
-// reads as frozen field play — see GAME_MODE_GAMEOVER in ff7_addresses.h).
+// reads as frozen field play â€” see GAME_MODE_GAMEOVER in ff7_addresses.h).
 // GameOverWatchThread polls at 30ms, latches here, and speaks "Game over."
 //
 // LATCH SEMANTICS: nonzero = "the field state is a corpse; we are in the
@@ -226,14 +226,14 @@ static HANDLE g_gameover_thread   = nullptr;
 //     field passes all their byte gates);
 //   - the G key treats the game as not loaded (the dead run's gil is gone).
 //
-// CLEARING: the observed reload sequence is reel (MENU_OPEN=0) → prompt
-// (MENU_OPEN=1, held through save-select — boot log 09:57:12→09:57:36) →
-// load commit (MENU_OPEN→0, field alive). So: once MENU_OPEN=1 has been
+// CLEARING: the observed reload sequence is reel (MENU_OPEN=0) â†’ prompt
+// (MENU_OPEN=1, held through save-select â€” boot log 09:57:12â†’09:57:36) â†’
+// load commit (MENU_OPENâ†’0, field alive). So: once MENU_OPEN=1 has been
 // seen while latched, the next MENU_OPEN==0 clears the latch. Safety net:
 // FIELD_ID changing to a DIFFERENT nonzero value also clears (a new field
 // definitely loaded; covers any path that skips the prompt).
 //
-// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity) — same
+// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity) â€” same
 // contract as g_victory_active above.
 // ---------------------------------------------------------------------------
 static volatile LONG g_game_over_latch = 0;
@@ -271,7 +271,7 @@ static RegSetExA_fn      g_orig_dotemu_regset = nullptr;
 static IMAGE_THUNK_DATA* g_iat_dotemu_entry   = nullptr;
 
 // ---------------------------------------------------------------------------
-// dotemuRegSetValueExA IAT hook — Sound sub-menu Left/Right value TTS.
+// dotemuRegSetValueExA IAT hook â€” Sound sub-menu Left/Right value TTS.
 //
 // FF7 (2013 Steam) calls AF3DN.P:dotemuRegSetValueExA instead of the real
 // Win32 RegSetValueExA for all registry writes (AF3DN.P is the DotEmu/FFNx
@@ -282,15 +282,15 @@ static IMAGE_THUNK_DATA* g_iat_dotemu_entry   = nullptr;
 //   Only when MENU_OPEN is set AND CONFIG_ROW==1 (the Sound row in the Config
 //   sub-menu is active).  This is the case when the player is inside the Sound
 //   sub-menu pressing Left/Right.  All other registry writes (startup, save,
-//   etc.) have MENU_OPEN=0 or CONFIG_ROW≠1 and are forwarded silently.
+//   etc.) have MENU_OPEN=0 or CONFIG_ROWâ‰ 1 and are forwarded silently.
 //
 // VALUE CACHING:
 //   Updates g_sound_music_vol / g_sound_fx_vol on every matching call so
 //   ConfigMenuThread can include the volume in Up/Down cursor announces.
 //
 // REGISTRY KEY NAMES:
-//   "MusicVolume" — music volume slider (byte 0=silence, 127=maximum)
-//   "SFXVolume"   — FX volume slider    (same scale)
+//   "MusicVolume" â€” music volume slider (byte 0=silence, 127=maximum)
+//   "SFXVolume"   â€” FX volume slider    (same scale)
 //   Exact names from the classic FF7 registry layout under
 //   HKLM\SOFTWARE\Square Soft, Inc\Final Fantasy VII\1.00\.
 // ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ static LONG WINAPI HookDotemuRegSetValueExA(
 }
 
 // ---------------------------------------------------------------------------
-// SetupSoundIATHook — patch FF7's IAT to intercept dotemuRegSetValueExA.
+// SetupSoundIATHook â€” patch FF7's IAT to intercept dotemuRegSetValueExA.
 //
 // Walks the IMAGE_IMPORT_DESCRIPTOR table of ff7_en.exe, locates the
 // AF3DN.P section, then finds the IAT slot for dotemuRegSetValueExA and
@@ -375,7 +375,7 @@ static void SetupSoundIATHook()
 
         // Some PE tools (packers, bound-import writers) zero OriginalFirstThunk
         // and keep only FirstThunk (the IAT).  Without the INT we cannot match
-        // by name — FirstThunk holds runtime addresses, not IMAGE_IMPORT_BY_NAME
+        // by name â€” FirstThunk holds runtime addresses, not IMAGE_IMPORT_BY_NAME
         // pointers.  Bail out cleanly rather than walking the MZ header.
         if (!desc->OriginalFirstThunk) {
             Log::Write("[FF7Access] IAT hook: AF3DN.P has no INT "
@@ -443,7 +443,7 @@ static void SetupSoundIATHook()
 //   zero during the title screen, world map, and battle. When non-zero, the
 //   player cannot be on the title screen, so we reset the sentinel to 0xFF.
 //   This ensures that after field gameplay ends and the title screen re-appears,
-//   the first valid cursor position is always announced — regardless of what
+//   the first valid cursor position is always announced â€” regardless of what
 //   value the BSS byte held during field mode.
 //
 // last_cursor SENTINEL UPDATE RULE:
@@ -453,18 +453,18 @@ static void SetupSoundIATHook()
 //   could pin last_cursor, silencing the announcement when the title screen
 //   later shows the same cursor position.
 //
-// SPLASH FALSE-ANNOUNCE — FIXED v2.30.38 (was "KNOWN LIMITATION"):
+// SPLASH FALSE-ANNOUNCE â€” FIXED v2.30.38 (was "KNOWN LIMITATION"):
 //   Windows zero-initializes the 0xDD BSS segment, so TITLE_CURSOR reads 0
-//   (= New Game) during the company logo splash with FIELD_ID also 0 — the
+//   (= New Game) during the company logo splash with FIELD_ID also 0 â€” the
 //   thread used to announce "New Game" ~350ms into the splash and then stay
 //   silent when the real title menu appeared (same value, change-check).
 //   The old comment claimed "there is no in-process signal that
-//   distinguishes splash from title screen" — static disasm (2026-07-27)
+//   distinguishes splash from title screen" â€” static disasm (2026-07-27)
 //   found it: TITLE_STATE (0xDD74E0), the title module's own lifecycle
 //   dword, is 1 exactly while the menu is on screen and interactive (full
 //   state machine at its declaration in ff7_addresses.h). The thread now
 //   announces only at TITLE_STATE==1, which both kills the splash announce
-//   AND lands the first announce at the moment the menu fades in — with a
+//   AND lands the first announce at the moment the menu fades in â€” with a
 //   "Title screen." orientation prefix on every fresh title entry (boot,
 //   post-game-over, quit-to-title all re-cycle the state through 0 -> 1).
 //
@@ -474,7 +474,7 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 {
     uint8_t last_cursor = 0xFF;  // 0xFF = sentinel; triggers announce on first valid read
     // v2.30.38: last observed TITLE_STATE, logged on change while in title
-    // context (debug builds) — the state machine is disasm-derived, so its
+    // context (debug builds) â€” the state machine is disasm-derived, so its
     // first few launch logs double as the live verification pass.
     int32_t last_tstate = INT32_MIN;
 
@@ -492,7 +492,7 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
         // player is not on the title screen: reset the sentinel and skip.
         // Safe dereference: 0xCC15D0 is in the statically-allocated game BSS.
         //
-        // v2.30.37: EXCEPT after a game over — the engine returns to the
+        // v2.30.37: EXCEPT after a game over â€” the engine returns to the
         // title prompt with FIELD_ID still STALE at the dead field (play
         // report 2026-07-27: the prompt was completely silent). The latch
         // says "this IS title context despite FIELD_ID".
@@ -504,10 +504,10 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
         }
 
         // v2.30.38: the title module's own lifecycle state (0xDD74E0) is the
-        // authoritative "menu on screen" test — 1 only while the NEW GAME/
+        // authoritative "menu on screen" test â€” 1 only while the NEW GAME/
         // Continue prompt (or its Continue save-grid subscreen) is displayed
         // and interactive. Anything else means splash/logo movies (0, the
-        // BSS boot value — the module hasn't run), the backdrop still fading
+        // BSS boot value â€” the module hasn't run), the backdrop still fading
         // in (0), a choice fading out (2), or the module exited (-1, stale
         // through gameplay). This replaces v2.30.37's MENU_OPEN==1 check in
         // the game-over path (MENU_OPEN was a proxy observed once; this is
@@ -535,7 +535,7 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
         if (curr == last_cursor) continue;
 
         // v2.30.38 (generalizing v2.30.37's game-over prefix): the FIRST
-        // announce of every title session says "Title screen." — at boot the
+        // announce of every title session says "Title screen." â€” at boot the
         // menu has just faded in after silent logo movies, after a game over
         // the player last heard "Game over." 40s of film reel ago, and after
         // a quit the context also changed screens. last_cursor is still the
@@ -556,7 +556,7 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
             TTS::Speak(orient ? L"Title screen. New Game" : L"New Game",
                        /*interrupt=*/true);
         }
-        // Other values are BSS data from unrelated modules — do not announce
+        // Other values are BSS data from unrelated modules â€” do not announce
         // and do not update last_cursor.
     }
 
@@ -567,31 +567,31 @@ static DWORD WINAPI TitleCursorThread(LPVOID /*unused*/)
 // Game-over watch thread (v2.30.37).
 //
 // Sets/clears g_game_over_latch (full rationale at its declaration). Runs at
-// 30ms — faster than every other poll loop in this file — because the ONLY
+// 30ms â€” faster than every other poll loop in this file â€” because the ONLY
 // positive game-over signal is GAME_MODE holding 26 for ~60ms (one observed
 // sample; a 30ms poll gives two chances at the observed width, but the true
-// minimum width is unknown — if a log ever shows a wipe with no "GAMEOVER"
+// minimum width is unknown â€” if a log ever shows a wipe with no "GAMEOVER"
 // line, this poll missed the blip and a second trigger is needed).
 //
 // The thread always runs regardless of speech config: the latch's job is
 // mostly SUPPRESSION (keeping stale-menu narration off a title screen), and
 // that correctness must not depend on which speech families are enabled.
-// Only the "Game over." announcement itself is config-gated (speak_menus —
+// Only the "Game over." announcement itself is config-gated (speak_menus â€”
 // the same family that owns the title screen narration this latch hands
 // off to).
 //
 // interrupt=false on the announce: a party wipe fires the battle defeat
 // announce ("Cloud is down") ~5s before the mode blip in the observed log,
-// but TTS may still be speaking it in slower configs — queueing preserves
-// the causal order (downed → game over) instead of eating the cause.
+// but TTS may still be speaking it in slower configs â€” queueing preserves
+// the causal order (downed â†’ game over) instead of eating the cause.
 // ---------------------------------------------------------------------------
 static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
 {
-    // MENU_OPEN==1 seen since the latch set — arms the "prompt closed ⇒
+    // MENU_OPEN==1 seen since the latch set â€” arms the "prompt closed â‡’
     // game is reloading" clear. Reset at every latch set.
     bool prompt_seen = false;
     // FIELD_ID captured at latch time (the dead field). A DIFFERENT nonzero
-    // value later means a new field really loaded — the safety-net clear.
+    // value later means a new field really loaded â€” the safety-net clear.
     int16_t dead_field_id = 0;
 
     for (;;) {
@@ -610,7 +610,7 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
                 char dbg[96];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] GAMEOVER: mode=26 observed (dead field=%d) "
-                    "— title-context latch set", static_cast<int>(dead_field_id));
+                    "â€” title-context latch set", static_cast<int>(dead_field_id));
                 Log::Write(dbg);
                 if (Config::Get().speak_menus)
                     TTS::Speak(L"Game over.", /*interrupt=*/false);
@@ -618,13 +618,13 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
             continue;
         }
 
-        // ── Latched: watch for the game coming back to life ──────────────
+        // â”€â”€ Latched: watch for the game coming back to life â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
         // v2.30.38: TITLE_STATE==1 (the title module's own "menu is up"
-        // dword, disasm-proven — see ff7_addresses.h) joins MENU_OPEN as a
+        // dword, disasm-proven â€” see ff7_addresses.h) joins MENU_OPEN as a
         // prompt-up signal. MENU_OPEN=1 was observed at the prompt exactly
         // once (10:03:03 log); if some path never raises it, the latch
         // would have deadlocked open. TITLE_STATE is authoritative, and the
@@ -638,7 +638,7 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
             if (!prompt_seen) {
                 prompt_seen = true;
                 Log::Write("[FF7Access] GAMEOVER: title prompt up "
-                           "(menu/title-state) — latch clears when it ends");
+                           "(menu/title-state) â€” latch clears when it ends");
             }
             continue;
         }
@@ -649,9 +649,9 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
             g_game_over_latch = 0;
             prompt_seen       = false;
             Log::Write(prompt_closed
-                ? "[FF7Access] GAMEOVER: title menu closed — latch cleared "
+                ? "[FF7Access] GAMEOVER: title menu closed â€” latch cleared "
                   "(game reloading)"
-                : "[FF7Access] GAMEOVER: new field id — latch cleared "
+                : "[FF7Access] GAMEOVER: new field id â€” latch cleared "
                   "(safety net)");
         }
     }
@@ -665,16 +665,16 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
 // Polls FF7Addr::MENU_CURSOR (0x00CC1B42) and announces the highlighted
 // main-menu option by name whenever the cursor moves.
 //
-// CURSOR INDEX → OPTION NAME (v2.31.1, player-corrected 2026-07-18):
+// CURSOR INDEX â†’ OPTION NAME (v2.31.1, player-corrected 2026-07-18):
 //   0=Item  1=Magic  2=Materia  3=Equip  4=Status  5=Order  6=Limit
 //   7=Config  8=PHS  9=Save  10=Quit
 // The original 2026-07-01 table was built before the player could compare
-// rows in game and OMITTED Materia — everything from Equip down was one
+// rows in game and OMITTED Materia â€” everything from Equip down was one
 // row early ("equip, status, order and limit all need to move down 1; the
 // selection directly under magic is not available yet" = the grayed
 // Materia row). The shift also resolves both old "unlockable, identity
 // TBD" slots: 6 is just Limit, 8 is PHS (grayed until the story grants
-// it). Config=7 and Save=9 were correct in both tables — which is why the
+// it). Config=7 and Save=9 were correct in both tables â€” which is why the
 // v2.29 save-mode gate (MENU_CURSOR==9) never misfired.
 // Address confirmed via ff7_menu_cursor_poll.py (2026-07-01).
 //
@@ -687,12 +687,12 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
 //
 // CHANGE-ONLY DETECTION:
 //   MENU_CURSOR retains its last value when the menu closes, so we only
-//   speak on value-change — not on menu-open. The player can press a
+//   speak on value-change â€” not on menu-open. The player can press a
 //   direction to hear their current position if they re-open at the same row.
 //   A "menu is open" flag (to re-announce on open) was not found during
 //   investigation; locating it is noted as future work.
 //
-// UNKNOWN SLOTS 7–8:
+// UNKNOWN SLOTS 7â€“8:
 //   These cursor indices exist but correspond to menu options not yet
 //   unlocked in the game (likely PHS and one other). The thread skips them
 //   silently and logs a diagnostic. Update kMenuLabels[] when confirmed.
@@ -700,13 +700,13 @@ static DWORD WINAPI GameOverWatchThread(LPVOID /*unused*/)
 // Gated by Config::Get().speak_menus.
 // ---------------------------------------------------------------------------
 // v2.30.32: TRUE while the menu module is running a top-level screen that
-// is NOT the main-menu family — name entry (GAME_MODE 6), PHS (7), shop
+// is NOT the main-menu family â€” name entry (GAME_MODE 6), PHS (7), shop
 // (8). All three raise MENU_OPEN while every main-menu byte (MENU_CURSOR,
 // the dispatch index, FOCUS_MODE, the save-mode frozen-row signature)
 // stays STALE at its last value, so every thread keyed on those bytes
 // must stand down or it narrates a menu that is not on screen. Play-
 // proven twice: the naming screen's false "Item" (v2.8.3) and the shop's
-// false "Save" (2026-07-26 report — MENU_CURSOR was parked on row 9 from
+// false "Save" (2026-07-26 report â€” MENU_CURSOR was parked on row 9 from
 // the player's last save, and the shop's MENU_OPEN let the row announce
 // talk over the shop greeting).
 static bool MenuModuleForeignScreen()
@@ -720,18 +720,18 @@ static bool MenuModuleForeignScreen()
 
 static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 {
-    // Map cursor index → spoken label. nullptr entries are unlockable options
+    // Map cursor index â†’ spoken label. nullptr entries are unlockable options
     // whose names are not yet confirmed; they are logged but not spoken.
     static const wchar_t* const kMenuLabels[] = {
         L"Item",     // 0
         L"Magic",    // 1
-        L"Materia",  // 2 — grayed until the story grants materia
+        L"Materia",  // 2 â€” grayed until the story grants materia
         L"Equip",    // 3
         L"Status",   // 4
         L"Order",    // 5
         L"Limit",    // 6
         L"Config",   // 7
-        L"P H S",    // 8 — spaced so TTS spells the letters; grayed until granted
+        L"P H S",    // 8 â€” spaced so TTS spells the letters; grayed until granted
         L"Save",     // 9
         L"Quit",     // 10
     };
@@ -746,7 +746,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
     uint8_t last_quit_cursor = 0xFF;  // quit-dialog cursor; 0xFF = reset, seed
                                       // next valid read silently; 0xFE = saw
                                       // garbage, next valid read speaks
-                                      // (dialog init) — see v2.30.40 note
+                                      // (dialog init) â€” see v2.30.40 note
     // Counts consecutive polls where MENU_OPEN=1. We require at least 2 before
     // treating MENU_OPEN as a real menu open. This prevents a single stale
     // MENU_OPEN=1 poll (the title-screen overlay briefly persisting into the
@@ -782,11 +782,11 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         }
 
         // The NAMING SCREEN also sets MENU_OPEN=1 while FIELD_ID stays
-        // non-zero (player-reported 2026-07-12: a false "Item" announce —
-        // MENU_CURSOR's stale value — talked over NameEntryThread's own
+        // non-zero (player-reported 2026-07-12: a false "Item" announce â€”
+        // MENU_CURSOR's stale value â€” talked over NameEntryThread's own
         // screen-open announcement). v2.30.32 widened the same stand-down
         // to the shop and PHS screens after the shop's false "Save"
-        // (MenuModuleForeignScreen — the exclusion list stays narrow and
+        // (MenuModuleForeignScreen â€” the exclusion list stays narrow and
         // live-evidenced rather than requiring GAME_MODE==9, because
         // other MENU_OPEN contexts haven't been mode-sampled).
         if (MenuModuleForeignScreen()) {
@@ -799,7 +799,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 
         // v2.30.37: post-game-over title sequence. FIELD_ID is STALE nonzero
         // (so the gate above let us through) and the title prompt raises
-        // MENU_OPEN=1 — exactly the combination that made this thread speak
+        // MENU_OPEN=1 â€” exactly the combination that made this thread speak
         // the stale quit cursor ("Yes") and menu row ("Item") over the
         // NEW GAME / Continue prompt (2026-07-27 log, 10:03:03). Same
         // stale-bytes situation as a foreign menu screen: stand down.
@@ -811,21 +811,21 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             continue;
         }
 
-        // ── Main menu ────────────────────────────────────────────────────────
+        // â”€â”€ Main menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
 
         if (menu_open == 0) {
-            // v2.30.27: the menu closing ends any running tutorial —
+            // v2.30.27: the menu closing ends any running tutorial â€”
             // clear the flag and cut whatever narration is still queued
             // (the player has moved on; finishing the lesson into the
             // field would talk over gameplay).
             // v2.30.36: only a genuine open->closed EDGE counts
-            // (last_menu_open != 0 — set at the bottom of the open path,
+            // (last_menu_open != 0 â€” set at the bottom of the open path,
             // so it is nonzero here exactly when the previous poll saw
             // the menu open). TUTOR fires on the FIELD side a beat
-            // before the menu module opens — the request gap the latch
-            // comment in hooks.cpp explicitly says it must cover — and
+            // before the menu module opens â€” the request gap the latch
+            // comment in hooks.cpp explicitly says it must cover â€” and
             // this branch also runs during that gap: the old
             // level-triggered clear killed the suppression before the
             // menu ever opened (cursor-sweep chatter over the lesson)
@@ -849,7 +849,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         menu_open_streak++;
         if (menu_open_streak < 2) continue;
 
-        // On the 0→1 transition of MENU_OPEN, force last_cursor to 0xFF so
+        // On the 0â†’1 transition of MENU_OPEN, force last_cursor to 0xFF so
         // the current position is announced immediately on re-open.
         // This fires on the 2nd consecutive poll of MENU_OPEN=1, when
         // last_menu_open is still 0 from the previous menu-close reset.
@@ -862,7 +862,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         // which made the open-re-announce speak the STALE menu row over
         // the victory announcements (player report). Stand down while the
         // results context is live: either VictoryThread says so, or the
-        // "menu" opened within seconds of battle mode — the real main
+        // "menu" opened within seconds of battle mode â€” the real main
         // menu is unreachable that fast. Seed silently so nothing stale
         // fires when the window ends.
         if (g_victory_active != 0 ||
@@ -873,7 +873,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             continue;
         }
 
-        // v2.30.27: a menu TUTORIAL is running — the script drives the
+        // v2.30.27: a menu TUTORIAL is running â€” the script drives the
         // cursor, and hook_tutor has already queued the lesson text.
         // Track state silently (so nothing stale fires when the
         // tutorial ends) but announce nothing over the narration.
@@ -884,16 +884,16 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             continue;
         }
 
-        // ── Quit confirmation cursor (runs in parallel, no priority block) ──
+        // â”€â”€ Quit confirmation cursor (runs in parallel, no priority block) â”€â”€
         // QUIT_CURSOR tracks Yes (0) / No (1) while the Quit dialog is visible.
         // We intentionally do NOT gate this on a QUIT_OPEN flag: the initial
         // candidate (0x00DC0FB1) did not reliably return to 0 when the dialog
         // was dismissed with No, which caused the main menu to stop announcing.
-        // Tracking QUIT_CURSOR in parallel here — without any continue — keeps
+        // Tracking QUIT_CURSOR in parallel here â€” without any continue â€” keeps
         // the main menu cursor logic running at all times.
         //
         // v2.30.40: the byte is STALE between quit dialogs, and every reset
-        // above re-arms last_quit_cursor to 0xFF — so the first poll of a
+        // above re-arms last_quit_cursor to 0xFF â€” so the first poll of a
         // fresh menu open treated the leftover value as a player move and
         // spoke "Yes" over the menu-open announce whenever the stale byte
         // happened to be <= kQuitMax (2026-07-27 12:17 launch log: "QUIT
@@ -906,7 +906,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         //   0xFE  "saw out-of-range" -> the byte was garbage while we
         //                             watched; a garbage->valid transition
         //                             is the quit dialog WRITING its initial
-        //                             cursor — that one must speak (it was
+        //                             cursor â€” that one must speak (it was
         //                             the old else-branch's behavior too).
         // Yes<->No moves inside a live dialog are plain valid->valid
         // changes and speak exactly as before.
@@ -928,7 +928,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             }
         }
 
-        // ── Main menu cursor ─────────────────────────────────────────────────
+        // â”€â”€ Main menu cursor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const uint8_t curr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
 
@@ -951,7 +951,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         }
 
         // v2.32: the activation handler refuses rows whose bit is set in
-        // the disabled-rows mask (disasm 0x6CA4CD — this is exactly what
+        // the disabled-rows mask (disasm 0x6CA4CD â€” this is exactly what
         // grays Materia/PHS early game). Sighted players see the gray;
         // append the same information.
         const uint16_t disabled_rows =
@@ -983,7 +983,7 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 //   4=ATB           5=Battle speed  6=Battle msg  7=Field msg
 //   8=Camera angle  9=Magic order
 //
-// GATE — CONFIG_OPEN PROXY:
+// GATE â€” CONFIG_OPEN PROXY:
 //   No dedicated "config sub-menu open" flag was found.  All symmetric-toggle
 //   candidates from ff7_config_menu_scan.py Phase C fired on any main-menu
 //   open event, identical to the existing MENU_OPEN (0x00DC12DC).  We gate
@@ -992,8 +992,8 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
 //       changes with Up/Down presses.  Thread tracks and announces.
 //     - On the Config row of the main menu (before pressing Confirm): MENU_CURSOR
 //       is also 7 but Up/Down moves the MAIN MENU cursor, not CONFIG_ROW.
-//       CONFIG_ROW doesn't change → thread is active but stays silent. ✓
-//     - On any other main-menu row: MENU_CURSOR ≠ 7 → thread skips. ✓
+//       CONFIG_ROW doesn't change â†’ thread is active but stays silent. âœ“
+//     - On any other main-menu row: MENU_CURSOR â‰  7 â†’ thread skips. âœ“
 //
 // FALSE-ANNOUNCE PREVENTION (no 0xFF sentinel):
 //   last_row is initialized to 0 (matching the BSS default of CONFIG_ROW) and
@@ -1027,7 +1027,7 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
     static const uint8_t kConfigRowMax = 9;
 
     // Initialized to 0 (= Window color, same as the BSS value of CONFIG_ROW).
-    // Never reset to 0xFF — see "FALSE-ANNOUNCE PREVENTION" note above.
+    // Never reset to 0xFF â€” see "FALSE-ANNOUNCE PREVENTION" note above.
     uint8_t  last_row   = 0;
     // Last-announced extracted setting value for the current row. 0xFFFF = none
     // announced yet (also used as the sentinel for rows with no value address).
@@ -1047,13 +1047,13 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
         if (!Config::Get().speak_menus) continue;
 
         // v2.30.32: MENU_CURSOR is stale on the menu module's foreign
-        // screens (shop/PHS/name entry) — the ==7 Config-row proxy below
+        // screens (shop/PHS/name entry) â€” the ==7 Config-row proxy below
         // would trust it (see MenuModuleForeignScreen). v2.30.37: same for
         // the post-game-over title sequence (stale MENU_CURSOR + MENU_OPEN=1
         // + stale nonzero FIELD_ID pass every gate below).
         if (MenuModuleForeignScreen() || GameOverTitleContext()) continue;
 
-        // Field must be active — config sub-menu only reachable from a field map.
+        // Field must be active â€” config sub-menu only reachable from a field map.
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
         if (field_id == 0) continue;
@@ -1105,19 +1105,19 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
             break;
         }
         case 5: {
-            // Battle speed: raw byte 0–255 (0=Fast, 255=Slow)
+            // Battle speed: raw byte 0â€“255 (0=Fast, 255=Slow)
             new_value = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_SPEED_BATTLE);
             _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"%u", new_value);
             break;
         }
         case 6: {
-            // Battle message: raw byte 0–255 (0=Fast, 255=Slow)
+            // Battle message: raw byte 0â€“255 (0=Fast, 255=Slow)
             new_value = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_SPEED_MSG);
             _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"%u", new_value);
             break;
         }
         case 7: {
-            // Field message: raw byte 0–255 (0=Fast, 255=Slow)
+            // Field message: raw byte 0â€“255 (0=Fast, 255=Slow)
             new_value = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_SPEED_FIELD_MSG);
             _snwprintf_s(val_str, _countof(val_str), _TRUNCATE, L"%u", new_value);
             break;
@@ -1132,7 +1132,7 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
             break;
         }
         case 9: {
-            // Magic order: bits 4:2 of CONFIG_PACKED_CAMERA_MAGIC (0–5 → No.1–No.6)
+            // Magic order: bits 4:2 of CONFIG_PACKED_CAMERA_MAGIC (0â€“5 â†’ No.1â€“No.6)
             const uint8_t packed =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::CONFIG_PACKED_CAMERA_MAGIC);
             new_value = (packed >> 2) & 7;
@@ -1143,7 +1143,7 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
             break;  // rows 0, 1, 2: new_value stays 0xFFFF, val_str stays empty
         }
 
-        // ── Sound sub-menu cursor (Up/Down between Music and FX sliders) ─────
+        // â”€â”€ Sound sub-menu cursor (Up/Down between Music and FX sliders) â”€â”€â”€â”€â”€
         // Runs independently of the row-value check below so a cursor navigation
         // that leaves CONFIG_ROW unchanged is still caught.
         //
@@ -1151,7 +1151,7 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
         //   first_obs (last_sound_cursor==0xFF): silently establishes baseline
         //     on the first poll after entering CONFIG_ROW==1, preventing a false
         //     announce caused by the retained cursor byte from a prior session.
-        //   sc > 1: out-of-range — ignore; do not update sentinel so the next
+        //   sc > 1: out-of-range â€” ignore; do not update sentinel so the next
         //     in-range value triggers an announce.
         //
         // Volume inclusion: if the IAT hook has seen a slider change this session,
@@ -1194,8 +1194,8 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
         if (!row_changed && new_value == last_value) continue;
         last_value = new_value;
 
-        // Row navigation → "Row name, value" (or just row name for untracked rows).
-        // Left/Right within a row → just the value string.
+        // Row navigation â†’ "Row name, value" (or just row name for untracked rows).
+        // Left/Right within a row â†’ just the value string.
         wchar_t announce[64];
         if (row_changed) {
             if (val_str[0] != L'\0') {
@@ -1228,30 +1228,30 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
 // separate state (the shared-module assumption was live-DISPROVED
 // 2026-07-17): the save menu's cursors in the DC6Axx menu block
 // (ff7_save_menu_scan.py) and the Continue menu's own instance in the
-// title block (ff7_continue_menu_scan.py) — each grid cursor was
+// title block (ff7_continue_menu_scan.py) â€” each grid cursor was
 // live-verified by its scan's speak-back pass, and both instances share
-// the same +0x3C grid→slot struct spacing. See ff7_addresses.h
+// the same +0x3C gridâ†’slot struct spacing. See ff7_addresses.h
 // SAVEMENU_* / LOADMENU_*.
 //
 // The slot PREVIEW data (what the sighted player sees per slot: lead
 // character, level, location, play time, gil, party portraits) is read
 // from the save FILES themselves, not from game memory: the menu renders
 // from saveNN.ff7 on disk, whose layout was derived from the player's own
-// save00.ff7 against screenshot ground truth (research doc §5 "Save file
+// save00.ff7 against screenshot ground truth (research doc Â§5 "Save file
 // (.ff7) slot-preview layout", ff7_savefile_preview_derive.py). Files are
-// re-read on every announce — 65 KB a press is nothing, and it means a
+// re-read on every announce â€” 65 KB a press is nothing, and it means a
 // just-written save can never be announced stale.
 //
 // ANNOUNCE MODEL (change-only, the MenuCursorThread rule): neither menu
-// has a known "just opened" flag — in save mode the gate (MENU_OPEN=1
+// has a known "just opened" flag â€” in save mode the gate (MENU_OPEN=1
 // with MENU_CURSOR frozen on the Save row, the Config-submenu signature)
 // becomes true while the player is still browsing the main menu, and at
 // the title nothing observable distinguishes the Continue grid from the
 // plain title screen (continue_menu_verify: every known byte constant).
 // So: cursor moves and pane changes announce; entering the slot list
 // announces "Game N" plus the slot under the cursor; everything is
-// range-guarded — any out-of-range value (grid>9, slot>14, phase>1)
-// means some other module owns those bytes right now — reset and stay
+// range-guarded â€” any out-of-range value (grid>9, slot>14, phase>1)
+// means some other module owns those bytes right now â€” reset and stay
 // silent (the TitleCursorThread 0/1-only lesson).
 // ---------------------------------------------------------------------------
 
@@ -1267,8 +1267,8 @@ struct SaveSlotPreview {
     uint32_t seconds;         // total play time
 };
 
-// .ff7 layout constants — every one verified against the real file
-// (research doc §5): 9-byte header, 15 slots of 0x10F4, preview at the
+// .ff7 layout constants â€” every one verified against the real file
+// (research doc Â§5): 9-byte header, 15 slots of 0x10F4, preview at the
 // slot head, empty slot = all-zero.
 static const size_t kSaveFileHeader  = 9;
 static const size_t kSaveSlotStride  = 0x10F4;
@@ -1297,9 +1297,9 @@ static void SaveDecodeText(const uint8_t* src, size_t max_bytes,
 
 // Read + parse one save file. Grid entry "Save <idx+1>" = save0<idx>.ff7
 // in the save\ directory next to the DLL (same own-module-directory
-// pattern as Config::Load / PlacesFilePath — immune to CWD games).
+// pattern as Config::Load / PlacesFilePath â€” immune to CWD games).
 // Returns false if the file is absent or malformed; out[] is then all
-// unused, which speaks as an empty file — exactly what the sighted menu
+// unused, which speaks as an empty file â€” exactly what the sighted menu
 // shows for a file that was never saved to.
 static bool ReadSaveFilePreviews(int file_idx, SaveSlotPreview out[/*15*/])
 {
@@ -1347,7 +1347,7 @@ static bool ReadSaveFilePreviews(int file_idx, SaveSlotPreview out[/*15*/])
     return true;
 }
 
-// "1 hour 5 minutes" / "21 minutes" — the menu's HH:MM, made speakable.
+// "1 hour 5 minutes" / "21 minutes" â€” the menu's HH:MM, made speakable.
 static void SaveTimeSpeakable(uint32_t seconds, wchar_t* out, size_t cap)
 {
     const uint32_t h = seconds / 3600;
@@ -1361,10 +1361,10 @@ static void SaveTimeSpeakable(uint32_t seconds, wchar_t* out, size_t cap)
 }
 
 // Spoken line for one slot: "Slot 2: Cloud, level 7, No.1 Reactor,
-// 21 minutes, 376 gil, with Barret" — the whole sighted preview minus
+// 21 minutes, 376 gil, with Barret" â€” the whole sighted preview minus
 // HP/MP (menu-identity noise). Non-lead party from the portrait ids via
 // the DEFAULT names (the lead's name is the saved text; the others'
-// renames are not in the preview block — default names are the honest
+// renames are not in the preview block â€” default names are the honest
 // best available).
 static void SaveSlotLine(int slot_idx, const SaveSlotPreview& sp,
                          wchar_t* out, size_t cap)
@@ -1426,7 +1426,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
         }
 
         // v2.30.32: the save-mode gate below is "MENU_OPEN + MENU_CURSOR
-        // frozen at 9" — EXACTLY the stale signature a shop shows when the
+        // frozen at 9" â€” EXACTLY the stale signature a shop shows when the
         // player's last main-menu visit ended on the Save row (the
         // 2026-07-26 false-"Save" report). Stand down on foreign screens.
         if (MenuModuleForeignScreen()) {
@@ -1444,36 +1444,36 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
 
         // TWO menu implementations, one speaker (live-proven 2026-07-17:
-        // the title Continue menu does NOT share the save menu's state —
-        // continue_menu_verify log — it has its own instance in the TITLE
+        // the title Continue menu does NOT share the save menu's state â€”
+        // continue_menu_verify log â€” it has its own instance in the TITLE
         // block, found by continue_menu_scan the same day):
-        //   SAVE mode — in-field menu module, gated by the frozen-row
+        //   SAVE mode â€” in-field menu module, gated by the frozen-row
         //   signature (MENU_OPEN=1, MENU_CURSOR held at 9, FIELD_ID!=0).
-        //   LOAD mode — title context (FIELD_ID==0).
+        //   LOAD mode â€” title context (FIELD_ID==0).
         // The PANE for BOTH comes from LOADMENU_LIST_PTR (nonzero = the
         // slot list is open; it is the loaded file's heap pointer, and
-        // both scans observed it independently — nonzero-check only,
+        // both scans observed it independently â€” nonzero-check only,
         // never deref). The per-menu phase byte 0xDC1210 is DISPROVED:
         // it oscillates in real use, which made v2.29.1 alternate the
         // two pane announcements endlessly (player report).
         //
         // The slot position is ROW (0..2 visible window) + SCROLL
-        // (0..12) — the "only 3 slots" player report; scroll offsets per
+        // (0..12) â€” the "only 3 slots" player report; scroll offsets per
         // ff7_slot_scroll_probe.py (title instance live-confirmed; save
         // instance inferred at the same struct offset +0x10).
         //
         // The FILE position is likewise split (v2.29.3, the "second row
         // counts wrong" player report): GRID_CURSOR is the COLUMN 0..4,
-        // the 5×2 grid's row a separate byte at grid+4: 0 = top row
+        // the 5Ã—2 grid's row a separate byte at grid+4: 0 = top row
         // (Save 1-5), 1 = bottom row (Save 6-10). File index =
-        // rowbyte*5 + column. (v2.29.4: the first reading was inverted —
+        // rowbyte*5 + column. (v2.29.4: the first reading was inverted â€”
         // the probe's baseline of 1 was the player already PARKED on the
         // bottom row, not the top; their play report of Save 6 spoken on
         // the top row is the decisive observation.)
-        // v2.30.37: !GameOverTitleContext() — the post-game-over title
+        // v2.30.37: !GameOverTitleContext() â€” the post-game-over title
         // prompt raises MENU_OPEN with FIELD_ID stale nonzero, and if the
         // player's last main-menu visit parked MENU_CURSOR on the Save row
-        // (row 9 — exactly the 2026-07-26 shop false-"Save" signature) this
+        // (row 9 â€” exactly the 2026-07-26 shop false-"Save" signature) this
         // gate would select the WRONG menu instance for the Continue grid.
         const bool save_mode =
             menu_open == 1 && menu_cursor == 9 && field_id != 0 &&
@@ -1481,12 +1481,12 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 
         // v2.29.5: the "Are you sure you want to save?" Yes/No dialog.
         // Widget-state byte 0xDCA028 == 7 while it is open (1 = slot
-        // list — it is the save menu's little state machine, the SINGLE
+        // list â€” it is the save menu's little state machine, the SINGLE
         // A/B/A candidate of ff7_save_confirm_scan 2026-07-17); cursor
         // 0xDC6C6C 0=Yes 1=No, speak-back verified. The slot-row byte
         // holds still during the dialog (same scan log), so this block
         // runs FIRST and short-circuits the pane/cursor logic below
-        // while the dialog is up. Save mode only — the Continue menu
+        // while the dialog is up. Save mode only â€” the Continue menu
         // loads without a confirm.
         if (save_mode) {
             const uint8_t wstate =
@@ -1530,7 +1530,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
             scroll = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::SAVEMENU_SLOT_SCROLL);
         } else if (field_id == 0 || GameOverTitleContext()) {
-            // v2.30.37: GameOverTitleContext — the post-game-over Continue
+            // v2.30.37: GameOverTitleContext â€” the post-game-over Continue
             // grid IS the title-block LOAD instance, but FIELD_ID stays
             // stale nonzero there (the whole point of the latch). Without
             // this the Continue path after a game over browsed silently.
@@ -1558,7 +1558,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 
         // First observation after the gate opens: seed silently. In save
         // mode the gate opens while the player is still on the main menu's
-        // Save row — announcing then would talk over MenuCursorThread's
+        // Save row â€” announcing then would talk over MenuCursorThread's
         // own "Save".
         if (last_phase == 0xFF) {
             last_phase = phase;
@@ -1572,7 +1572,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
         if (phase != last_phase) {
             // Pane change. Into the slot list: name the file and the slot
             // under the cursor (the grid byte HOLDS the selected file
-            // while the list is open — scan-verified). Back to the grid:
+            // while the list is open â€” scan-verified). Back to the grid:
             // re-orient with the grid line.
             if (phase == 1) {
                 SaveSlotPreview slots[15];
@@ -1615,7 +1615,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 //
 // Polls g_active_actor_id and the battle model state arrays to detect battle
 // actions, then resolves the EXACT flash-message text ("Ice", "Potion",
-// "Machine Gun", "Braver") by replicating the game's own dispatcher — see the
+// "Machine Gun", "Braver") by replicating the game's own dispatcher â€” see the
 // v2.7 resolution notes in ff7_addresses.h (SECTION 1c) for the full data-flow
 // derivation (kernel2_consumer_disasm / action_name_final_verify, 2026-07-11).
 //
@@ -1625,7 +1625,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 //   not the game.  Polling reads the same data with no patching.
 //
 // ACTOR VALIDITY:
-//   Party slots 0–2; enemy slots 4–9.  Slot 3 never appears.
+//   Party slots 0â€“2; enemy slots 4â€“9.  Slot 3 never appears.
 //   g_active_actor_id initialises to 0 at process start and is never reset
 //   between battles; commandID==0 is the only reliable "not in battle" gate.
 //   The first action of a new battle is announced because actor_id changes;
@@ -1634,7 +1634,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 //
 // ANNOUNCE TIMING (why announcements are two-phase):
 //   The turn STARTS when g_active_actor_id changes, but the flash-message
-//   struct (battle_actor_data 0xDC38E0) is only written ~1–2s later, when the
+//   struct (battle_actor_data 0xDC38E0) is only written ~1â€“2s later, when the
 //   flash text actually appears on screen.  Live-verified 2026-07-11:
 //   reading it at turn start yields the PREVIOUS action's values.  Also, the
 //   struct is NOT rewritten when the new flash content equals the old (e.g.
@@ -1645,7 +1645,7 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 //     - name-bearing commands wait for the struct to CHANGE (flash appeared,
 //       resolve new values) or for a 2.5s timeout: on timeout, if the struct's
 //       command matches the current action's command the current values are
-//       resolved (repeated-flash case — values are still correct); otherwise
+//       resolved (repeated-flash case â€” values are still correct); otherwise
 //       fall back to the generic label.  A stale same-command struct from a
 //       DIFFERENT action can theoretically misname one enemy attack; accepted
 //       and documented in the research notes.
@@ -1659,16 +1659,16 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
 // FF7-encoded strings (entry N at base + u16[base + N*2]; u16[base] equals
 // the offset of entry 0, i.e. the table's own byte size).
 //
-// ⚠ LIFETIME (v2.22.1, from the 2026-07-16 play-session log): "scan once,
+// âš  LIFETIME (v2.22.1, from the 2026-07-16 play-session log): "scan once,
 // cache forever" is TRUE for magic/item/weapon (one resident block, stable
-// all session) but FALSE for the COMMAND section — it lives in a TRANSIENT
+// all session) but FALSE for the COMMAND section â€” it lives in a TRANSIENT
 // battle allocation that is freed and reused between battles. The cached
 // pointer then decodes reused binary as a "name" that passes every
 // structural check in SectionEntryText, and the battle menu spoke garbage
-// ("-Û+! ' $...") on menu open in the affected battles. Every pointer is
+// ("-Ã›+! ' $...") on menu open in the affected battles. Every pointer is
 // therefore RE-VALIDATED on each use via ValidatedSection() below; a stale
 // pointer is dropped (rate-limited rescan re-finds the live one) and the
-// caller falls back to its generic label — degraded, never garbage.
+// caller falls back to its generic label â€” degraded, never garbage.
 struct Kernel2Sections {
     const uint8_t* magic;    // entries: 0-55 spells, 56-71 summons,
                              //          72-95 enemy skills, 128+ limit breaks
@@ -1681,7 +1681,7 @@ struct Kernel2Sections {
                              // kernel command-name table is 0-based.
     // v2.31 (item menu): the menu inventory mixes equipment ids in with
     // items (id 128+, see SAVEMAP_ITEMS in ff7_addresses.h), and the
-    // sighted menu shows a description bar — three more sections, same
+    // sighted menu shows a description bar â€” three more sections, same
     // format, same signature discipline (head = entry 0's known English
     // text; a wrong guess finds nothing and callers fall back, never lie).
     const uint8_t* armor;      // entries 0-31 armor names
@@ -1692,13 +1692,13 @@ struct Kernel2Sections {
     // v2.30.28 (shop menus): materia names/descriptions plus the two gear
     // description sections a weapon shop needs. Section heads ground-truthed
     // from the RUNTIME text file kernel2.bin (LZS-decompressed offline,
-    // 2026-07-26 — it is the F9-expanded PC text, which is why the heap
+    // 2026-07-26 â€” it is the F9-expanded PC text, which is why the heap
     // copies contain plain strings): materia names [0]="MP Plus",
     // [1]="HP Plus"; materia descs [0]="Increases MP capacity"; weapon
     // descs [0]="Initial equipment" (kernel.bin's "Initial equiping" is
-    // the PSX-era text — the PC runtime uses kernel2's spelling). Armor
+    // the PSX-era text â€” the PC runtime uses kernel2's spelling). Armor
     // descriptions have a BLANK entry 0 (single space) so no signature can
-    // find them — armor rows just get no description, exactly what a
+    // find them â€” armor rows just get no description, exactly what a
     // sighted player sees (the bar is blank for armor too).
     const uint8_t* materia_name;  // entries 0-95 materia names
     const uint8_t* materia_desc;  // entries 0-95 materia descriptions
@@ -1712,7 +1712,7 @@ static Kernel2Sections g_k2 = { nullptr, nullptr, nullptr, nullptr,
                                 nullptr, nullptr, nullptr, nullptr };
 
 // Raw-byte section signature for the accessory descriptions: entry 0 is
-// "<0xB2>Strength<0xB3> +10" (kernel2.bin ground truth) — the colour-code
+// "<0xB2>Strength<0xB3> +10" (kernel2.bin ground truth) â€” the colour-code
 // bytes cannot be expressed through EncodeSignature's ASCII mapping, so
 // this one is spelled out byte-for-byte (text bytes = char - 0x20).
 static const uint8_t kAccessoryDescSig[] = {
@@ -1726,7 +1726,7 @@ static const uint8_t kAccessoryDescSig[] = {
 // can trigger ScanKernel2Sections lazily, so two threads could otherwise scan
 // concurrently.  Concurrent scans are HARMLESS for correctness (both compute
 // identical section addresses and pointer-sized aligned stores are atomic on
-// x86) but each scan walks the whole address space — the guard just prevents
+// x86) but each scan walks the whole address space â€” the guard just prevents
 // wasted duplicate walks.  A thread that finds the guard taken simply skips;
 // its rate-limited retry fires again later.
 static volatile LONG g_k2_scan_busy = 0;
@@ -1747,19 +1747,19 @@ static bool IsReadableSpan(const void* p, size_t len);
 // Re-verify a cached kernel2 section pointer before EVERY use (v2.22.1).
 //
 // WHY: the command-name section is a transient battle allocation (see the
-// Kernel2Sections lifetime note) — after the game frees and reuses it, the
+// Kernel2Sections lifetime note) â€” after the game frees and reuses it, the
 // cached pointer still "looks like" a section to SectionEntryText's
 // structural checks and decodes reused binary as a speakable name. The one
 // check garbage cannot pass is the section's own HEAD SIGNATURE: u16[base]
 // is the offset of entry 0, and entry 0 must still begin with the exact
-// encoded strings FindSectionBase matched ("Attack|Magic|" etc.) — the
+// encoded strings FindSectionBase matched ("Attack|Magic|" etc.) â€” the
 // identical self-validating rule that located the section in the first
 // place, now applied at read time.
 //
 // On mismatch the slot is NULLED so the callers' rate-limited rescan can
 // re-find the live copy; this call returns nullptr and the caller uses its
 // generic fallback label. Cost: one ~13-byte encode+memcmp per menu/action
-// event — noise. Cross-thread: two battle threads may race on *slot; both
+// event â€” noise. Cross-thread: two battle threads may race on *slot; both
 // only ever write nullptr here, and aligned pointer stores are atomic on
 // x86 (same argument as the scan guard above).
 static const uint8_t* ValidatedSectionBytes(const uint8_t** slot,
@@ -1781,7 +1781,7 @@ static const uint8_t* ValidatedSectionBytes(const uint8_t** slot,
     if (!ok) {
         char dbg[128];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] kernel2 section STALE ('%s' head gone at %p) — "
+            "[FF7Access] kernel2 section STALE ('%s' head gone at %p) â€” "
             "dropped for rescan", debug_label, base);
         Log::Write(dbg);
         *slot = nullptr;
@@ -1790,7 +1790,7 @@ static const uint8_t* ValidatedSectionBytes(const uint8_t** slot,
     return base;
 }
 
-// ASCII-signature wrapper — the original v2.22.1 entry point; the raw-byte
+// ASCII-signature wrapper â€” the original v2.22.1 entry point; the raw-byte
 // core above exists because the accessory-description head embeds colour
 // codes (see kAccessoryDescSig).
 static const uint8_t* ValidatedSection(const uint8_t** slot,
@@ -1804,10 +1804,20 @@ static const uint8_t* ValidatedSection(const uint8_t** slot,
 // Find a section base inside one memory region: locate the signature (the
 // section's first strings), then walk BACKWARD looking for the offset-table
 // start: the u16 at the base equals the distance back to the first string.
-// This rule self-validates — a false positive requires u16[cand] to equal its
+// This rule self-validates â€” a false positive requires u16[cand] to equal its
 // own distance to an accidental signature match, which live scans never hit.
+// min_fo/max_fo (v2.30.47): acceptance band on the section's u16[base]
+// (= offset of entry 0 = 2 x entry count). The full defaults keep every
+// existing caller exactly as before; the RETRANSLATION FALLBACK rungs
+// (single-entry signatures like "Cure|") pass tight bands measured from
+// vanilla kernel2.bin (ff7_kernel2_sig_ranges.py, 2026-08-01: magic =
+// 256 entries/0x200, command = 24 entries/0x30) so a stray matching
+// word elsewhere in game text cannot masquerade as the section â€” entry
+// COUNT is fixed by the kernel format; text mods only change the words.
 static const uint8_t* FindSectionBase(const uint8_t* region, size_t size,
-                                      const uint8_t* sig, size_t sig_len)
+                                      const uint8_t* sig, size_t sig_len,
+                                      uint16_t min_fo = 2,
+                                      uint16_t max_fo = 0x800)
 {
     if (size < sig_len)
         return nullptr;
@@ -1823,8 +1833,14 @@ static const uint8_t* FindSectionBase(const uint8_t* region, size_t size,
             const uint8_t* cand = p - back;
             uint16_t first_off;
             memcpy(&first_off, cand, sizeof(first_off));
-            if (first_off == back)
-                return cand;
+            if (first_off == back) {
+                if (first_off >= min_fo && first_off <= max_fo)
+                    return cand;
+                break;   // self-validating base found but wrong shape:
+                         // this match is some OTHER table's entry â€” move
+                         // to the next signature match, don't keep
+                         // walking back past a valid table start.
+            }
         }
     }
     return nullptr;
@@ -1837,7 +1853,7 @@ static volatile LONG g_k2_scan_avs = 0;
 
 // v2.30.43: fruitless-scan backoff. A modded install (retranslated text)
 // can leave trigger sections permanently unfindable, and the menu-thread
-// call sites retry every 3 SECONDS — that was a full address-space sweep
+// call sites retry every 3 SECONDS â€” that was a full address-space sweep
 // of live heap every 3s, forever, on exactly the installs (7th Heaven)
 // with the most allocation churn. Consecutive fruitless scans now back
 // the internal cadence off exponentially; ANY progress resets it, so a
@@ -1850,9 +1866,9 @@ static LONG               g_k2_fruitless_streak = 0;
 // tester crash (scorpion boss, Echo-S via 7th Heaven, low-memory VM):
 // VirtualQuery snapshots a region, then FindSectionBase sweeps it with
 // memchr/memcmp for MILLISECONDS while the game's own threads keep
-// allocating and freeing — a region freed or decommitted mid-sweep is an
+// allocating and freeing â€” a region freed or decommitted mid-sweep is an
 // access violation inside the CRT (FFNx dump: BattleMenuThread ->
-// ScanKernel2Sections -> CRT, 13s into the boss load — peak churn from
+// ScanKernel2Sections -> CRT, 13s into the boss load â€” peak churn from
 // battle assets + streaming voice audio). The check-then-read race is
 // unfixable by more checking (any recheck has the same window); catching
 // the fault and skipping the region is the correct tool for sweeping
@@ -1860,14 +1876,15 @@ static LONG               g_k2_fruitless_streak = 0;
 // next retry, so nothing is permanently missed.
 //
 // Separate noinline function because MSVC forbids __try in a function
-// requiring C++ unwinding (C2712) — this one holds no C++ objects.
+// requiring C++ unwinding (C2712) â€” this one holds no C++ objects.
 // Filter passes only ACCESS_VIOLATION; anything else propagates (a real
 // bug elsewhere must stay loud, not get eaten by a scanner guard).
 static __declspec(noinline) const uint8_t* FindSectionBaseSafe(
-    const uint8_t* region, size_t size, const uint8_t* sig, size_t sig_len)
+    const uint8_t* region, size_t size, const uint8_t* sig, size_t sig_len,
+    uint16_t min_fo = 2, uint16_t max_fo = 0x800)
 {
     __try {
-        return FindSectionBase(region, size, sig, sig_len);
+        return FindSectionBase(region, size, sig, sig_len, min_fo, max_fo);
     } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
                     ? EXCEPTION_EXECUTE_HANDLER
                     : EXCEPTION_CONTINUE_SEARCH) {
@@ -1876,20 +1893,32 @@ static __declspec(noinline) const uint8_t* FindSectionBaseSafe(
     }
 }
 
+// v2.30.47: which signature actually FOUND the magic/command section.
+// Under 7th Heaven text mods the vanilla heads fail ("Cure|Cure2|" â‰ 
+// Cure/Cura/Curaga naming â€” 2026-08-01 log: every section resolved
+// EXCEPT magic and command on the Echo-S install, so the battle magic
+// list spoke bare "row N"), and the scan falls back to a single-entry
+// signature banded by the section's fixed entry count. ValidatedSection
+// re-checks the section head at every read, so it must test the SAME
+// bytes that matched â€” these pointers feed it. Written only under the
+// scan's busy guard; readers get old-or-new (both valid literals).
+static const char* volatile g_k2_magic_sig   = "Cure|Cure2|";
+static const char* volatile g_k2_command_sig = "Attack|Magic|";
+
 // Scan this process's committed private read-write memory for the kernel2
 // text sections.  Runs from our own polling thread INSIDE the game process,
 // so all reads are direct pointer reads.  Called lazily on the first battle
-// action and retried (rate-limited) while any section is missing — kernel2
+// action and retried (rate-limited) while any section is missing â€” kernel2
 // is decompressed during startup and stays resident for the process lifetime,
 // so one successful scan is permanent. (Exception: the COMMAND section is a
-// transient battle allocation, re-found at each battle start — that is why
+// transient battle allocation, re-found at each battle start â€” that is why
 // the battle threads pass urgent=true: their scans must not be deferred by
 // the fruitless-scan backoff armed by field-menu retries. urgent skips only
 // the backoff; the callers' own 3s/60s rate limits still apply.)
 //
 // ENGLISH-ONLY: the signatures are the English section heads.  On a non-
 // English kernel2 the scan finds nothing and every action falls back to the
-// v2.5 generic labels — degraded, never wrong (and the backoff keeps those
+// v2.5 generic labels â€” degraded, never wrong (and the backoff keeps those
 // futile sweeps rare).
 static void ScanKernel2Sections(bool urgent = false)
 {
@@ -1922,6 +1951,17 @@ static void ScanKernel2Sections(bool urgent = false)
     // Command-name section head: entries 0,1,... are "Attack","Magic",...
     // stored back-to-back like every other kernel2 text section.
     const size_t len_command = EncodeSignature("Attack|Magic|",     sig_command, sizeof(sig_command));
+    // v2.30.47: retranslation fallbacks. 7th Heaven text mods rename the
+    // spell tiers (Cure/Cura/Curaga), killing the two-entry heads while
+    // every other section still matches (2026-08-01 log). Entry 0 is the
+    // stable word; the single-entry rung is safe because it is banded to
+    // the section's FIXED entry count (min_fo/max_fo on FindSectionBase:
+    // magic 256 entries = first_off 0x200, command 24 = 0x30 â€” measured
+    // from vanilla kernel2.bin by ff7_kernel2_sig_ranges.py, which also
+    // showed bare "Cure|" self-validates at exactly ONE place game-wide).
+    uint8_t sig_magic_fb[8], sig_cmd_fb[8];
+    const size_t len_magic_fb = EncodeSignature("Cure|",   sig_magic_fb, sizeof(sig_magic_fb));
+    const size_t len_cmd_fb   = EncodeSignature("Attack|", sig_cmd_fb,   sizeof(sig_cmd_fb));
     // v2.31 item-menu sections. Armor/accessory heads are kernel entry 0
     // ("Bronze Bangle"/"Power Wrist", both present in walkthrough.txt);
     // the item-description head is Potion's caption, ground-truthed by
@@ -1929,7 +1969,7 @@ static void ScanKernel2Sections(bool urgent = false)
     const size_t len_armor  = EncodeSignature("Bronze Bangle|",       sig_armor,  sizeof(sig_armor));
     const size_t len_access = EncodeSignature("Power Wrist|",         sig_access, sizeof(sig_access));
     const size_t len_idesc  = EncodeSignature("Restores HP by 100|",  sig_idesc,  sizeof(sig_idesc));
-    // v2.30.28 shop sections — heads ground-truthed from kernel2.bin (the
+    // v2.30.28 shop sections â€” heads ground-truthed from kernel2.bin (the
     // runtime text; see the Kernel2Sections comment for why kernel2, not
     // kernel.bin, is the authority here).
     const size_t len_mname = EncodeSignature("MP Plus|HP Plus|",       sig_mname, sizeof(sig_mname));
@@ -1946,21 +1986,43 @@ static void ScanKernel2Sections(bool urgent = false)
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
             break;
         const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-        // Only committed, private (heap — excludes the exe/DLL images, whose
+        // Only committed, private (heap â€” excludes the exe/DLL images, whose
         // .data contains battle-menu inventory copies that would false-match),
         // plain read-write pages.  Guard pages (stack tips) are excluded by
         // the exact protection match.
         if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
             mbi.Protect == PAGE_READWRITE) {
-            // v2.30.43: every sweep goes through the SEH guard — the game
+            // v2.30.43: every sweep goes through the SEH guard â€” the game
             // can free this region under us mid-sweep (see
             // FindSectionBaseSafe). A vanished region just yields nullptr
             // for the remaining signatures and the walk continues.
             const uint8_t* p = reinterpret_cast<const uint8_t*>(base);
-            if (!g_k2.magic)   g_k2.magic   = FindSectionBaseSafe(p, mbi.RegionSize, sig_magic,   len_magic);
+            if (!g_k2.magic) {
+                g_k2.magic = FindSectionBaseSafe(p, mbi.RegionSize, sig_magic, len_magic);
+                if (g_k2.magic) {
+                    g_k2_magic_sig = "Cure|Cure2|";
+                } else {
+                    g_k2.magic = FindSectionBaseSafe(p, mbi.RegionSize,
+                                                     sig_magic_fb, len_magic_fb,
+                                                     0x1F0, 0x210);
+                    if (g_k2.magic)
+                        g_k2_magic_sig = "Cure|";
+                }
+            }
             if (!g_k2.item)    g_k2.item    = FindSectionBaseSafe(p, mbi.RegionSize, sig_item,    len_item);
             if (!g_k2.weapon)  g_k2.weapon  = FindSectionBaseSafe(p, mbi.RegionSize, sig_weapon,  len_weapon);
-            if (!g_k2.command) g_k2.command = FindSectionBaseSafe(p, mbi.RegionSize, sig_command, len_command);
+            if (!g_k2.command) {
+                g_k2.command = FindSectionBaseSafe(p, mbi.RegionSize, sig_command, len_command);
+                if (g_k2.command) {
+                    g_k2_command_sig = "Attack|Magic|";
+                } else {
+                    g_k2.command = FindSectionBaseSafe(p, mbi.RegionSize,
+                                                       sig_cmd_fb, len_cmd_fb,
+                                                       0x28, 0x40);
+                    if (g_k2.command)
+                        g_k2_command_sig = "Attack|";
+                }
+            }
             if (!g_k2.armor)     g_k2.armor     = FindSectionBaseSafe(p, mbi.RegionSize, sig_armor,  len_armor);
             if (!g_k2.accessory) g_k2.accessory = FindSectionBaseSafe(p, mbi.RegionSize, sig_access, len_access);
             if (!g_k2.item_desc) g_k2.item_desc = FindSectionBaseSafe(p, mbi.RegionSize, sig_idesc,  len_idesc);
@@ -1988,16 +2050,17 @@ static void ScanKernel2Sections(bool urgent = false)
         g_k2_backoff_until = GetTickCount64() + wait_ms;
     }
 
-    char dbg[368];
+    char dbg[400];
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
         "[FF7Access] kernel2 section scan: magic=%p item=%p weapon=%p command=%p "
         "armor=%p accessory=%p item_desc=%p mat_name=%p mat_desc=%p "
-        "weap_desc=%p acc_desc=%p avs=%ld streak=%ld",
+        "weap_desc=%p acc_desc=%p avs=%ld streak=%ld msig='%s' csig='%s'",
         g_k2.magic, g_k2.item, g_k2.weapon, g_k2.command,
         g_k2.armor, g_k2.accessory, g_k2.item_desc,
         g_k2.materia_name, g_k2.materia_desc,
         g_k2.weapon_desc, g_k2.accessory_desc,
-        g_k2_scan_avs, g_k2_fruitless_streak);
+        g_k2_scan_avs, g_k2_fruitless_streak,
+        g_k2_magic_sig, g_k2_command_sig);
     Log::Write(dbg);
 
     InterlockedExchange(&g_k2_scan_busy, 0);
@@ -2006,7 +2069,7 @@ static void ScanKernel2Sections(bool urgent = false)
 // Decode entry `entry` of a kernel2 text section into `out`.
 // Returns false (leaving generic-label fallback to the caller) when the
 // section is missing, the entry is out of table bounds, or the text is
-// empty/blank — never returns a wrong or garbage name.
+// empty/blank â€” never returns a wrong or garbage name.
 static bool SectionEntryText(const uint8_t* base, uint32_t entry, std::wstring& out)
 {
     if (!base || entry >= 0xE0)   // 0xE0 = the game's own entry-index guard
@@ -2024,7 +2087,7 @@ static bool SectionEntryText(const uint8_t* base, uint32_t entry, std::wstring& 
     // Limit break names begin with an F8+parameter colour code (2 bytes,
     // e.g. F8 02 "Braver").  The dialog decoder treats 0xF8 as a single-byte
     // button-icon token (correct for dialog), which would leave the colour
-    // parameter byte to decode as a stray character — skip both here.
+    // parameter byte to decode as a stray character â€” skip both here.
     if (text[0] == 0xF8)
         text += 2;
     if (text[0] == 0xFF)
@@ -2033,7 +2096,7 @@ static bool SectionEntryText(const uint8_t* base, uint32_t entry, std::wstring& 
     for (wchar_t c : out)
         if (c != L' ')
             return true;
-    return false;   // blank/whitespace-only entry (padding) — treat as no name
+    return false;   // blank/whitespace-only entry (padding) â€” treat as no name
 }
 
 // Resolve (command_index, action_index) from the flash-message struct into the
@@ -2046,10 +2109,10 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
     if (cmd > FF7Addr::BATTLE_DISPATCH_MAX_CMD)
         return false;
 
-    // v2.22.1: revalidate the cached section pointers at USE time — a
+    // v2.22.1: revalidate the cached section pointers at USE time â€” a
     // freed-and-reused section must fall back to generic labels, never
     // decode reused memory (see ValidatedSection / the lifetime note).
-    const uint8_t* const k2_magic  = ValidatedSection(&g_k2.magic,  "Cure|Cure2|");
+    const uint8_t* const k2_magic  = ValidatedSection(&g_k2.magic,  g_k2_magic_sig);
     const uint8_t* const k2_item   = ValidatedSection(&g_k2.item,   "Potion|Hi-Potion|");
     const uint8_t* const k2_weapon = ValidatedSection(&g_k2.weapon, "Buster Sword|");
 
@@ -2062,7 +2125,7 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
     case 2:   // cmd 0x03 Summon.  The game uses the separate summon-attack-
               // name file for idx<16, but its heap copy has no locatable
               // signature; magic entries 56-71 hold the identical summon
-              // names ('Choco/Mog'…'Knights of Round', verified live), so
+              // names ('Choco/Mog'â€¦'Knights of Round', verified live), so
               // use those.  idx>=16 falls through to the magic file as the
               // game itself does.
         if (idx < 16)
@@ -2082,9 +2145,9 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
         out = FF7Text::Decode(buf);
         return !out.empty();
     }
-    case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'…)
+    case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'â€¦)
         return SectionEntryText(k2_magic, idx + 72, out);
-    case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'…)
+    case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
         if (idx == 0x7F)   // the game's '????' sentinel for unnamed limits
             return false;
         return SectionEntryText(k2_magic, idx + 128, out);
@@ -2101,12 +2164,12 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
                 return true;
         return false;
     }
-    default:  // branch 9 (Attack/Steal/… — no flash text) or unknown
+    default:  // branch 9 (Attack/Steal/â€¦ â€” no flash text) or unknown
         return false;
     }
 }
 
-// Generic command labels — the v2.5 fallback, used when no exact name exists
+// Generic command labels â€” the v2.5 fallback, used when no exact name exists
 // (plain Attack, Steal) or resolution fails (non-English kernel2, timeouts).
 static const wchar_t* GenericActionLabel(uint8_t command_id, wchar_t* buf, size_t buf_count)
 {
@@ -2129,7 +2192,7 @@ static const wchar_t* GenericActionLabel(uint8_t command_id, wchar_t* buf, size_
 // ---------------------------------------------------------------------------
 // Real enemy names for battle announcements (v2.10).
 //
-// Replicates get_kernel_text section 7 — the game's OWN target-name lookup,
+// Replicates get_kernel_text section 7 â€” the game's OWN target-name lookup,
 // found by static disassembly of the section jump table at 0x419A38
 // (investigate/ff7_target_name_disasm.py, 2026-07-13; details in
 // ff7_addresses.h SECTION 1c3). Chain: formation slot table (u16 record
@@ -2157,7 +2220,7 @@ static bool EnemySlotName(uint8_t slot, std::wstring& out)
         return false;
 
     // The name field may occupy all 0x20 bytes with NO 0xFF terminator, so
-    // decode per byte under the length cap — the game itself copies at most
+    // decode per byte under the length cap â€” the game itself copies at most
     // 0x20 bytes and then writes its own terminator (0x41999B). Decode()ing
     // the record in place could run past the name into stat bytes.
     const volatile uint8_t* name = reinterpret_cast<const volatile uint8_t*>(
@@ -2248,8 +2311,8 @@ static bool TargetHPText(uint8_t slot, std::wstring& out)
 // ---------------------------------------------------------------------------
 // Party character names from the savemap (v2.19).
 //
-// Pre-v2.19 the battle threads could only name party slot 0 (PARTY_LEADER →
-// hardcoded default names); slots 1-2 were positional "ally 2"/"ally 3" —
+// Pre-v2.19 the battle threads could only name party slot 0 (PARTY_LEADER â†’
+// hardcoded default names); slots 1-2 were positional "ally 2"/"ally 3" â€”
 // the user's play test heard Barret announced as "ally 2" all through the
 // reactor. The savemap has had everything needed all along (TODO.txt's
 // party-KO entry predicted this): the three party-member character IDs at
@@ -2260,11 +2323,11 @@ static bool TargetHPText(uint8_t slot, std::wstring& out)
 
 // Read character `char_id`'s current name from its savemap record.
 // Returns false when the name is empty/undecodable (zeroed savemap before
-// any save is loaded, or an ID with no record) — callers then fall back.
+// any save is loaded, or an ID with no record) â€” callers then fall back.
 static bool SavemapCharName(uint8_t char_id, std::wstring& out)
 {
     // Flashback aliases: Young Cloud (9) and Sephiroth (10) have no records
-    // of their own — the game stores their data in Cait Sith's and Vincent's
+    // of their own â€” the game stores their data in Cait Sith's and Vincent's
     // record slots for the duration (community-documented savemap behavior).
     // Mapping them here means the Kalm flashback battles speak "Sephiroth"
     // (the game writes his name into record 7) instead of "ally 2".
@@ -2279,7 +2342,7 @@ static bool SavemapCharName(uint8_t char_id, std::wstring& out)
         rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE +
         FF7Addr::SAVEMAP_CHAR_NAME_OFF);
 
-    // Per-byte decode (FF7 encoding, 0xFF terminator, hard 12-byte cap) —
+    // Per-byte decode (FF7 encoding, 0xFF terminator, hard 12-byte cap) â€”
     // same approach as the name-entry echo; Decode() is dialog-oriented
     // (token expansion) and wrong for a fixed name field.
     std::wstring decoded;
@@ -2289,7 +2352,7 @@ static bool SavemapCharName(uint8_t char_id, std::wstring& out)
             decoded += ch;
     }
 
-    // A zeroed record decodes to all spaces (byte 0x00 = ' ') — trim, and
+    // A zeroed record decodes to all spaces (byte 0x00 = ' ') â€” trim, and
     // treat an all-blank result as "no name" so defaults kick in.
     const std::wstring::size_type first = decoded.find_first_not_of(L' ');
     if (first == std::wstring::npos)
@@ -2310,7 +2373,7 @@ static bool DialogNameProvider(int char_id, std::wstring& out)
 // Spoken label for battle party slot 0-2, shared by the action announcer and
 // the target announcer. Resolution order:
 //   1. savemap party-member ID -> that character's live savemap name;
-//   2. the default English name for the ID (savemap name blank — in practice
+//   2. the default English name for the ID (savemap name blank â€” in practice
 //      only before a save is loaded);
 //   3. positional "ally N" (cross-check failed, empty slot, or unknown ID).
 // The cross-check (slot 0's party ID must equal the live-proven PARTY_LEADER
@@ -2346,7 +2409,7 @@ static void PartySlotLabel(uint8_t slot, wchar_t* buf, size_t buf_count)
 // ---------------------------------------------------------------------------
 // ITEM menu TTS (v2.31, 2026-07-18). Addresses and their provenance: the
 // ITEMMENU_* block in ff7_addresses.h (guided scan item_menu_scan_20260718_
-// 114427 — every pass a single intersected candidate — plus the dispatcher
+// 114427 â€” every pass a single intersected candidate â€” plus the dispatcher
 // disasm that supplies the which-screen gate). Inventory data comes straight
 // from savemap items[320]; names/descriptions from the kernel2 sections.
 // ---------------------------------------------------------------------------
@@ -2379,7 +2442,7 @@ static void AppendPartyHpMp(uint8_t slot, std::wstring& msg)
         base + FF7Addr::SAVEMAP_CHAR_MP_OFF);
     const uint16_t maxmp = *reinterpret_cast<const volatile uint16_t*>(
         base + FF7Addr::SAVEMAP_CHAR_MAXMP_OFF);
-    if (maxhp == 0)   // zeroed savemap (no save loaded) — numbers meaningless
+    if (maxhp == 0)   // zeroed savemap (no save loaded) â€” numbers meaningless
         return;
     wchar_t tail[64];
     _snwprintf_s(tail, _countof(tail), _TRUNCATE,
@@ -2413,16 +2476,16 @@ static bool InventoryEntryName(uint32_t id, std::wstring& out)
 // SHOP menus (v2.30.28, 2026-07-26) + the G gil-announce key.
 //
 // Every address is static-derived from one offline disasm session
-// (ff7_shop_static.py — provenance in ff7_addresses.h's SHOP block): the
+// (ff7_shop_static.py â€” provenance in ff7_addresses.h's SHOP block): the
 // shop is its own top-level menu-module branch selected by GAME_MODE == 8,
 // NOT a menu_subs_call_table screen, with a 7-state loop at 0x71AAA3 whose
 // state variable, cursor widgets, catalog, and price table all fell out of
 // the annotated dump. Shipped static-first with debug logging as the live
-// verify — the same discipline as v2.32's FOCUS_MODE and v2.34's timer.
+// verify â€” the same discipline as v2.32's FOCUS_MODE and v2.34's timer.
 // ---------------------------------------------------------------------------
 
 // Materia name / description via the kernel2 sections (heads ground-truthed
-// from kernel2.bin — see the Kernel2Sections comment).
+// from kernel2.bin â€” see the Kernel2Sections comment).
 static bool MateriaName(uint8_t id, std::wstring& out)
 {
     return SectionEntryText(
@@ -2437,7 +2500,7 @@ static bool MateriaDesc(uint8_t id, std::wstring& out)
 
 // Description for one inventory/gear id (the I key). Armor has no section:
 // kernel2's armor descriptions are blank, so armor rows return false and
-// the caller speaks its no-description line — same info a sighted player
+// the caller speaks its no-description line â€” same info a sighted player
 // gets from the empty description bar.
 static bool InventoryEntryDesc(uint32_t id, std::wstring& out)
 {
@@ -2474,7 +2537,7 @@ static uint32_t CountOwnedItems(uint32_t id)
 
 // How many materia orbs of `id` sit in the inventory list (one slot = one
 // orb). Equipped orbs live in the char records instead and are NOT counted
-// here — this feeds the buy screen's "own N" hint, not the full Owned+
+// here â€” this feeds the buy screen's "own N" hint, not the full Owned+
 // Equipped split the sighted header shows.
 static uint32_t CountOwnedMateria(uint8_t id)
 {
@@ -2489,7 +2552,7 @@ static uint32_t CountOwnedMateria(uint8_t id)
 }
 
 // Read ware `idx` of shop `shop_id` from the static catalog. Returns false
-// past the shop's ware count (or on an insane shop id — the catalog region
+// past the shop's ware count (or on an insane shop id â€” the catalog region
 // is finite; 0x80 is far above the game's real shop count).
 static bool ShopWare(uint32_t shop_id, uint32_t idx, int& type, uint32_t& id)
 {
@@ -2506,7 +2569,7 @@ static bool ShopWare(uint32_t shop_id, uint32_t idx, int& type, uint32_t& id)
 }
 
 // Buy price via the shop's live price table ([SHOP_PRICE_TABLE_PTR]; items
-// at id*4, materia at +0x600). Pointer-validated every read — it is a heap
+// at id*4, materia at +0x600). Pointer-validated every read â€” it is a heap
 // allocation, not a static (the ValidatedSection lesson applied to data).
 static bool ShopBuyPrice(int type, uint32_t id, uint32_t& price)
 {
@@ -2541,7 +2604,7 @@ static bool ItemUnsellable(uint32_t id)
 
 // "<name>, <price> gil, own <N>" for one buy-list ware. Name falls back to
 // a numbered label (non-English kernel2), price is omitted if the table
-// pointer is not live — degraded, never wrong.
+// pointer is not live â€” degraded, never wrong.
 static bool ShopBuyLine(uint32_t shop_id, uint32_t idx, std::wstring& out)
 {
     int type; uint32_t id;
@@ -2617,7 +2680,7 @@ static void ShopSellItemLine(uint32_t idx, std::wstring& out)
 // One sell-materia row: "<name> materia, sells for <p> gil[, mastered]" /
 // "Empty." Sell price = the game's get_materia_gil (0x71FCF9) replicated:
 // AP field 0xFFFFFF (mastered) -> base price * 70, else the raw AP count
-// ("Price through AP" on the sighted panel — screenshot-verified: Restore
+// ("Price through AP" on the sighted panel â€” screenshot-verified: Restore
 // with 0 AP showed 0, and its master price 52500 = base 750 * 70).
 static void ShopSellMateriaLine(uint32_t idx, std::wstring& out)
 {
@@ -2697,7 +2760,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
         const uint32_t state = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::SHOP_STATE);
 
-        // Kernel2 sections are needed for every name — kick the scan early
+        // Kernel2 sections are needed for every name â€” kick the scan early
         // (rate-limited) instead of waiting for the first battle.
         if ((!g_k2.item || !g_k2.materia_name) &&
             GetTickCount64() >= next_scan_tick) {
@@ -2714,7 +2777,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             last_word  = 0xFFFFFFFF;
             i_was_down = true;         // swallow a held I across the open
 
-            // "<Shop name>. <Greeting>" — both FF7-encoded statics in the
+            // "<Shop name>. <Greeting>" â€” both FF7-encoded statics in the
             // exe's own .data (catalog provenance in ff7_addresses.h).
             const uint32_t name_idx = *reinterpret_cast<const volatile uint32_t*>(
                 FF7Addr::SHOP_NAME_IDX);
@@ -2723,7 +2786,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             std::wstring greet;
             if (name_idx < 32) {
                 // Shop titles are packed 0x14 bytes apart and may use the
-                // full width — copy out and force a terminator.
+                // full width â€” copy out and force a terminator.
                 char nbuf[0x15];
                 memcpy(nbuf, reinterpret_cast<const void*>(
                     FF7Addr::SHOP_NAME_STRINGS + name_idx * 0x14), 0x14);
@@ -2748,7 +2811,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             Log::Write(dbg);
         }
 
-        // ── Screen-state transitions ─────────────────────────────────────
+        // â”€â”€ Screen-state transitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const bool state_changed = (state != last_state);
         if (state_changed) {
             char dbg[96];
@@ -2764,7 +2827,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             last_word = 0xFFFFFFFF;
 
             // Right after the shop-open greeting, QUEUE the screen intro
-            // instead of interrupting it — the greeting is one sentence and
+            // instead of interrupting it â€” the greeting is one sentence and
             // the intro should follow it, not clobber it.
             const bool intr = !opened_this_tick;
             switch (state) {
@@ -2784,11 +2847,11 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             case 3:  TTS::Speak(L"Selling materia.", intr); break;
             case 4:
             case 5:  TTS::Speak(L"How many?", intr); break;
-            default: break;   // unmapped value — logged above, stay quiet
+            default: break;   // unmapped value â€” logged above, stay quiet
             }
         }
 
-        // ── Per-screen cursor tracking ───────────────────────────────────
+        // â”€â”€ Per-screen cursor tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         switch (state) {
         case 0: {   // Buy / Sell / Exit bar
             const uint32_t bar = *reinterpret_cast<const volatile uint32_t*>(
@@ -2820,7 +2883,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             }
             break;
         }
-        case 2: {   // sell item list — idx formula from the confirm handler
+        case 2: {   // sell item list â€” idx formula from the confirm handler
             const uint32_t idx =
                 *reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_COL) +
                 (*reinterpret_cast<const volatile uint32_t*>(FF7Addr::SHOP_SELLI_ROW) +
@@ -2905,8 +2968,8 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
             break;
         }
 
-        // ── I key: description of the highlighted ware (FF4-scheme parity:
-        // "I: In shop menus, reads description of highlighted item") ──────
+        // â”€â”€ I key: description of the highlighted ware (FF4-scheme parity:
+        // "I: In shop menus, reads description of highlighted item") â”€â”€â”€â”€â”€â”€
         DWORD fg_pid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
@@ -2960,7 +3023,7 @@ static DWORD WINAPI ShopMenuThread(LPVOID /*unused*/)
 // ---------------------------------------------------------------------------
 // MATERIA menu TTS (v2.30.33). All addresses static-derived in one session
 // (provenance: ff7_addresses.h MATMENU block / ff7_materia_menu_static.py).
-// Gate: MENU_OPEN + dispatch index 3 — the same shape as the Item (index 1)
+// Gate: MENU_OPEN + dispatch index 3 â€” the same shape as the Item (index 1)
 // and Status (index 5) screens, with the same victory-screen and
 // foreign-screen stand-downs. Mode semantics are static-derived; the mode
 // change debug line is the live-confirm channel (the v2.32 FOCUS_MODE
@@ -2988,7 +3051,7 @@ static void MateriaWordLine(uint32_t w, std::wstring& out)
 }
 
 // The materia word under the equipment-slot cursor (modes 1 and 4). Returns
-// false when the char-record pointer fails its layout check — the reader
+// false when the char-record pointer fails its layout check â€” the reader
 // then speaks position-only, never wrong contents.
 static bool MateriaSlotWord(uint32_t row, uint32_t slot, uint32_t& w)
 {
@@ -3041,9 +3104,9 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
-        // v2.30.37: GameOverTitleContext — the post-game-over title prompt
+        // v2.30.37: GameOverTitleContext â€” the post-game-over title prompt
         // raises MENU_OPEN with EVERY menu byte below stale (incl. a stale
-        // dispatch index that can equal this screen's) — stand down, the
+        // dispatch index that can equal this screen's) â€” stand down, the
         // v2.30.32 foreign-screen rule.
         if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
             GameOverTitleContext() || Hooks::TutorialActive()) {
@@ -3091,7 +3154,7 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
             TTS::Speak(msg.c_str(), true);
             announce_context = true;
         } else if (party != last_party && party <= 2) {
-            // Page-up/down flips characters in place — re-announce whose
+            // Page-up/down flips characters in place â€” re-announce whose
             // materia we're now looking at.
             last_party = party;
             wchar_t who[32];
@@ -3119,7 +3182,7 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
             }
         }
 
-        // ── Per-mode cursor tracking ─────────────────────────────────────
+        // â”€â”€ Per-mode cursor tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         std::wstring line;
         uint32_t key  = 0xFFFFFFFF;
         uint32_t word = 0;
@@ -3207,7 +3270,7 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
             TTS::Speak(line.c_str(), /*interrupt=*/!announce_context);
         }
 
-        // ── I key: description + AP of the highlighted materia ──────────
+        // â”€â”€ I key: description + AP of the highlighted materia â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         DWORD fg_pid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
@@ -3261,7 +3324,7 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
 
 // ---------------------------------------------------------------------------
 // EQUIP menu TTS (v2.30.34). All state static-derived (ff7_addresses.h
-// EQMENU block / ff7_equip_menu_static.py) — the item/status/materia gate
+// EQMENU block / ff7_equip_menu_static.py) â€” the item/status/materia gate
 // shape. Speaks the three category rows with their equipped gear, the
 // candidate list by name, and I = gear description. Stat deltas (the
 // Attack 14 -> 16 compare pane) are a documented residual: they need the
@@ -3361,7 +3424,7 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
-        // v2.30.37: GameOverTitleContext — stale menu bytes on the
+        // v2.30.37: GameOverTitleContext â€” stale menu bytes on the
         // post-game-over title prompt; see MateriaMenuThread's gate.
         if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
             GameOverTitleContext() || Hooks::TutorialActive()) {
@@ -3512,7 +3575,7 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
 // LIMIT menu TTS (v2.30.35). Provenance: ff7_addresses.h LIMITMENU block.
 // Set/Check bar + the 2x2 LEVEL grid, with each level announced together
 // with the technique names the character has LEARNED at that level (the
-// exact information the sighted grid shows — unlearned levels read as
+// exact information the sighted grid shows â€” unlearned levels read as
 // "not learned"). Grid tracking is deliberately mode-agnostic: both grid
 // instances are watched every poll, so the static mode-value guesses
 // can't silence a pane (the debug log settles the real mapping).
@@ -3520,7 +3583,7 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
 
 // Savemap record + kernel limit-name block for the limit menu's party
 // slot. The kernel's limit blocks swap Aeris/Tifa relative to savemap
-// record order (kernel2 ground truth — see the header comment).
+// record order (kernel2 ground truth â€” see the header comment).
 static bool LimitCharInfo(uint32_t party_slot, uint32_t& rec_va, uint32_t& block)
 {
     if (party_slot > 2)
@@ -3562,7 +3625,7 @@ static void LimitLevelLine(uint32_t party_slot, uint32_t level, std::wstring& ou
         const uint32_t name_idx = 128 + block * 7 +
                                   ((level < 3) ? level * 2 + t : 6u);
         std::wstring name;
-        if (SectionEntryText(ValidatedSection(&g_k2.magic, "Cure|Cure2|"),
+        if (SectionEntryText(ValidatedSection(&g_k2.magic, g_k2_magic_sig),
                              name_idx, name)) {
             if (any)
                 out += L", ";
@@ -3588,7 +3651,7 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
         if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
             break;
 
-        // v2.30.37: GameOverTitleContext — stale menu bytes on the
+        // v2.30.37: GameOverTitleContext â€” stale menu bytes on the
         // post-game-over title prompt; see MateriaMenuThread's gate.
         if (!Config::Get().speak_menus || MenuModuleForeignScreen() ||
             GameOverTitleContext() || Hooks::TutorialActive()) {
@@ -3670,7 +3733,7 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
             }
         } else {
             // Mode-agnostic grid tracking: whichever grid instance moves
-            // is the live one (the two never move in the same poll —
+            // is the live one (the two never move in the same poll â€”
             // only one pane has focus).
             const uint32_t sc = *reinterpret_cast<const volatile uint32_t*>(
                 FF7Addr::LIMITMENU_SETG_COL);
@@ -3712,11 +3775,11 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
 
 // ---------------------------------------------------------------------------
 // On-demand announcement keys (FF4-scheme parity, accessiblity_keys.txt):
-//   G — "Announce current Gil" (v2.30.28). Works any time a game is
+//   G â€” "Announce current Gil" (v2.30.28). Works any time a game is
 //       loaded: field, menus, shops, battle. The gil dword is
-//       savemap+0xB7C — live-proven by the v2.35 victory total and the
+//       savemap+0xB7C â€” live-proven by the v2.35 victory total and the
 //       shop's own buy/sell arithmetic.
-//   H — "In battle, announce character hp, mp, status effects"
+//   H â€” "In battle, announce character hp, mp, status effects"
 //       (v2.30.30). Reads the CURRENT-TURN character: BATTLE_ACTIVE_SLOT
 //       is the party slot whose battle menu is open (the v2.37 whose-turn
 //       source; it retains the last acting slot during animations, which
@@ -3725,12 +3788,12 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
 //       actor_vars +0x00 statusMask (FFNx battle_actor_vars field name).
 // ---------------------------------------------------------------------------
 
-// FF7's kernel status-mask bit order — the one 32-bit status layout every
+// FF7's kernel status-mask bit order â€” the one 32-bit status layout every
 // kernel/save tool documents (WallMarket/Proud Clod/qhimm "Battle
 // Mechanics"; corroborated in-repo: the Sadness/Fury bits 0x10/0x20 match
 // the savemap flag convention, and bit 0 = Death matches the KO'd actors
 // observed with currentHP 0). Names checked against walkthrough.txt terms.
-// Buff-side bits (Haste/Regen/Barrier/...) are spoken too — they answer
+// Buff-side bits (Haste/Regen/Barrier/...) are spoken too â€” they answer
 // "what's on me right now" exactly like the FF4 mod's H does.
 static const struct { uint32_t bit; const wchar_t* name; } kBattleStatusNames[] = {
     { 0x00000001, L"Death"          },
@@ -3754,7 +3817,7 @@ static const struct { uint32_t bit; const wchar_t* name; } kBattleStatusNames[] 
                                          // -verified); spelled with a space
                                          // so TTS says "em barrier"
     { 0x00040000, L"Reflect"        },
-    // 0x00080000 "Dual" — internal pairing flag, not a player-facing
+    // 0x00080000 "Dual" â€” internal pairing flag, not a player-facing
     // condition; skipped rather than spoken as jargon.
     { 0x00100000, L"Shield"         },
     { 0x00200000, L"Death sentence" },
@@ -3791,32 +3854,32 @@ static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
         const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::GAME_MODE);
 
-        // ── G: current gil ───────────────────────────────────────────────
+        // â”€â”€ G: current gil â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // No game loaded -> the savemap is zeroed and "0 gil" would be a
         // lie about a game that doesn't exist yet. The naming screen gets
-        // typed letters — G there is text entry, not a query.
+        // typed letters â€” G there is text entry, not a query.
         //
-        // v2.30.36: FIELD_ID != 0 was the wrong "game loaded" test — it
+        // v2.30.36: FIELD_ID != 0 was the wrong "game loaded" test â€” it
         // really means "standing on a field": the WORLD MAP also reads 0
         // (this file's own FIELD_ID comments), so G was silently dead
         // there despite a fully valid savemap ("can I afford the inn?"
         // is exactly a world-map question). "A game is loaded" is now
         // proven by the savemap's location caption (LOCATION_NAME_BUFFER,
         // savemap+0xF0C): every started game has one (MPNAM persists it
-        // through saves — including world-map saves, since it IS savemap
+        // through saves â€” including world-map saves, since it IS savemap
         // state), while the fresh-boot title screen's zeroed savemap
-        // reads 0x00 there (no caption ever starts with byte 0x00 — FF7
+        // reads 0x00 there (no caption ever starts with byte 0x00 â€” FF7
         // text starts captions with letter glyphs, and BSS zero-init is
         // what a never-loaded savemap holds). Residual, accepted: after
         // a quit-to-title the stale savemap may keep its caption, so G
-        // on the title screen can speak the just-quit game's gil — a
+        // on the title screen can speak the just-quit game's gil â€” a
         // cosmetic slip, chosen over a functionally dead key on the
         // world map.
-        // v2.30.37: !GameOverTitleContext() — after a game over BOTH halves
+        // v2.30.37: !GameOverTitleContext() â€” after a game over BOTH halves
         // of the test go stale-positive (dead FIELD_ID, dead savemap
         // caption): G on the game-over reel or title prompt would speak the
         // dead run's gil. The run is over; silence is the truthful answer.
-        // (The quit-to-title stale caption stays an accepted residual —
+        // (The quit-to-title stale caption stays an accepted residual â€”
         // there is no latch for that path yet.)
         const uint8_t caption0 = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::LOCATION_NAME_BUFFER);
@@ -3833,12 +3896,12 @@ static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
             TTS::Speak(msg, true);
         }
 
-        // ── H: current character's HP/MP/status, battle only ─────────────
+        // â”€â”€ H: current character's HP/MP/status, battle only â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (h_edge && game_mode == 2) {
             uint8_t slot = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::BATTLE_ACTIVE_SLOT);
             if (slot > 2)
-                slot = 0;   // no menu opened yet this battle — leader
+                slot = 0;   // no menu opened yet this battle â€” leader
 
             wchar_t label[32];
             PartySlotLabel(slot, label, _countof(label));
@@ -3855,7 +3918,7 @@ static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
             const uint16_t max_mp = *reinterpret_cast<const volatile uint16_t*>(
                 base + FF7Addr::BAVARS_OFF_MAX_MP);
 
-            // Same plausibility gate as TargetHPText — mid-init garbage
+            // Same plausibility gate as TargetHPText â€” mid-init garbage
             // speaks as name-only, never as wrong numbers.
             if (max_hp > 0 && max_hp <= 10000000 &&
                 cur_hp >= 0 && cur_hp <= max_hp && max_mp <= 9999) {
@@ -3906,27 +3969,27 @@ static DWORD WINAPI AnnounceKeysThread(LPVOID /*unused*/)
 // called unmapped is now mapped (TUTWIN_* / TUTORIAL_RUNNING provenance in
 // ff7_addresses.h): the menu module's tutorial VM opens one text window
 // per slide, holds until the player presses ANY key (renderer state 2's
-// close test is `pressed-digest != 0` — there is no per-slide magic key;
+// close test is `pressed-digest != 0` â€” there is no per-slide magic key;
 // what LOOKED like "sometimes a direction, sometimes a button" was the
 // demo phases between slides, where the VM injects scripted key presses
 // and discards real input entirely), then runs the scripted demo to the
 // next slide.
 //
 // Model: follow the window renderer's state byte exactly like FFNx's own
-// voice-acting hook does — speak THE CURRENT slide when its window
+// voice-acting hook does â€” speak THE CURRENT slide when its window
 // reaches state 2 (text showing), tell the player "Press any button to
-// continue" (input-advanced windows only — TUTWIN_MODE 0 windows are
+// continue" (input-advanced windows only â€” TUTWIN_MODE 0 windows are
 // timer-closed info popups and take no input), and say when the lesson
 // is over (TUTORIAL_RUNNING 1->0), which also releases the menu-thread
 // suppression latch. Non-tutorial uses of the same renderer (the save
 // screens' "file corrupted"-class popups) get spoken too under
-// speak_menus — they were previously silent.
+// speak_menus â€” they were previously silent.
 // ---------------------------------------------------------------------------
 
 // Bounded copy-out + decode of an FF7 string at an arbitrary game pointer.
 // The text lives in the field buffer (tutorial slides) or exe .data
 // (popups); copy in page-safe chunks until the 0xFF terminator, then
-// decode the LOCAL copy — never hand a raw unbounded pointer to Decode.
+// decode the LOCAL copy â€” never hand a raw unbounded pointer to Decode.
 static bool SafeDecodeFF7At(uint32_t addr, std::wstring& out)
 {
     char local[1024];
@@ -3984,7 +4047,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
             last_text   = 0;
             Log::Write("[FF7Access] TUTORIAL started (engine flag up)");
         } else if (!running && was_running) {
-            // The VM hit its END opcode — no more slides. Saying so is the
+            // The VM hit its END opcode â€” no more slides. Saying so is the
             // difference between "lesson over, menus are yours again" and
             // the silence the play report described.
             TTS::Speak(L"Tutorial finished.", /*interrupt=*/false);
@@ -3992,7 +4055,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
             // poll let whichever menu screen-thread matched the still-open
             // menu see a "fresh open" on its very next 50ms poll (its
             // open-latch had been reset every poll by the TutorialActive
-            // gate) and speak its opening announce with interrupt=true —
+            // gate) and speak its opening announce with interrupt=true â€”
             // wiping the just-queued cue before it could play. The player
             // never heard it. While the latch holds, those threads keep
             // tracking silently, so nothing is lost: their announce lands
@@ -4006,7 +4069,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
         was_running = running;
 
         // v2.30.36: a new lesson starting during the grace keeps the
-        // suppression up — cancel the pending release.
+        // suppression up â€” cancel the pending release.
         if (running)
             release_pending = false;
         if (release_pending && (GetTickCount() - release_tick) >= 1500) {
@@ -4018,7 +4081,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
         // One announcement per window SHOWING. last_text re-arms when the
         // window fully closes, so the compare-to-last is both the "spoke
         // this one already" guard and the back-to-back-windows detector
-        // (every window passes through state 0 between shows — the VM's
+        // (every window passes through state 0 between shows â€” the VM's
         // hold flag waits for it).
         const bool showing = (state == 2);
         const bool announce = showing && text_ptr != 0 &&
@@ -4030,7 +4093,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
                     std::wstring msg = first_slide ? L"Tutorial. " : L"";
                     msg += text;
                     // Input-advanced window: tell the player exactly how
-                    // to move on (any key — the close test is literal
+                    // to move on (any key â€” the close test is literal
                     // "any pressed bit"). Timer windows advance alone.
                     if (mode != 0)
                         msg += L" Press any button to continue.";
@@ -4040,7 +4103,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
                     first_slide = false;
                 } else if (Config::Get().speak_menus) {
                     // Non-tutorial info popup on the shared renderer
-                    // (save screens' "file corrupted" class) — speak it
+                    // (save screens' "file corrupted" class) â€” speak it
                     // plainly; these had no speech path before.
                     TTS::Speak(text, /*interrupt=*/true);
                 }
@@ -4055,7 +4118,7 @@ static DWORD WINAPI TutorialThread(LPVOID /*unused*/)
             }
         }
         if (!showing && state == 0)
-            last_text = 0;   // window fully closed — re-arm for re-shows
+            last_text = 0;   // window fully closed â€” re-arm for re-shows
     }
 
     return 0;
@@ -4070,7 +4133,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
     uint8_t   last_tgt  = 0xFF;
     uint16_t  last_word = 0xFFFF;  // slot word under the cursor: using an item
                                    // rewrites it (qty-1 or 0xFFFF) while the
-                                   // cursor stays put — re-announce so the
+                                   // cursor stays put â€” re-announce so the
                                    // player hears the new count
     uint8_t   last_unknown = 0xFF; // debug-log throttle for unmapped modes
     ULONGLONG next_scan_tick = 0;  // kernel2 rescan rate limit
@@ -4087,7 +4150,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
         }
 
         // v2.30.32: the dispatch index is stale on foreign menu screens
-        // (shop/PHS/name entry) — a leftover 1 would fake "item screen".
+        // (shop/PHS/name entry) â€” a leftover 1 would fake "item screen".
         // v2.30.37: the post-game-over title prompt is the same stale-bytes
         // situation (MENU_OPEN=1, stale dispatch index, stale FIELD_ID).
         if (MenuModuleForeignScreen() || GameOverTitleContext()) {
@@ -4097,7 +4160,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
 
         // Gate: main menu open, in field, and the dispatcher is running the
         // ITEM sub-screen. The dispatch index is the menu module's own
-        // "which screen" variable (see ff7_addresses.h) — but its value on
+        // "which screen" variable (see ff7_addresses.h) â€” but its value on
         // the PLAIN main menu is not yet observed, so if play ever shows a
         // spurious "Item menu" announce on menu open, log the index here
         // and add the missing differentiator.
@@ -4110,11 +4173,11 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
         if (menu_open != 1 || field_id == 0 ||
             screen != FF7Addr::ITEMMENU_SCREEN_INDEX ||
             // v2.35.1: victory screens raise MENU_OPEN with a STALE
-            // dispatch index — if the last screen visited was Item, this
+            // dispatch index â€” if the last screen visited was Item, this
             // gate would false-open over the victory announcements.
             g_victory_active != 0 ||
             (GetTickCount() - g_last_battle_tick) < 4000 ||
-            // v2.30.27: a menu TUTORIAL drives the screens itself —
+            // v2.30.27: a menu TUTORIAL drives the screens itself â€”
             // stand down, the tutorial narration is the speech.
             Hooks::TutorialActive()) {
             was_open = false;
@@ -4142,7 +4205,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             TTS::Speak(L"Item menu", /*interrupt=*/true);
             // Leave last_* unseeded so the state announce below fires and
             // describes where the cursor actually is (the menu opens in
-            // the ITEM LIST — player-corrected flow 2026-07-18).
+            // the ITEM LIST â€” player-corrected flow 2026-07-18).
         }
 
         // A state announce right after "Item menu" (or any unseeded entry)
@@ -4184,7 +4247,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
                     _snwprintf_s(line, _countof(line), _TRUNCATE,
                                  L"%ls, %u", name.c_str(), qty);
                     msg = line;
-                    // Description bar parity (items only — the sighted bar
+                    // Description bar parity (items only â€” the sighted bar
                     // shows one for equipment too, but those live in other
                     // kernel sections; extend when a play report asks).
                     std::wstring desc;
@@ -4216,7 +4279,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             last_tgt = tgt;
 
             // Using the item (OK press) rewrites its inventory word while
-            // the pane stays open — the player can use several in a row.
+            // the pane stays open â€” the player can use several in a row.
             // Speak the remaining count so each use is audible. last_row/
             // last_word survive from the list state that opened this pane.
             if (last_row < FF7Addr::SAVEMAP_ITEMS_COUNT &&
@@ -4238,7 +4301,7 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             break;
         }
         default:
-            // Unmapped mode (Arrange popup? Key Items pane?) — stay silent,
+            // Unmapped mode (Arrange popup? Key Items pane?) â€” stay silent,
             // log once per distinct value so play sessions harvest the map.
             if (mode != last_unknown) {
                 last_unknown = mode;
@@ -4259,13 +4322,13 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
 // ORDER menu TTS + main-menu pane focus (v2.32, 2026-07-18).
 //
 // The Order "screen" is the main-menu screen with input focus moved into
-// the party pane — no dispatch change, no confirm chime (player-observed;
-// proven by the 0x6CA346 handler disasm — provenance in ff7_addresses.h at
+// the party pane â€” no dispatch change, no confirm chime (player-observed;
+// proven by the 0x6CA346 handler disasm â€” provenance in ff7_addresses.h at
 // the ORDERMENU block). MENU_FOCUS_MODE drives everything:
-//   0 = menu bar (MenuCursorThread's domain — silent here)
+//   0 = menu bar (MenuCursorThread's domain â€” silent here)
 //   1 = character-select pane (Magic/Equip/Status/... rows): speak the
 //       pane cursor by name so "whose screen?" is audible
-//   2 = Order pane: full flow — member + position + row on cursor moves,
+//   2 = Order pane: full flow â€” member + position + row on cursor moves,
 //       spoken how-to on entry (the user's explicit request), selection /
 //       swap / row-toggle outcomes read back from the data that actually
 //       changed (party-ID array, row bytes), never inferred from input.
@@ -4288,7 +4351,7 @@ static const wchar_t* PartySlotRowLabel(uint8_t slot)
         FF7Addr::SAVEMAP_CHAR_ROW_OFF);
     if (row == FF7Addr::SAVEMAP_ROW_FRONT) return L"front row";
     if (row == FF7Addr::SAVEMAP_ROW_BACK)  return L"back row";
-    return nullptr;   // unexpected value — say nothing rather than guess
+    return nullptr;   // unexpected value â€” say nothing rather than guess
 }
 
 // "Cloud, position 1, front row" / "Empty, position 3" for one pane slot.
@@ -4318,7 +4381,7 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
     uint8_t  last_cursor  = 0xFF;   // Order-pane cursor
     uint32_t last_charsel = 0xFFFFFFFF;   // mode-1 pane cursor
     bool     latch_armed  = false;  // latch was 1 last poll
-    // Data snapshot taken when the latch sets, diffed when it clears —
+    // Data snapshot taken when the latch sets, diffed when it clears â€”
     // the outcome (swap / row toggle / cancel) is read from what actually
     // changed, so a missed press can never announce a wrong result.
     uint8_t  snap_ids[3]  = {};
@@ -4347,9 +4410,9 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
         }
 
         // v2.30.32: MENU_FOCUS_MODE and the Order-pane bytes are stale on
-        // foreign menu screens (shop/PHS/name entry) — stand down.
+        // foreign menu screens (shop/PHS/name entry) â€” stand down.
         // v2.30.37: same for the post-game-over title prompt (its MENU_OPEN=1
-        // woke this thread with a stale FOCUS_MODE — 2026-07-27 log 10:03:03).
+        // woke this thread with a stale FOCUS_MODE â€” 2026-07-27 log 10:03:03).
         if (MenuModuleForeignScreen() || GameOverTitleContext()) {
             last_focus = 0xFF;
             continue;
@@ -4370,7 +4433,7 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
         const uint8_t focus =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_FOCUS_MODE);
 
-        // v2.30.27: tutorial scripts move menu focus too — track
+        // v2.30.27: tutorial scripts move menu focus too â€” track
         // silently, never lecture over the tutorial narration.
         if (Hooks::TutorialActive()) {
             last_focus = focus;
@@ -4385,8 +4448,8 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
             Log::Write(dbg);
             if (focus == 2 && last_focus != 0xFF) {
                 // Entering the Order pane (the transition the entry probe
-                // couldn't see — FOCUS_MODE is written silently at 0x6CA526).
-                // last_focus != 0xFF: only a REAL bar→pane transition — a
+                // couldn't see â€” FOCUS_MODE is written silently at 0x6CA526).
+                // last_focus != 0xFF: only a REAL barâ†’pane transition â€” a
                 // stale 2 at gate-open must not lecture the player.
                 TTS::Speak(L"Order. Confirm one member, then another, to "
                            L"swap places. Confirm the same member twice to "
@@ -4397,7 +4460,7 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
                 TTS::Speak(msg, /*interrupt=*/false);
             } else if (focus == 1 && last_focus != 0xFF) {
                 // Character-select pane (Magic/Equip/Status rows). Only on a
-                // real transition (not gate-open with stale 1) — the chime
+                // real transition (not gate-open with stale 1) â€” the chime
                 // already told the player something happened; name the pane.
                 TTS::Speak(L"Choose a member.", /*interrupt=*/true);
                 wchar_t label[64];
@@ -4410,13 +4473,13 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
             last_cursor = 0xFF;
             last_charsel = 0xFFFFFFFF;
             // A focus change with the latch armed means the pane was left
-            // mid-selection — drop the pending outcome.
+            // mid-selection â€” drop the pending outcome.
             latch_armed = (focus == 2) ? latch_armed : false;
             continue;   // announce settled; next poll resumes tracking
         }
 
         if (focus == 2) {
-            // ── Order pane ──────────────────────────────────────────────
+            // â”€â”€ Order pane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const uint8_t cursor = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::ORDERMENU_CURSOR);
             if (cursor <= 2 && cursor != last_cursor) {
@@ -4460,7 +4523,7 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
                     }
                 }
                 if (ids_changed) {
-                    // Speak the resulting order — the outcome the player
+                    // Speak the resulting order â€” the outcome the player
                     // actually cares about, read from the rewritten array.
                     std::wstring msg = L"Swapped. ";
                     bool first_part = true;
@@ -4493,7 +4556,7 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
                 }
             }
         } else if (focus == 1) {
-            // ── Character-select pane ───────────────────────────────────
+            // â”€â”€ Character-select pane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const uint32_t sel = *reinterpret_cast<const volatile uint32_t*>(
                 FF7Addr::CHARSEL_CURSOR);
             if (sel <= 2 && sel != last_charsel) {
@@ -4520,12 +4583,12 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
 // ---------------------------------------------------------------------------
 // BATTLE VICTORY screens TTS (v2.35, 2026-07-19). Speaks the two results
 // screens (Screenshots/BattleScreen/victory_screen_1..3.jpg):
-//   mode → 1: "Victory! Gained X experience and Y A P." (pools CAPTURED at
-//             results entry — the game consumes them on apply, see the
+//   mode â†’ 1: "Victory! Gained X experience and Y A P." (pools CAPTURED at
+//             results entry â€” the game consumes them on apply, see the
 //             BATTLE_END_MODE block in ff7_addresses.h)
 //   level bytes changing during the results window: "<name> grew to
-//             level N!" (savemap watcher — catches multi-level-ups)
-//   mode → 3: "Gained X gil, total Y." + drop item names ("No items"
+//             level N!" (savemap watcher â€” catches multi-level-ups)
+//   mode â†’ 3: "Gained X gil, total Y." + drop item names ("No items"
 //             when the list is empty)
 // All state transitions debug-logged (mode value 2's on-screen meaning is
 // not yet known; the log will name it).
@@ -4564,7 +4627,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
 
         // The results screens run under the menu module with MENU_OPEN=1
         // (the v2.8.3 observation). Outside that window the mode global is
-        // stale — transitions are only trusted inside it.
+        // stale â€” transitions are only trusted inside it.
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
         if (menu_open != 1) {
@@ -4576,21 +4639,21 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
 
         // v2.35.2 (player report: announcements trailed the button-driven
         // flow): the mode byte advances on the player's OK presses, not
-        // when screens APPEAR — the EXP/AP screen shows during mode 0
+        // when screens APPEAR â€” the EXP/AP screen shows during mode 0
         // (waiting for OK), mode 1 is the roll-up itself (the chirps), the
         // gil/items screen shows at mode 2, and 3 only lands after its OK.
         // So the victory line fires at the RESULTS WINDOW OPENING (the
         // post-battle MENU_OPEN rise, identified by the v2.35.1 battle-
         // recency signal), while the pools are provably intact; the
         // gil/items line fires entering mode 2 (fallback 3, whichever is
-        // seen first — semantics harvested from the transition log).
+        // seen first â€” semantics harvested from the transition log).
         const uint16_t mode =
             *reinterpret_cast<const volatile uint16_t*>(FF7Addr::BATTLE_END_MODE);
 
         if (!in_results &&
             (GetTickCount() - g_last_battle_tick) < 4000) {
-            // The results window just opened. Capture the pools NOW —
-            // the roll-up consumes them — and announce before the
+            // The results window just opened. Capture the pools NOW â€”
+            // the roll-up consumes them â€” and announce before the
             // player's first OK starts the chirping count-up.
             in_results = true;
             g_victory_active = 1;   // v2.35.1 suppressor, whole window
@@ -4619,7 +4682,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                     static_cast<unsigned long>(cap_ap));
                 TTS::Speak(msg, /*interrupt=*/true);
             } else {
-                Log::Write("[FF7Access] VICTORY pools implausible — silent");
+                Log::Write("[FF7Access] VICTORY pools implausible â€” silent");
             }
         }
 
@@ -4715,30 +4778,30 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
 //
 // The timed-escape clock (first: the No.1 Reactor run). Value = u32 WHOLE
 // SECONDS at savemap+0xB84, written by the STTIM opcode as h*3600+m*60+s
-// and ticked down ~1/sec — all established STATICALLY before the first
+// and ticked down ~1/sec â€” all established STATICALLY before the first
 // timer was reachable in play (provenance: ff7_addresses.h COUNTDOWN
 // block). This thread was therefore shipped SPECULATIVELY with heavy debug
 // logging; the player's first real escape run is the live verify.
 //
 // ANNOUNCEMENTS (user spec, config timer_announcements):
-//   start → "Timer started, N minutes S seconds"; every minute boundary →
-//   "N minutes remaining"; 30s → "30 seconds"; final 10 → bare numbers;
-//   0 → "Time is up". Battle announces QUEUE (interrupt=false) behind
-//   battle speech except the final countdown, which always interrupts —
+//   start â†’ "Timer started, N minutes S seconds"; every minute boundary â†’
+//   "N minutes remaining"; 30s â†’ "30 seconds"; final 10 â†’ bare numbers;
+//   0 â†’ "Time is up". Battle announces QUEUE (interrupt=false) behind
+//   battle speech except the final countdown, which always interrupts â€”
 //   in the last ten seconds the clock outranks everything.
 //
 // RUNNING DETECTION is behavioral: the value must be nonzero AND have
 // decreased recently. A stale savemap value (loaded save, finished escape)
-// never decreases, so it can never false-start the announcer — the same
+// never decreases, so it can never false-start the announcer â€” the same
 // never-trust-a-static-snapshot rule as the wall-tone fix.
 //
-// KEYS (accessiblity_keys.txt, FF1-6 parity — same focus/edge discipline
+// KEYS (accessiblity_keys.txt, FF1-6 parity â€” same focus/edge discipline
 // as FieldNavThread): T = announce time left on demand ("No active timer"
-// when none). Shift+T = FREEZE toggle — the mod's first gameplay memory
+// when none). Shift+T = FREEZE toggle â€” the mod's first gameplay memory
 // WRITE: while frozen, the countdown value is rewritten every poll, which
 // freezes the on-screen clock (it renders from this value) and keeps
 // field-script time checks satisfied indefinitely. The write targets
-// plain savemap data, not code — no protection change needed.
+// plain savemap data, not code â€” no protection change needed.
 // ---------------------------------------------------------------------------
 static void TimerSpeakRemaining(uint32_t secs, const wchar_t* prefix)
 {
@@ -4762,7 +4825,7 @@ static void TimerSpeakRemaining(uint32_t secs, const wchar_t* prefix)
 static DWORD WINAPI TimerThread(LPVOID /*unused*/)
 {
     // v2.34.1: 50ms, matching FieldNavThread. The original 250ms was too
-    // coarse for hotkey EDGE detection — a two-key Shift+T press releases
+    // coarse for hotkey EDGE detection â€” a two-key Shift+T press releases
     // faster than a plain T tap, so its brief T-down often fell entirely
     // between two 250ms polls and the edge was lost (player report: T read
     // the time fine, Shift+T did nothing). Shift+J/L work at FieldNavThread's
@@ -4796,9 +4859,9 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         volatile uint32_t* const timer_ms =
             reinterpret_cast<volatile uint32_t*>(FF7Addr::COUNTDOWN_TIMER_MS);
 
-        // ── Freeze: hold the clock every poll while enabled ─────────────
+        // â”€â”€ Freeze: hold the clock every poll while enabled â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // v2.34.1: pin BOTH the seconds AND the sub-second accumulator.
-        // The seconds alone isn't enough — the game keeps advancing the ms
+        // The seconds alone isn't enough â€” the game keeps advancing the ms
         // counter and decrements seconds when it rolls past 1000, so a
         // seconds-only freeze would creep. Zeroing ms every 50ms means the
         // game never accumulates a full second, so the clock truly stops
@@ -4811,22 +4874,22 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         uint32_t val = *timer;
         const ULONGLONG now = GetTickCount64();
 
-        if (val > kMaxSane) {   // garbage (pre-init) — ignore entirely
+        if (val > kMaxSane) {   // garbage (pre-init) â€” ignore entirely
             have_last = false;
             running = false;
         } else if (!Hooks::SttimSeen()) {
-            // v2.30.8: no live STTIM call observed yet THIS PROCESS RUN —
+            // v2.30.8: no live STTIM call observed yet THIS PROCESS RUN â€”
             // this savemap field can hold a STALE value left over from an
             // earlier session's save (player report 2026-07-20: loading
             // into the slums, well past the No.1 Reactor escape, made the
-            // timer "start again immediately" — the escape had ended with
+            // timer "start again immediately" â€” the escape had ended with
             // time still on the clock, and that value just kept ticking in
             // the background across the save, invisible in vanilla FF7
             // since its on-screen clock window closed with the escape).
             // last_val/have_last still get updated unconditionally below
             // (so a REAL STTIM later doesn't read as a spurious "jump"),
             // but this branch deliberately does NOT touch last_change or
-            // `running` — leaving both alone keeps timer_live false (see
+            // `running` â€” leaving both alone keeps timer_live false (see
             // its definition below) for as long as this branch keeps
             // being taken, which correctly makes T/Shift+T report "No
             // active timer" too, not just silence the automatic
@@ -4837,11 +4900,11 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
             // this gate. WHY: this branch was silent, which made the
             // 2026-07-22 log AMBIGUOUS between "the loaded save carried no
             // timer at all" and "a ticking value was correctly suppressed"
-            // (fresh-launch load of a post-escape save — the suppression
+            // (fresh-launch load of a post-escape save â€” the suppression
             // demonstrably worked, but only field-trail inference proved a
             // ticking value was even present). It also cannot distinguish
             // the v2.30.8 RESIDUAL (a save made DURING a countdown, loaded
-            // fresh — a REAL timer the gate would wrongly silence; only
+            // fresh â€” a REAL timer the gate would wrongly silence; only
             // reachable at timed sequences that allow saving, which the
             // No.1 escape does not). One log line settles both cases in
             // any future report without speaking or changing behavior.
@@ -4914,7 +4977,7 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
                 }
                 prev_change = now;
             } else {
-                // Jump (new STTIM, save load, script rewrite) — re-detect.
+                // Jump (new STTIM, save load, script rewrite) â€” re-detect.
                 char dbg[96];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] TIMER value jump %lu -> %lu (re-detecting)",
@@ -4936,7 +4999,7 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         last_val = val;
         have_last = true;
 
-        // ── T / Shift+T (focus-gated edges, as FieldNavThread) ──────────
+        // â”€â”€ T / Shift+T (focus-gated edges, as FieldNavThread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         DWORD fg_pid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
         const bool focused = (fg_pid == GetCurrentProcessId());
@@ -4948,7 +5011,7 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool timer_live = frozen || running ||
             (val > 0 && val <= kMaxSane && now - last_change < kStaleMs);
-        // v2.34.1: one line per T press — ground truth if anything still
+        // v2.34.1: one line per T press â€” ground truth if anything still
         // misbehaves (shift read, live-detection, freeze state).
         char kdbg[112];
         _snprintf_s(kdbg, sizeof(kdbg), _TRUNCATE,
@@ -4998,21 +5061,21 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
 // (dispatch index 5 = FFNx's own status_menu_sub name for table[5]), shown
 // for the character committed by the v2.32 char-select pane. The screen is
 // a static stat sheet with no cursor, so the reader speaks the whole sheet
-// once on entry (and again if the viewed character somehow changes) — the
+// once on entry (and again if the viewed character somehow changes) â€” the
 // screen-reader equivalent of what a sighted player takes in at a glance.
 //
 // Numbers come from two places (provenance: ff7_addresses.h v2.33 notes):
-//   savemap record  — level, EXP/next, limit level, equipment ids, and the
+//   savemap record  â€” level, EXP/next, limit level, equipment ids, and the
 //                     BASE stats (fallback only);
-//   char-data block — EFFECTIVE stats + derived Attack/Defense/Magic
+//   char-data block â€” EFFECTIVE stats + derived Attack/Defense/Magic
 //                     atk/def (what the screen actually shows; Cloud's
 //                     materia made record and screen disagree, so base
 //                     stats alone would contradict a sighted helper).
 // The block is trusted only when its HP/maxHP words equal the savemap
-// record's (staleness guard) — on mismatch the reader speaks base stats
+// record's (staleness guard) â€” on mismatch the reader speaks base stats
 // and skips the derived four, degraded but never wrong.
 // Residual: Attack%/Defense%/Magic def% are drawn from kernel equipment
-// data and exist nowhere in memory — not spoken (TODO).
+// data and exist nowhere in memory â€” not spoken (TODO).
 // ---------------------------------------------------------------------------
 static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
 {
@@ -5029,7 +5092,7 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             continue;
         }
 
-        // v2.30.32: stale dispatch index on foreign menu screens — see
+        // v2.30.32: stale dispatch index on foreign menu screens â€” see
         // the ItemMenuThread gate. v2.30.37: same for the post-game-over
         // title prompt.
         if (MenuModuleForeignScreen() || GameOverTitleContext()) {
@@ -5045,11 +5108,11 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
         if (menu_open != 1 || field_id == 0 ||
             screen != FF7Addr::STATUSMENU_SCREEN_INDEX ||
-            // v2.35.1: stale dispatch index during victory screens — see
+            // v2.35.1: stale dispatch index during victory screens â€” see
             // the ItemMenuThread gate.
             g_victory_active != 0 ||
             (GetTickCount() - g_last_battle_tick) < 4000 ||
-            // v2.30.27: tutorials drive the screens — see ItemMenuThread.
+            // v2.30.27: tutorials drive the screens â€” see ItemMenuThread.
             Hooks::TutorialActive()) {
             was_open = false;
             last_slot = 0xFFFFFFFF;
@@ -5075,7 +5138,7 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             }
         }
 
-        // ── Resolve the character's savemap record ─────────────────────
+        // â”€â”€ Resolve the character's savemap record â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::SAVEMAP_PARTY_IDS + slot);
         uint8_t rec = char_id;
@@ -5094,7 +5157,7 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
         const auto r32 = [&](uint32_t off) {
             return *reinterpret_cast<const volatile uint32_t*>(rbase + off); };
 
-        // ── Char-data block (effective stats), with staleness guard ────
+        // â”€â”€ Char-data block (effective stats), with staleness guard â”€â”€â”€â”€
         const uint32_t cbase = FF7Addr::BATTLE_CHAR_BLOCK +
                                slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE;
         const auto c16 = [&](uint32_t off) {
@@ -5103,7 +5166,7 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             c16(FF7Addr::BCHAR_OFF_HP)     == r16(FF7Addr::SAVEMAP_CHAR_HP_OFF) &&
             c16(FF7Addr::BCHAR_OFF_HP + 2) == r16(FF7Addr::SAVEMAP_CHAR_MAXHP_OFF);
         if (!block_ok)
-            Log::Write("[FF7Access] STATUS char block stale — base stats only");
+            Log::Write("[FF7Access] STATUS char block stale â€” base stats only");
 
         uint8_t stats[6];   // str, vit, mag, spr, dex, luck (internal order)
         for (int i = 0; i < 6; ++i)
@@ -5112,7 +5175,7 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
                       cbase + FF7Addr::BCHAR_OFF_EFF_STATS + i)
                 : r8(0x02 + i);
 
-        // ── Compose the sheet (screen order) ───────────────────────────
+        // â”€â”€ Compose the sheet (screen order) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         wchar_t label[64];
         PartySlotLabel(static_cast<uint8_t>(slot), label, _countof(label));
         wchar_t head[256];
@@ -5193,8 +5256,8 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
 
 // ---------------------------------------------------------------------------
 // BATTLE SCENE-MESSAGE reader (v2.36). The battle text display queue carries
-// enemy AI dialogue — the scorpion's "Attack while it's tail's up!" warning
-// and every other scene.bin message — a channel no other announcer touches
+// enemy AI dialogue â€” the scorpion's "Attack while it's tail's up!" warning
+// and every other scene.bin message â€” a channel no other announcer touches
 // (v2.7 speaks ability names from the flash struct; this is separate text).
 // Read them from the scene message block and speak on new appearance.
 //
@@ -5254,7 +5317,7 @@ static DWORD WINAPI BattleMessageThread(LPVOID /*unused*/)
         }
         for (int16_t bidx : cur) {
             if (prev_present.count(bidx))
-                continue;   // already present last poll — spoken once
+                continue;   // already present last poll â€” spoken once
             std::wstring text;
             if (DecodeSceneMessage(bidx, text)) {
                 char dbg[128];
@@ -5284,7 +5347,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 
     // v2.12: per-enemy-slot liveness tracking for defeat announcements.
     // A slot must first be SEEN alive (plausible HP, no Death status) before
-    // its death can announce — battle-init zeroes and empty formation slots
+    // its death can announce â€” battle-init zeroes and empty formation slots
     // therefore never produce a false "defeated". Indexed by actor slot 4-9
     // (index 0 = slot 4). Reset whenever the battle module is not active.
     bool enemy_was_alive[6] = {};
@@ -5293,7 +5356,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // back up"), user-requested 2026-07-13 and deferred until the party had
     // a second member. Party slots need THREE states where enemies needed a
     // bool: a member can start the battle already KO'd (carried over from
-    // the previous fight), and that must be recorded silently — the
+    // the previous fight), and that must be recorded silently â€” the
     // seen-alive-first rule means no "is down" announce, but a later
     // Phoenix Down still owes the player an "is back up". Reset with the
     // enemy tracker whenever the battle module is not active.
@@ -5306,7 +5369,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // defeat speech within the same millisecond, every time. Instead,
     // detected defeats accumulate here and speak (interrupt=false, so they
     // queue after in-flight playback) once NO thread has issued speech for
-    // DEFEAT_QUIET_MS — the first quiet gap after the action burst. The 5s
+    // DEFEAT_QUIET_MS â€” the first quiet gap after the action burst. The 5s
     // cap guarantees delivery even under pathological continuous chatter.
     std::wstring pending_defeats;
     ULONGLONG    first_defeat_tick = 0;
@@ -5314,7 +5377,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     constexpr ULONGLONG DEFEAT_MAX_WAIT_MS = 5000;
 
     // v2.12.1 diagnostics (debug_log only): last observed (cur, max, status)
-    // per enemy slot, so every real change gets one log line — the in-game
+    // per enemy slot, so every real change gets one log line â€” the in-game
     // trail for diagnosing WHY a defeat did or didn't announce.
     int32_t  dbg_last_cur[6]    = {};
     int32_t  dbg_last_max[6]    = {};
@@ -5334,7 +5397,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // v2.13: announces that land close together must CHAIN, not clobber.
     // The v2.12 traces showed the pending-flash flush ("MP B, attacks") and
     // the next turn's announce ("Cloud, Attack") firing in the SAME 50ms
-    // tick — the second's interrupt=true cancelled the first before a
+    // tick â€” the second's interrupt=true cancelled the first before a
     // syllable played, so enemy actions were routinely inaudible whenever
     // the player's turn arrived at the same instant. An announce within
     // ANNOUNCE_CHAIN_MS of the previous one therefore queues
@@ -5526,7 +5589,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             // leaving battle, so a battle-ending kill is never dropped).
             // The gap must be measured FORWARD from detection, not just
             // backward from now: the death tick IS the action-burst tick
-            // (v2.12.1 play test — "defeat spoken" and the interrupt=true
+            // (v2.12.1 play test â€” "defeat spoken" and the interrupt=true
             // action announcements share one timestamp in the log), so a
             // defeat younger than the quiet window must keep waiting even
             // if nothing has spoken for a while BEFORE it.
@@ -5551,7 +5614,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         const uint8_t actor_id =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::G_ACTIVE_ACTOR_ID);
 
-        // Classify the actor.  Slots 0–2 = party, 4–9 = enemy.  Anything else
+        // Classify the actor.  Slots 0â€“2 = party, 4â€“9 = enemy.  Anything else
         // means the battle module is not active.
         const bool is_party = (actor_id <= 2);
         const bool is_enemy = (actor_id >= 4 && actor_id <= 9);
@@ -5561,7 +5624,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             continue;
         }
 
-        // commandID == 0 → slot idle (process start / model state cleared):
+        // commandID == 0 â†’ slot idle (process start / model state cleared):
         // the primary not-in-battle gate.
         const uint8_t command_id = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::G_BATTLE_MODEL_STATE
@@ -5574,13 +5637,13 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             continue;
         }
 
-        // Current flash-message struct values (see ff7_addresses.h §1c).
+        // Current flash-message struct values (see ff7_addresses.h Â§1c).
         const uint32_t flash_cmd =
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::BATTLE_ACTOR_CMD_INDEX);
         const uint32_t flash_idx =
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::BATTLE_ACTOR_ACTION_INDEX);
 
-        // ── Phase 2: a name-bearing action is waiting for its flash text ──
+        // â”€â”€ Phase 2: a name-bearing action is waiting for its flash text â”€â”€
         if (pending) {
             const bool changed = (flash_cmd != pending_s0_cmd) || (flash_idx != pending_s0_idx);
             const bool synced  = ((flash_cmd & 0xFF) == pending_cmd);
@@ -5603,7 +5666,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             // NEW actor turn below (which flushes the pending announce).
         }
 
-        // ── Phase 1: new turn detection ──
+        // â”€â”€ Phase 1: new turn detection â”€â”€
         if (actor_id == last_actor_id)
             continue;
         last_actor_id = actor_id;
@@ -5616,8 +5679,8 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         }
 
         // Build the actor label.  Slots 0-2 = the party member's real savemap
-        // name (v2.19 — renames respected, "ally N" only as fallback);
-        // slots 4–9 = the real scene.bin enemy name with duplicate-letter
+        // name (v2.19 â€” renames respected, "ally N" only as fallback);
+        // slots 4â€“9 = the real scene.bin enemy name with duplicate-letter
         // suffix (v2.10), or "enemy" if unresolvable.
         wchar_t actor_label[64] = {};
         if (is_party) {
@@ -5633,9 +5696,9 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 
         // Lazily locate the kernel2 sections on first use; retry at most
         // once per minute while any is missing (non-English installs never
-        // succeed — the rate limit keeps the scans from wasting cycles).
+        // succeed â€” the rate limit keeps the scans from wasting cycles).
         // urgent=true (v2.30.43): battle scans bypass the fruitless-scan
-        // backoff that field-menu retries may have armed — see the
+        // backoff that field-menu retries may have armed â€” see the
         // ScanKernel2Sections header.
         if ((!g_k2.magic || !g_k2.item || !g_k2.weapon) &&
             GetTickCount64() >= next_scan_tick) {
@@ -5644,7 +5707,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         }
 
         // Does this command have flash text at all?  Branch 9 commands
-        // (plain Attack, Steal, …) never write the flash struct — announce
+        // (plain Attack, Steal, â€¦) never write the flash struct â€” announce
         // their generic label immediately with no wait.
         uint8_t branch = 9;
         if (command_id <= FF7Addr::BATTLE_DISPATCH_MAX_CMD)
@@ -5676,14 +5739,14 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // Speaks the battle menu as the player navigates it: the command under the
 // cursor (Attack/Magic/Item/Limit...), magic and item list entries BY NAME,
 // and the target selection cursor. This was the single largest accessibility
-// gap left in the mod — battles were playable only by memorizing menu
+// gap left in the mod â€” battles were playable only by memorizing menu
 // layouts and counting presses.
 //
 // Addresses: ff7_addresses.h SECTION 1c2. Solved by static disassembly
 // 2026-07-12 (three failed live-scan sessions prior), live-confirmed the
 // same day by investigate/ff7_battle_menu_cursor_live_verify.py.
 //
-// WHY POLLING (not hooks): same reason as BattleActionThread — FFNx
+// WHY POLLING (not hooks): same reason as BattleActionThread â€” FFNx
 // trampolines battle menu functions (battle_menu_update's dispatcher call
 // site is one of its replace_call_function targets), so entry-point hooks
 // would intercept FFNx, not the game. Polling at 50ms reads the same state
@@ -5692,7 +5755,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // intermediate positions mid-repeat (which a sighted player also ignores).
 //
 // LIST NAME RESOLUTION: a list entry's u16 id packs the action index in
-// the LOW byte (high byte = flag bits — live: Ice showed 0x41E = spell 30
+// the LOW byte (high byte = flag bits â€” live: Ice showed 0x41E = spell 30
 // + flag 0x04). Which name section that index refers to depends on which
 // COMMAND opened the list, so we reuse the v2.7 dispatch machinery:
 // BATTLE_ISSUED_CMD holds the opening command (written at list-open,
@@ -5705,17 +5768,17 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 //
 // TARGETING: after Confirm, the game returns BATTLE_MENU_STATE to 0 and
 // runs target selection there (prev state 0x91EF98 keeps the menu it came
-// from) — state 0 is ALSO the idle ATB-wait state, so raw "state == 0"
+// from) â€” state 0 is ALSO the idle ATB-wait state, so raw "state == 0"
 // cannot gate target announcements. We announce target changes only while
 // `targeting` is set, which we arm on a menu-state -> 0 transition and
 // disarm on 0xFFFF (turn executing), a new menu opening, or leaving
 // battle. The initial target is announced on arming (the game always
-// writes TARGET_INDEX at Confirm time — live: it landed the same 50ms
+// writes TARGET_INDEX at Confirm time â€” live: it landed the same 50ms
 // poll as the state transition).
 //
 // Target labels: party slots 0-2, enemy slots 4-9 (same actor-slot space
 // BattleActionThread uses). Party slots 0-2 = the member's real savemap
-// name via PartySlotLabel (v2.19 — pre-v2.19 only slot 0 was named and
+// name via PartySlotLabel (v2.19 â€” pre-v2.19 only slot 0 was named and
 // slots 1-2 were positional "ally 2"/"ally 3"); slots 4-9 = the real
 // scene.bin enemy name with duplicate-letter suffix (v2.10, EnemySlotName
 // above), falling back to "enemy N". v2.11 appends "HP <cur> of <max>" to
@@ -5728,7 +5791,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 
 // Resolve a battle COMMAND id to its display name.
 // Priority: (1) hardcoded names for ids the kernel command-name table does
-// not cover 1:1 — the Defend/Change-row pseudo-commands and Limit (which
+// not cover 1:1 â€” the Defend/Change-row pseudo-commands and Limit (which
 // keeps its unshifted kernel id, live-confirmed); (2) the kernel2 command-
 // name section at entry id-1 (ids are 1-based, table is 0-based); (3) the
 // v2.7 generic label ("command N" worst case). Returns via `out`.
@@ -5743,9 +5806,9 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
     }
     // v2.22.1: the command section is a TRANSIENT battle allocation (the
     // 2026-07-16 session log caught a reused copy speaking binary garbage
-    // on menu open) — revalidate its head signature before every lookup.
+    // on menu open) â€” revalidate its head signature before every lookup.
     if (id != 0 &&
-        SectionEntryText(ValidatedSection(&g_k2.command, "Attack|Magic|"),
+        SectionEntryText(ValidatedSection(&g_k2.command, g_k2_command_sig),
                          static_cast<uint32_t>(id) - 1, out))
         return;
     wchar_t generic_buf[32];
@@ -5829,7 +5892,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
             targeting   = (state == FF7Addr::BMENU_STATE_TARGETING) && from_menu;
             last_target = 0xFF;   // re-announce the first target when armed
 
-            // Force a fresh announce of whatever widget we landed in — this
+            // Force a fresh announce of whatever widget we landed in â€” this
             // is also what announces "the menu opened" (the command under
             // the cursor speaks immediately on the state-1 entry poll).
             last_cmd_key  = 0xFFFFFFFF;
@@ -5854,7 +5917,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
 
         // v2.37: a turn session spans the command menu + its submenus +
         // targeting. Ending it (menu closed, or ATB idle = state 0 with
-        // targeting NOT armed — the same 0-is-ambiguous resolver the
+        // targeting NOT armed â€” the same 0-is-ambiguous resolver the
         // targeting logic uses) rearms the whose-turn announce.
         const bool in_turn_session =
             state == FF7Addr::BMENU_STATE_COMMAND     ||
@@ -5870,10 +5933,10 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
 
         // Lazily locate the kernel2 sections (shared with BattleActionThread;
         // the scan guard makes concurrent triggers harmless). The command
-        // section is the one this thread depends on most — without it the
+        // section is the one this thread depends on most â€” without it the
         // command menu still speaks via the hardcoded/generic fallbacks.
         // urgent=true (v2.30.43): the command section is re-found at EVERY
-        // battle start (transient allocation) — this scan must not be
+        // battle start (transient allocation) â€” this scan must not be
         // deferred by backoff armed from fruitless field-menu retries.
         if ((!g_k2.magic || !g_k2.item || !g_k2.weapon || !g_k2.command) &&
             GetTickCount64() >= next_scan_tick) {
@@ -5910,7 +5973,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                 const uint8_t cmd_id =
                     *reinterpret_cast<const volatile uint8_t*>(entry);
                 // 0xFF = empty cell. The game's own navigation skips these,
-                // so the cursor only reads one transiently mid-move — stay
+                // so the cursor only reads one transiently mid-move â€” stay
                 // silent rather than speak "empty" for a cell the cursor
                 // will have left by the next frame.
                 if (cmd_id == 0xFF || cmd_id == 0)
@@ -5921,7 +5984,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                 // command announce of a fresh turn ("Cloud's turn. Attack.")
                 // so the player knows who to command; later cursor moves and
                 // submenu cancels speak the command alone. Attaching to the
-                // command announce (one utterance) avoids clobbering — a
+                // command announce (one utterance) avoids clobbering â€” a
                 // separate interrupt=true "turn" line would cut the command.
                 if (!turn_announced || slot != turn_slot) {
                     wchar_t who[64];
@@ -5947,7 +6010,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                    state == FF7Addr::BMENU_STATE_SUMMON_LIST) {
             // ---- list widget cursor (magic / item / summon) -------------
             // v2.36: the three lists have DIFFERENT layouts (Confirm-path
-            // disasm — see the LIST WIDGETS note in ff7_addresses.h). ITEM
+            // disasm â€” see the LIST WIDGETS note in ff7_addresses.h). ITEM
             // is a single-column stride-6 u16 list; MAGIC/SUMMON are
             // 3-column stride-8 u8 grids. The v2.9 single formula was right
             // only for items and for a <=3-spell single row.
@@ -5999,7 +6062,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                 if (list_is_item) {
                     const uint16_t id16 = *reinterpret_cast<const volatile uint16_t*>(
                         table + index * FF7Addr::BLIST_ITEM_STRIDE);
-                    empty = (id16 == 0xFFFF);   // NOT 0 — id 0 = Potion (v2.36)
+                    empty = (id16 == 0xFFFF);   // NOT 0 â€” id 0 = Potion (v2.36)
                     entry_id = id16;
                 } else {
                     const uint8_t id8 = *reinterpret_cast<const volatile uint8_t*>(
@@ -6008,7 +6071,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                     entry_id = id8;
                 }
                 if (empty)
-                    continue;   // empty row — silent
+                    continue;   // empty row â€” silent
 
                 // Pick the name section via the command that OPENED the list
                 // (see header comment). Branches 0/1/2/6/7 are magic-family:
@@ -6082,17 +6145,17 @@ targeting_check:
 // stops the player dead, byte-identical (to every signal this mod reads) to
 // walking into a wall. The 2026-07-25 hideout play report proved how
 // disorienting that is: the route to Barret said "left", but Tifa stood in
-// the aisle and the player heard only the wall thud — the log shows them
-// pinned at EXACTLY 64.0 units from her center for 3½ minutes (64 = 32+32,
+// the aisle and the player heard only the wall thud â€” the log shows them
+// pinned at EXACTLY 64.0 units from her center for 3Â½ minutes (64 = 32+32,
 // the classic FF7 collision radius pair; any input with a positive
 // component toward her produced zero movement).
 //
 // The offline dry run of that exact scene (investigate/
 // ff7_hideout_firstleg_dryrun.py, logs 20260725_*) established:
-//   - the walkmesh route and its quantized directions were CORRECT — the
+//   - the walkmesh route and its quantized directions were CORRECT â€” the
 //     leg was walkable, a body made it unfollowable;
 //   - with 64-unit contact this room's aisles SEAL COMPLETELY (flood fill:
-//     Barret unreachable from anywhere) yet at 56 they open — so per-model
+//     Barret unreachable from anywhere) yet at 56 they open â€” so per-model
 //     radii differ and body-aware REROUTING is deferred until the real
 //     radii are known (see the rc6E/rc70/rc72 diagnostic below and the
 //     TODO entry).
@@ -6101,7 +6164,7 @@ targeting_check:
 // stands in the held direction, and the directions announce appends the
 // same caution when the first leg's quantized ray passes through a body.
 //
-// v2.30.24: per-model collision radii are now REAL — the v2.30.22
+// v2.30.24: per-model collision radii are now REAL â€” the v2.30.22
 // candidate dump confirmed FIELD_EVENT_COLLISION_RADIUS (+0x72; see
 // ff7_addresses.h for the two-anchor derivation). Every body test below
 // uses live radii: contact = player_radius + body_radius, plus a purpose-
@@ -6109,15 +6172,15 @@ targeting_check:
 // so it is read fresh per call, never cached.
 //
 // Constants:
-//   BODY_CONE_MIN_COS 0.5 (±60°): at rest ON a body, any direction within
-//     90° of the body bearing freezes; ±60° covers every case observed in
+//   BODY_CONE_MIN_COS 0.5 (Â±60Â°): at rest ON a body, any direction within
+//     90Â° of the body bearing freezes; Â±60Â° covers every case observed in
 //     the hideout log while excluding bodies clearly off to the side.
-//   kBodyNameSlack  26: naming search reaches contact + slack — a frozen
+//   kBodyNameSlack  26: naming search reaches contact + slack â€” a frozen
 //     player rests up to one step OUTSIDE contact, and naming a body a
 //     half-body away is still the right answer; farther = a wall problem.
-//   kBodyRayMargin   8: route-caution ray width beyond contact — warn
+//   kBodyRayMargin   8: route-caution ray width beyond contact â€” warn
 //     only about bodies that will actually stop the walk.
-//   kBodyRouteMargin 6: reroute leg test beyond contact — a leg passing
+//   kBodyRouteMargin 6: reroute leg test beyond contact â€” a leg passing
 //     within a step of contact is treated as blocked so the reroute
 //     doesn't thread the needle.
 // ---------------------------------------------------------------------------
@@ -6128,7 +6191,7 @@ constexpr float kBodyRouteMargin  = 6.0f;
 static bool IsReadableSpan(const void* p, size_t len);
 
 // One placed person-class model with a live body. name = translated dev
-// label (no dedup ordinal — "shinra guard is in the way" is enough to
+// label (no dedup ordinal â€” "shinra guard is in the way" is enough to
 // explain a bump; the browser distinguishes guard 2 from guard 3).
 struct BodyInfo {
     float        x, y;
@@ -6173,21 +6236,21 @@ static float HeldDirInputDeg(uint32_t keys);
 // NOT mean "blocked by wall"; the first three were added after 2026-07-09
 // live testing found false tones in battles, FMVs, and scripted scenes):
 //   - GAME_MODE != 0: the field module is not the active engine module.
-//     Live-observed values (do NOT trust FFNx's enum here — see the
+//     Live-observed values (do NOT trust FFNx's enum here â€” see the
 //     GAME_MODE note in ff7_addresses.h): 0 = field play, 2 = battle,
 //     9 = menu. Battle is the critical case: entering a random battle
 //     while holding a direction freezes the field module with that
 //     direction stuck in current_key_input_status and the position frozen
-//     — without this gate the tone plays through the entire battle.
+//     â€” without this gate the tone plays through the entire battle.
 //   - FIELD_UC_LOCK != 0: a field script locked player control (opcode UC)
 //     for a scripted scene; input is ignored so a frozen position is not
-//     a wall. Address derived from the PSX decomp's exact struct match —
+//     a wall. Address derived from the PSX decomp's exact struct match â€”
 //     see ff7_addresses.h FIELD_UC_LOCK provenance note.
 //   - FIELD_MOVIE_PLAYING && !BGMOVIE: a full-screen movie (FMV) is
-//     playing. Background movies (BGMOVIE set — e.g. scenery outside a
+//     playing. Background movies (BGMOVIE set â€” e.g. scenery outside a
 //     train window) leave the player walkable and stay tone-enabled.
 //   - FIELD_ID == 0: title screen / world map. (NOT sufficient for battle,
-//     despite earlier belief — live-tested: it keeps its field value while
+//     despite earlier belief â€” live-tested: it keeps its field value while
 //     a battle runs on top. Kept as defense in depth.)
 //   - MENU_OPEN != 0: main menu overlay open; arrow keys navigate the menu
 //     while the character is frozen underneath it.
@@ -6198,14 +6261,14 @@ static float HeldDirInputDeg(uint32_t keys);
 //     hook call, so the gate also covers the frame gap between dialog pages.
 //
 // THE TONE:
-//   Tones::Play(220 Hz, 60 ms) — a waveOut sine on the default audio
+//   Tones::Play(220 Hz, 60 ms) â€” a waveOut sine on the default audio
 //   device (v2.30.41; formerly kernel32 Beep(), whose system-beep route is
-//   silent on some systems — VMs and remote sessions — see tones.h).
+//   silent on some systems â€” VMs and remote sessions â€” see tones.h).
 //   Chosen over TTS because a tone is instant, language-free, and doesn't
 //   interrupt any speech in progress. 220 Hz sits well below both the cue
 //   beeps used by investigation scripts (800/1400 Hz) and typical screen
 //   reader speech fundamentals, so it reads as a distinct "thud". Play()
-//   blocks this thread for the 60ms duration exactly as Beep() did —
+//   blocks this thread for the 60ms duration exactly as Beep() did â€”
 //   acceptable, since the next poll simply happens a frame later. Repeats
 //   every 300ms for as long as contact continues (continuous-but-not-
 //   frantic feedback).
@@ -6215,7 +6278,7 @@ static float HeldDirInputDeg(uint32_t keys);
 //   build it points into static BSS at 0xCC1670, but a field could in
 //   principle relocate it) and bounds-checks the player index against
 //   FIELD_N_MODELS. The computed element range is then verified readable
-//   via VirtualQuery before dereferencing — during field transitions the
+//   via VirtualQuery before dereferencing â€” during field transitions the
 //   array contents are torn down and rebuilt, and a polling thread can
 //   catch any intermediate state.
 //
@@ -6243,7 +6306,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
     // v2.30.1: the tone is DISARMED until real movement is observed in the
     // current gate-open episode (re-disarmed whenever any gate closes).
     // Play report 2026-07-18: a party wipe loops the tone through the whole
-    // game-over screen — that state reads as field mode with the input
+    // game-over screen â€” that state reads as field mode with the input
     // status frozen at whatever direction was held when the fatal battle
     // triggered, i.e. exactly the Gate-2 stale-input scenario, but with no
     // mode change for Gate 2 to catch. No gate on module state can be
@@ -6251,7 +6314,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
     // never fake: the player actually walking. Reaching a wall always takes
     // at least one step first, so the cost is only a missed tone in the
     // rare "battle ended flush against a wall, direction never released"
-    // case — and that clears the moment the player moves.
+    // case â€” and that clears the moment the player moves.
     bool     armed          = false;
     // v2.30.22: one body-naming attempt per contact episode. Reset when the
     // player moves or releases the direction (the natural "bump, hear the
@@ -6278,15 +6341,15 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 
         // Gate 1: must be on a named field map. FIELD_ID is 0 on the title
         // screen and world map. NOTE (live-tested 2026-07-09): FIELD_ID does
-        // NOT reliably zero during battle — the field stays loaded behind the
-        // battle module — so this gate alone is insufficient; see Gate 2.
+        // NOT reliably zero during battle â€” the field stays loaded behind the
+        // battle module â€” so this gate alone is insufficient; see Gate 2.
         const int16_t field_id =
             *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID);
 
         // Gate 2: the FIELD module must be the ACTIVE engine module.
         // When a random battle starts, the field module freezes with
         // current_key_input_status stuck at the direction the player was
-        // holding and the position frozen — the wall predicate would stay
+        // holding and the position frozen â€” the wall predicate would stay
         // true for the entire battle (observed live: continuous tone until
         // the victory screen). Live-observed values: 0 = field play,
         // 2 = battle, 9 = menu (FFNx's enum does not apply to this byte).
@@ -6294,14 +6357,14 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
 
         // Gate 3: main menu overlay closed. Arrow keys navigate the menu
-        // while the character stands frozen underneath — not a wall.
+        // while the character stands frozen underneath â€” not a wall.
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
 
         // Gate 4: player control not locked by a field script (opcode UC).
         // Scripted scenes freeze the player while ignoring input; holding a
         // direction there is not a wall. Offset provenance: PSX decomp
-        // struct match — see FIELD_UC_LOCK in ff7_addresses.h.
+        // struct match â€” see FIELD_UC_LOCK in ff7_addresses.h.
         const uint8_t uc_lock =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::FIELD_UC_LOCK);
 
@@ -6315,7 +6378,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::FIELD_BGMOVIE_FLAG);
         const bool movie_playing = (movie_word != 0) && (bgmovie == 0);
 
-        // Log gate transitions (debug_log builds only — Log::Write is a
+        // Log gate transitions (debug_log builds only â€” Log::Write is a
         // no-op otherwise). One line per change, never per poll.
         const uint32_t gates =
             (static_cast<uint32_t>(game_mode) << 24) |
@@ -6333,11 +6396,11 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             Log::Write(dbg);
         }
 
-        // v2.30.37: GameOverTitleContext — the GAME OVER film reel reads as
+        // v2.30.37: GameOverTitleContext â€” the GAME OVER film reel reads as
         // frozen field play in every byte above (mode=0, menu=0, movie=0,
         // stale FIELD_ID). The movement-arming below already kept the tone
         // quiet there (v2.30.1's whole point), but the latch is positive
-        // knowledge — use it.
+        // knowledge â€” use it.
         if (field_id == 0 || game_mode != FF7Addr::GAME_MODE_FIELD ||
             menu_open != 0 || uc_lock != 0 || movie_playing ||
             GameOverTitleContext()) {
@@ -6381,7 +6444,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE);
 
         // Verify the whole element is committed readable memory before
-        // dereferencing — a field transition can tear the array down between
+        // dereferencing â€” a field transition can tear the array down between
         // our pointer read and here. Check both ends: the 0x88-byte struct
         // can straddle a page boundary.
         MEMORY_BASIC_INFORMATION mbi = {};
@@ -6410,7 +6473,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
         // "Moved" on the very first valid sample: with no previous position
         // to compare, assume motion so the streak stays at zero rather than
         // beeping off one stale coordinate. Only a change between two REAL
-        // samples counts as movement for arming (v2.30.1) — the first-sample
+        // samples counts as movement for arming (v2.30.1) â€” the first-sample
         // "assume motion" must not arm off one stale coordinate either.
         const bool real_move = have_last &&
             (x != last_x || y != last_y || z != last_z);
@@ -6428,7 +6491,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
         }
 
         // One line at the moment a would-be tone is swallowed (== not >=,
-        // so a suppressed episode logs once, not 20×/second).
+        // so a suppressed episode logs once, not 20Ã—/second).
         if (!armed && blocked_streak == kConsecBlocked) {
             Log::Write("[FF7Access] WALL tone suppressed: dir held + frozen "
                        "but no movement seen this episode (frozen module?)");
@@ -6438,11 +6501,11 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             now - last_beep_tick >= kBeepPeriodMs) {
             last_beep_tick = now;
             // One-time log per contact episode would require more state; log
-            // nothing here — at 3+ beeps/second even debug logging would spam.
+            // nothing here â€” at 3+ beeps/second even debug logging would spam.
             Tones::Play(kBeepFreqHz, kBeepDurMs);
 
             // v2.30.22: if a PERSON stands in the held direction, this
-            // "wall" is a body — say who, once per contact episode (see the
+            // "wall" is a body â€” say who, once per contact episode (see the
             // solid-body block above WallBumpThread for the derivation).
             // interrupt=false: queue behind any route announcement in
             // progress rather than clobbering it.
@@ -6490,7 +6553,7 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 // DialogToneThread (v2.30.5): plays the two story-dialog audio cues.
 //
 // hook_message/hook_ask (hooks.cpp) run on the GAME's main thread every
-// frame and can only SET edge-triggered flags — Tones::Play() blocks for
+// frame and can only SET edge-triggered flags â€” Tones::Play() blocks for
 // the tone's whole duration (as Beep() did before v2.30.41), so calling it
 // directly from an opcode hook would stall the game itself every time it
 // fires (the same reasoning behind every other tone in this file:
@@ -6502,8 +6565,8 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
 //
 // Both cues use the SAME pitch (1568 Hz, distinct from every other tone in
 // this mod: 220 Hz wall thud, 880 Hz wandering cue, 1175 Hz proximity
-// chirp) and differ only in COUNT — one beep for "waiting for the confirm
-// button", two quick beeps for "a choice was just presented" — matching
+// chirp) and differ only in COUNT â€” one beep for "waiting for the confirm
+// button", two quick beeps for "a choice was just presented" â€” matching
 // the player's request verbatim (a plain high tone vs. a high double-tone).
 // ---------------------------------------------------------------------------
 static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
@@ -6536,12 +6599,12 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
 }
 
 // ---------------------------------------------------------------------------
-// Field navigation — PATHFINDER BROWSER thread (v2.14, reworked to the
+// Field navigation â€” PATHFINDER BROWSER thread (v2.14, reworked to the
 // FF1-6 accessibility key scheme the same day). First interactable-tracking
 // feature of the navigation system.
 //
-// KEY BINDINGS follow accessiblity_keys.txt (repo root) — the FF4 Pixel
-// Remaster screen-reader scheme — so users of the FF1-6 accessibility mods
+// KEY BINDINGS follow accessiblity_keys.txt (repo root) â€” the FF4 Pixel
+// Remaster screen-reader scheme â€” so users of the FF1-6 accessibility mods
 // can transfer their muscle memory directly (user requirement, 2026-07-13):
 //   J / L   (or [ / ])  cycle destinations in the current category
 //   Shift+J / Shift+L (or - / =)  cycle destination categories
@@ -6549,16 +6612,16 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
 //   Shift+K            reset category to All
 //   \ or P             directions to the selected destination
 //   M                  announce the current map's name
-// Categories: All, Exits, People (v2.15 — every non-player model on the
+// Categories: All, Exits, People (v2.15 â€” every non-player model on the
 // walkmesh, named from the model-loader section's dev names in v2.16),
-// Save points (v2.16 — "save" labels; CONFIRMED game-wide by the v2.18
+// Save points (v2.16 â€” "save" labels; CONFIRMED game-wide by the v2.18
 // flevel catalog: "fieldbg saveicn" is the only save label in all 720
-// fields), Triggers (v2.17 — script-created LINE zones: ladders,
+// fields), Triggers (v2.17 â€” script-created LINE zones: ladders,
 // elevators, touch/cross zones, named by owning entity's dev name), and
-// Items (v2.18 — chests/materia/pickups/keys classified by the
+// Items (v2.18 â€” chests/materia/pickups/keys classified by the
 // catalog-confirmed "fieldbg" prop labels; collected floor pickups
 // despawn off-mesh and drop out of the list automatically, which IS the
-// taken/remaining state for them — chest open/closed state is a live
+// taken/remaining state for them â€” chest open/closed state is a live
 // investigation TODO). Unimplemented FF4 keys
 // (Shift+\ valid-path filter, Ctrl+\ layer filter, Ctrl+arrows teleport,
 // Shift+M exit filter) are silently ignored; listed in TODO.txt for when
@@ -6570,7 +6633,7 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
 // gateway slots holds an exit LINE (two walkmesh-coord vertices) and the
 // destination field id (0x7FFF = unused slot). Destinations are numbered by
 // gateway SLOT order ("Exit 1".."Exit n") so a destination keeps its name
-// while the player moves — never renumbered by distance.
+// while the player moves â€” never renumbered by distance.
 //
 // GEOMETRY: player walkmesh position = field_event_data model_pos >> 12
 // (FFNx: "model_pos.x / 4096.f"). Distance = player to the NEAREST POINT of
@@ -6580,19 +6643,19 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
 // walkmesh units/sec (v2.6 measurement), so seconds = distance / 160.
 //
 // DIRECTION: world angle of (player -> nearest point), then rotated by the
-// header's control_direction byte — the SAME per-field value the engine
-// uses to rotate d-pad input to match the camera — and mapped to 8 d-pad
+// header's control_direction byte â€” the SAME per-field value the engine
+// uses to rotate d-pad input to match the camera â€” and mapped to 8 d-pad
 // sectors. CONVENTION FULLY CONFIRMED 2026-07-13: the calibration
 // walkabout fixed the rotation (control_direction is the world bearing of
-// screen-DOWN, screen angle = world + control−180), and the user's
-// follow-up play test confirmed left/right land correctly too — the
+// screen-DOWN, screen angle = world + controlâˆ’180), and the user's
+// follow-up play test confirmed left/right land correctly too â€” the
 // mapping is a pure rotation, no mirror.
 //
 // DIRECTION STYLES (v2.22): the above single-bearing announcement is now
 // the "line" style (direction_style=line, and the automatic fallback).
-// The default "turns" style routes over the field's WALKMESH instead —
+// The default "turns" style routes over the field's WALKMESH instead â€”
 // A* + funnel over the triangle graph, spoken as d-pad moves: "Exit 2:
-// up 4 seconds, then right 2 seconds" — see the WALKMESH pathfinding
+// up 4 seconds, then right 2 seconds" â€” see the WALKMESH pathfinding
 // block above for the full pipeline and its fail-closed guards.
 //
 // HOTKEYS use GetAsyncKeyState edges, gated on the game window being
@@ -6602,16 +6665,16 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
 // Config::Get().pathfinder_keys turns the whole set off.
 //
 // GAMEPAD (v2.21): the RIGHT ANALOG STICK is a second trigger path for the
-// same browser — up/down = category, left/right = destination, R3 click =
+// same browser â€” up/down = category, left/right = destination, R3 click =
 // directions. Identical gates (focus + field control + pathfinder_keys);
 // gamepad_nav=false switches just the stick off. The stick and R3 carry no
-// native game function, so nothing is stolen from gameplay — full evidence
+// native game function, so nothing is stolen from gameplay â€” full evidence
 // trail in gamepad.h.
 // ---------------------------------------------------------------------------
 
 // Map an input-relative angle (degrees, 0 = the Up d-pad, clockwise) to an
 // 8-way d-pad sector. Split into index + name (v2.22) because the
-// turn-by-turn route builder merges consecutive same-SECTOR legs — it
+// turn-by-turn route builder merges consecutive same-SECTOR legs â€” it
 // compares indices, not strings.
 // Diagonals are spoken "up and left", not "up-left" (v2.23): the user
 // found the hyphenated forms confusing; "and" says directly that the move
@@ -6640,22 +6703,22 @@ static const wchar_t* DpadSectorName(float deg)
 
 // One browsable destination: a gateway/exit (line), a person/save point
 // (point, stored as a degenerate line so the distance math is shared), or a
-// LINE trigger zone (v2.17 — script-created lines: ladders, elevators,
-// touch/cross zones — a real segment, exactly like an exit).
+// LINE trigger zone (v2.17 â€” script-created lines: ladders, elevators,
+// touch/cross zones â€” a real segment, exactly like an exit).
 struct NavDest {
     wchar_t name[64];      // spoken name, e.g. "To Platform" / "shinra
-                           // guard 3, talk disabled" (widened 32→48 in
+                           // guard 3, talk disabled" (widened 32â†’48 in
                            // v2.26 for the talk suffix on long labels;
-                           // 48→64 in v2.30.23 for trigger-behavior
+                           // 48â†’64 in v2.30.23 for trigger-behavior
                            // suffixes like ", exit to Seventh Heaven")
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
-    int16_t line_z1, line_z2;   // line endpoint HEIGHTS (v2.23) — lets the
+    int16_t line_z1, line_z2;   // line endpoint HEIGHTS (v2.23) â€” lets the
                                 // route builder locate the target on the
                                 // correct STACKED layer when no triangle
                                 // hint exists (exits/triggers on walkways)
     int     model_slot;    // field model index for people; -1 for exits
     int16_t target_tri;    // walkmesh triangle the target stands on (models:
-                           // their live +0x78 id — exact even on stacked
+                           // their live +0x78 id â€” exact even on stacked
                            // layers); -1 = unknown, turn-by-turn locates the
                            // target point geometrically instead (v2.22)
 };
@@ -6665,7 +6728,7 @@ struct NavDest {
 //
 // Replaces the per-site VirtualQuery idiom that had accumulated many inline
 // copies (2026-07-14 code review): walks the regions covering [p, p+len) and
-// requires every one committed and readable — strictly stronger than the
+// requires every one committed and readable â€” strictly stronger than the
 // old copies, which probed only one or two single bytes of a span and could
 // pass while a MIDDLE page was decommitted (realistic during a field
 // transition, when the game frees one buffer while another stays live).
@@ -6686,17 +6749,17 @@ static bool IsReadableSpan(const void* p, size_t len)
 }
 
 // ---------------------------------------------------------------------------
-// WALKMESH pathfinding — turn-by-turn directions (v2.22).
+// WALKMESH pathfinding â€” turn-by-turn directions (v2.22).
 //
 // WHY: the v2.14 directions are one straight-line bearing, which happily
 // points through walls and pits. Turn-by-turn plans a real route over the
-// field's WALKMESH — the triangle mesh the engine itself moves characters
-// on — and speaks it as a sequence of d-pad moves with walking times:
+// field's WALKMESH â€” the triangle mesh the engine itself moves characters
+// on â€” and speaks it as a sequence of d-pad moves with walking times:
 // "Exit 2: up 4 seconds, then right 2 seconds." The straight-line style
 // remains available (direction_style=line) and is the automatic fallback
 // whenever a route cannot be computed.
 //
-// DATA: field-file section 5 behind FIELD_FILE_BUFFER — layout, sources,
+// DATA: field-file section 5 behind FIELD_FILE_BUFFER â€” layout, sources,
 // and the access-pool confidence caveat are documented at ff7_addresses.h
 // SECTION 1h. Everything runs on the directions keypress, nothing is
 // cached: a field mesh is at most a few hundred triangles, and per-press
@@ -6704,28 +6767,28 @@ static bool IsReadableSpan(const void* p, size_t len)
 // list itself makes.
 //
 // PIPELINE:
-//   1. LoadWalkmesh    — snapshot triangles + adjacency, SELF-GUARDED
+//   1. LoadWalkmesh    â€” snapshot triangles + adjacency, SELF-GUARDED
 //                        (id-range + reciprocity checks) because the
 //                        access pool is the one layout fact FFNx's code
-//                        does not confirm — a wrong guess must fail the
+//                        does not confirm â€” a wrong guess must fail the
 //                        parse, never route the player into a wall
-//   2. locate ends     — player: live triangle id (+0x78); target: its
+//   2. locate ends     â€” player: live triangle id (+0x78); target: its
 //                        model's triangle id, else point-location
-//   3. WalkmeshAStar   — A* over the adjacency graph, centroid costs
-//   4. BuildPortals    — the crossed edges, endpoints recovered by
+//   3. WalkmeshAStar   â€” A* over the adjacency graph, centroid costs
+//   4. BuildPortals    â€” the crossed edges, endpoints recovered by
 //                        GEOMETRIC shared-vertex match (never by the
 //                        access pool's edge-order convention, which is
 //                        not runtime-verifiable)
-//   5. FunnelPath      — string-pulling: the taut path through the
+//   5. FunnelPath      â€” string-pulling: the taut path through the
 //                        corridor, so corners exist only where the route
 //                        actually bends around geometry
-//   6. RouteToSpeech   — legs quantized to the 8 d-pad sectors,
+//   6. RouteToSpeech   â€” legs quantized to the 8 d-pad sectors,
 //                        same-direction legs merged, sub-step jogs folded
 //                        into their predecessor
 // ---------------------------------------------------------------------------
 
 // One walkmesh triangle, snapshot form. Routing is 2D (the same
-// convention as exits/distance since v2.14) — adjacency routes stacked
+// convention as exits/distance since v2.14) â€” adjacency routes stacked
 // layers correctly because two overlapping walkways are far apart in the
 // GRAPH even when they overlap in XY. The centroid HEIGHT is kept
 // (v2.23) so point-location can resolve WHICH stacked layer a target
@@ -6733,8 +6796,8 @@ static bool IsReadableSpan(const void* p, size_t len)
 struct WalkTri {
     float    vx[3], vy[3];  // vertex XY, walkmesh units
     uint16_t nbr[3];        // triangle across edge slot e; 0xFFFF = wall
-    float    cx, cy;        // centroid — the triangle's A* node position
-    float    cz;            // centroid height — layer disambiguation only
+    float    cx, cy;        // centroid â€” the triangle's A* node position
+    float    cz;            // centroid height â€” layer disambiguation only
 };
 
 // A 2D point on the route (funnel corners, portal midpoints).
@@ -6791,7 +6854,7 @@ static bool LoadWalkmesh(std::vector<WalkTri>& out)
 
     // SELF-GUARD for the access pool (see SECTION 1h): if its documented
     // location were wrong, these bytes would be triangle coordinates or
-    // padding — out-of-range ids and broken reciprocity — not a mostly
+    // padding â€” out-of-range ids and broken reciprocity â€” not a mostly
     // mutual graph. Requiring every id in range AND >= 90% of directed
     // links reciprocal makes "wrong layout" fail closed into the
     // straight-line fallback. (Not 100%: tolerate a few genuinely odd
@@ -6818,15 +6881,15 @@ static bool LoadWalkmesh(std::vector<WalkTri>& out)
     // Field scripts mark counters/doorways impassable at runtime; the
     // static access pool doesn't know, so A* was routing THROUGH them
     // and walking the player into invisible walls (2026-07-23: the route
-    // to Tifa led into the bar counter — her triangle is mesh-connected
-    // but script-locked). Cut every edge INTO a locked triangle — the
+    // to Tifa led into the bar counter â€” her triangle is mesh-connected
+    // but script-locked). Cut every edge INTO a locked triangle â€” the
     // exact test the game's own movement code performs per crossing
     // (destination-side only, so leaving a locked triangle stays
     // possible, mirroring the game). Applied AFTER the reciprocity
     // self-guard above: locks legitimately make the graph asymmetric,
     // and the guard validates the RAW pool's layout, not the overlay.
     // A route target standing on a locked triangle (Tifa) becomes
-    // unreachable — A* fails and the caller falls back to the
+    // unreachable â€” A* fails and the caller falls back to the
     // straight-line announce, which walks the player TO the counter,
     // where the talk radius already reaches across (matching how a
     // sighted player interacts).
@@ -6852,7 +6915,7 @@ static bool LoadWalkmesh(std::vector<WalkTri>& out)
     return true;
 }
 
-// Squared distance from point (px,py) to segment (x1,y1)-(x2,y2) — the
+// Squared distance from point (px,py) to segment (x1,y1)-(x2,y2) â€” the
 // nearest-point projection the directions math has used since v2.14.
 static float PointSegDist2(float px, float py,
                            float x1, float y1, float x2, float y2)
@@ -6867,10 +6930,10 @@ static float PointSegDist2(float px, float py,
     return dx * dx + dy * dy;
 }
 
-// Twice the signed area of triangle (a,b,c) — the funnel algorithm's
+// Twice the signed area of triangle (a,b,c) â€” the funnel algorithm's
 // orientation primitive. Sign says which side of a->b the point c is on:
-// POSITIVE = the side BuildPortals labels "left". ⚠ This is cross(ab,ac),
-// the NEGATIVE of Recast's triArea2D (cross(ac,ab)) — every comparison in
+// POSITIVE = the side BuildPortals labels "left". âš  This is cross(ab,ac),
+// the NEGATIVE of Recast's triArea2D (cross(ac,ab)) â€” every comparison in
 // FunnelPath is therefore sign-FLIPPED relative to the classic listing.
 // The 2026-07-16 offline dry run (ff7_walkmesh_route_dryrun.py) caught
 // exactly this: the unflipped signs emitted a corner at nearly every
@@ -6890,7 +6953,7 @@ static float TriangleDistance(const struct WalkTri& w, float x, float y)
     const float s2 = Tri2(w.vx[2], w.vy[2], w.vx[0], w.vy[0], x, y);
     if ((s0 >= 0.0f && s1 >= 0.0f && s2 >= 0.0f) ||
         (s0 <= 0.0f && s1 <= 0.0f && s2 <= 0.0f))
-        return 0.0f;   // inside (either winding — field meshes vary)
+        return 0.0f;   // inside (either winding â€” field meshes vary)
     float best = FLT_MAX;
     for (int e = 0; e < 3; ++e) {
         const int f = (e + 1) % 3;
@@ -6902,19 +6965,19 @@ static float TriangleDistance(const struct WalkTri& w, float x, float y)
 }
 
 // Triangle for point (x,y,z): the one whose XY projection contains the
-// point (or whose boundary is nearest — target points sit exactly ON
+// point (or whose boundary is nearest â€” target points sit exactly ON
 // portal edges; point targets can be a hair off-mesh), with the HEIGHT
 // difference to the triangle's centroid as a tie-breaker term so a field
 // with STACKED walkways resolves to the layer the point is actually on
-// (v2.23 — ladder endpoints made this matter; before that the 2D pick
-// was an accepted limitation). The score sums XY boundary distance² and
-// height difference²: zero for "inside, same height", and a triangle
+// (v2.23 â€” ladder endpoints made this matter; before that the 2D pick
+// was an accepted limitation). The score sums XY boundary distanceÂ² and
+// height differenceÂ²: zero for "inside, same height", and a triangle
 // directly underfoot always beats the same spot on another layer.
 static int WalkmeshLocate(const std::vector<WalkTri>& m,
                           float x, float y, float z);
 
 // A model's live triangle id (+0x78) is only a HINT (v2.30.25): scripted
-// idle models never update it — the hideout's Biggs stood at (-191,46)
+// idle models never update it â€” the hideout's Biggs stood at (-191,46)
 // while his field still read triangle 0 from the bottom corridor, so
 // every route to him planned to the wrong corner and then "spoke" a
 // straight line through walls (the 2026-07-25 evening log's
@@ -6924,7 +6987,7 @@ static int WalkmeshLocate(const std::vector<WalkTri>& m,
 // claims to locate; otherwise geometry-locate from the position, which
 // also handles off-mesh targets (nearest triangle + height score).
 // Known residual: on STACKED layers a stale hint that happens to name
-// the other layer's triangle under the same 2D point would pass — a
+// the other layer's triangle under the same 2D point would pass â€” a
 // far smaller lie than the cross-room one this catches, and the
 // height-aware locate still corrects the no-hint path.
 static int ResolveTriHint(const std::vector<WalkTri>& m, int hint,
@@ -6970,7 +7033,7 @@ static int WalkmeshLocate(const std::vector<WalkTri>& m,
 
 // A* over the triangle adjacency graph, centroid-to-centroid costs and a
 // straight-line heuristic (admissible: no shortcut is shorter than the
-// crow's flight). Linear-scan open "list" — n is a few hundred, and this
+// crow's flight). Linear-scan open "list" â€” n is a few hundred, and this
 // runs once per keypress; a heap would be pure ceremony. Returns the
 // triangle sequence start..goal, or false when the goal is in a region
 // the graph cannot reach (locked-off area, different layer group).
@@ -6978,7 +7041,7 @@ static bool WalkmeshAStar(const std::vector<WalkTri>& m, int start, int goal,
                           std::vector<uint16_t>& out_path,
                           const std::vector<uint8_t>* avoid = nullptr)
 {
-    // avoid (v2.30.24): optional per-triangle mask — crossings INTO
+    // avoid (v2.30.24): optional per-triangle mask â€” crossings INTO
     // masked triangles are refused, the same overlay shape as the IDLCK
     // lock cut. Used by the body-aware reroute; never set for the
     // start/goal triangles.
@@ -7039,7 +7102,7 @@ struct PathPortal { float lx, ly, rx, ry; };
 
 // Portals for a triangle path. The shared edge is recovered by EXACT
 // vertex-coordinate match between the two triangles (s16 grid, so shared
-// vertices compare equal) — deliberately NOT via the access pool's
+// vertices compare equal) â€” deliberately NOT via the access pool's
 // edge-order convention, the one layout fact nothing at runtime can
 // verify; geometry is self-evident. Left/right orientation comes from the
 // centroid-to-centroid crossing direction, which by construction passes
@@ -7077,7 +7140,7 @@ static void BuildPortals(const std::vector<WalkTri>& m,
         } else {
             // No 2-vertex match (T-junction or exotic geometry): collapse
             // the portal to B's centroid. The funnel then treats it as a
-            // must-pass point — the route stays walkable, just less taut.
+            // must-pass point â€” the route stays walkable, just less taut.
             p.lx = p.rx = B.cx;
             p.ly = p.ry = B.cy;
         }
@@ -7089,7 +7152,7 @@ static void BuildPortals(const std::vector<WalkTri>& m,
 // route through the portal corridor so corners appear only where it
 // actually wraps around geometry. Emits the corner points (start
 // excluded, end included). On the internal-guard bailout corners comes
-// back EMPTY and the caller degrades to portal midpoints — a valid,
+// back EMPTY and the caller degrades to portal midpoints â€” a valid,
 // just less taut, route.
 static void FunnelPath(float sx, float sy, float endx, float endy,
                        const std::vector<PathPortal>& portals,
@@ -7105,7 +7168,7 @@ static void FunnelPath(float sx, float sy, float endx, float endy,
     size_t li = 0, ri = 0;                    // portals those came from
 
     // The classic algorithm rescans from the apex portal after emitting a
-    // corner, making it O(n^2) worst case — fine at field sizes, but a
+    // corner, making it O(n^2) worst case â€” fine at field sizes, but a
     // subtle orientation bug could in principle cycle, so a hard guard
     // converts "cannot happen" into "falls back audibly correct".
     int guard = static_cast<int>(p.size()) * 16 + 64;
@@ -7115,7 +7178,7 @@ static void FunnelPath(float sx, float sy, float endx, float endy,
 
         // Tighten the RIGHT side: the new right endpoint narrows the
         // funnel if it lies left of (or on) the current right boundary.
-        // (Signs flipped vs. the classic Recast listing — see Tri2.)
+        // (Signs flipped vs. the classic Recast listing â€” see Tri2.)
         if (Tri2(ax, ay, rx, ry, p[i].rx, p[i].ry) >= 0.0f) {
             if ((ax == rx && ay == ry) ||
                 Tri2(ax, ay, lx, ly, p[i].rx, p[i].ry) < 0.0f) {
@@ -7154,7 +7217,7 @@ static void FunnelPath(float sx, float sy, float endx, float endy,
 // the straight-line style uses (world + control_direction - 180, the
 // fully play-test-confirmed v2.14 mapping); consecutive same-sector legs
 // merge; a sub-step jog (under ~0.75 s of walking) folds into its
-// predecessor rather than being spoken — "then left 1 second" for a
+// predecessor rather than being spoken â€” "then left 1 second" for a
 // two-tile kink is noise, and the player re-queries en route anyway. The
 // FIRST leg is never folded away: it is the move the player makes right
 // now. At most five moves are spoken (routes rarely need more than
@@ -7229,7 +7292,7 @@ static std::wstring RouteToSpeech(float sx, float sy,
     return out;
 }
 
-// Outcome of a turn-by-turn attempt — the caller's fallback decision.
+// Outcome of a turn-by-turn attempt â€” the caller's fallback decision.
 enum class RouteOutcome {
     SPOKEN_ROUTE,   // out_route holds the spoken route body
     NO_PATH,        // mesh fine, target genuinely unreachable: say so
@@ -7237,7 +7300,7 @@ enum class RouteOutcome {
 };
 
 // Full pipeline for one directions request. (px,py,pz) player, (tx,ty,tz)
-// the target point (nearest point of the destination's line — the same
+// the target point (nearest point of the destination's line â€” the same
 // point the straight-line style aims at; z interpolated along the line),
 // *_hint = live triangle ids when known (heights only matter when a hint
 // is missing and the field has stacked layers).
@@ -7254,16 +7317,16 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                                          bool to_nearest = false)
 {
     // to_nearest (v2.30.25): when the target is graph-unreachable
-    // (off the walkable floor — Biggs sitting on the hideout crates,
+    // (off the walkable floor â€” Biggs sitting on the hideout crates,
     // Tifa behind the locked bar counter), route to the REACHABLE
     // triangle nearest the target instead of giving up, aiming the walk
     // at that triangle's closest point. The caller words the result as
     // "off the walkable area" and the talk radius covers the last gap.
     // exclude_model_slot (v2.30.24): the destination's own model when
-    // routing to a person — their body always sits at the route's end
+    // routing to a person â€” their body always sits at the route's end
     // and must not count as a blocker.
     // target_reach (v2.30.25): how far short of the target the walk may
-    // END and still succeed — a person is "reached" at their talk
+    // END and still succeed â€” a person is "reached" at their talk
     // radius. Body tests ignore the final reach-length of the route, so
     // a companion standing shoulder-to-shoulder with the target (Barret
     // 73 units from Biggs) neither blocks the route nor triggers a
@@ -7276,7 +7339,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
     }
     const int n = static_cast<int>(mesh.size());
     // v2.30.25: hints validated against their positions (stale-triangle
-    // fix — see ResolveTriHint).
+    // fix â€” see ResolveTriHint).
     const int start = ResolveTriHint(mesh, start_hint, px, py, pz);
     int       goal  = ResolveTriHint(mesh, goal_hint, tx, ty, tz);
     if (start < 0 || goal < 0)
@@ -7290,7 +7353,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
         // the (lock-cut) graph, pick the triangle nearest the target,
         // and aim the walk at its closest point to the target. Offline-
         // validated 2026-07-25: Biggs on the crates resolves to a stand
-        // point 6 units from him — well inside talk radius.
+        // point 6 units from him â€” well inside talk radius.
         std::vector<uint8_t> comp(n, 0);
         std::vector<int> bfs{ start };
         comp[start] = 1;
@@ -7320,7 +7383,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
             return RouteOutcome::NO_PATH;
         if (best_d > 0.0f) {
             // redirect the walk endpoint to the best triangle's closest
-            // point (tx/ty are by-value — safe to overwrite)
+            // point (tx/ty are by-value â€” safe to overwrite)
             float bpd = FLT_MAX, bx = tx, by = ty;
             for (int e = 0; e < 3; ++e) {
                 const int f = (e + 1) % 3;
@@ -7357,7 +7420,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
     std::vector<NavPt> corners;
     FunnelPath(px, py, tx, ty, portals, corners);
     if (corners.empty()) {
-        // Funnel guard tripped — degrade to portal midpoints: every
+        // Funnel guard tripped â€” degrade to portal midpoints: every
         // doorway on the route in order, so still a walkable description.
         for (const PathPortal& p : portals)
             corners.push_back({ (p.lx + p.rx) * 0.5f, (p.ly + p.ry) * 0.5f });
@@ -7370,14 +7433,14 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
     // against bodies and REROUTED around them when another corridor
     // exists. Method (validated offline in the 2026-07-25 dry run):
     // temp-avoid every triangle a blocking body's contact circle
-    // overlaps (start/goal exempt — pinning the player or target inside
+    // overlaps (start/goal exempt â€” pinning the player or target inside
     // an avoided triangle would only manufacture failure) and re-run A*.
     // The reroute is adopted ONLY if its own funnel comes back clear of
     // ALL bodies; otherwise the original route stands and the v2.30.22
-    // caution names the blocker — a clear route or the honest truth,
+    // caution names the blocker â€” a clear route or the honest truth,
     // never a guess. Triangle granularity is a known limit: a body in a
     // large doorway triangle can seal a corridor a foot-width gap would
-    // technically allow (the hideout's Tifa case) — that outcome is the
+    // technically allow (the hideout's Tifa case) â€” that outcome is the
     // caution, which is correct enough for a squeeze a player must
     // shimmy through anyway.
     {
@@ -7478,7 +7541,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
 // Pathfinder categories and field-model classification (v2.18.2).
 //
 // The Shift+J/L category ring. File-scope so the classifier below can map a
-// model class to its category — previously the enum lived inside the key
+// model class to its category â€” previously the enum lived inside the key
 // handler and classification knowledge was spread across three sites (the
 // 2026-07-14 code review's altitude finding).
 // ---------------------------------------------------------------------------
@@ -7487,21 +7550,21 @@ enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3,
 
 // What a field model IS, decided in exactly one place from its dev label.
 enum ModelClass : uint8_t {
-    MC_PERSON = 0,   // any other model — browsable under People
+    MC_PERSON = 0,   // any other model â€” browsable under People
     MC_SAVE,         // save point icon
     MC_CHEST,        // treasure box (lid state tracked via lastFrame)
     MC_ITEM,         // materia orb / pickup bottle / sparkle / key item
-    MC_SCENERY,      // background prop — not browsable under ANY category
+    MC_SCENERY,      // background prop â€” not browsable under ANY category
                      // (v2.30.18: unknown "fieldbg" labels + a small list
                      // of observed non-fieldbg props; see ClassifyModelLabel)
     MC_PROP,         // v2.30.45: a SCENERY model whose script entity has a
-                     // real talk script (offline game-wide walk —
+                     // real talk script (offline game-wide walk â€”
                      // ff7_prop_catalog.h): a button/lever/valve style
                      // DEVICE. The v2.30.36 review's deliberately deferred
                      // whitelist, delivered after the tester asked for the
                      // reactor switches. Browses under Triggers, spoken
                      // with a ", device" suffix. Promotion happens AFTER
-                     // ClassifyModelLabel (one classifier, one place —
+                     // ClassifyModelLabel (one classifier, one place â€”
                      // the catalog only ever RESURRECTS filtered scenery,
                      // never reclassifies people/chests/items/saves).
 };
@@ -7509,7 +7572,7 @@ enum ModelClass : uint8_t {
 // Classify a model's speakable label and pick its spoken base name.
 // Evidence (offline catalog of ALL 720 fields' model labels,
 // ff7_flevel_models_catalog.py, 2026-07-14): the devs prefixed every
-// interactable prop "fieldbg" and named item props consistently — "trb *" =
+// interactable prop "fieldbg" and named item props consistently â€” "trb *" =
 // treasure boxes (wood/mety/glow/metb/trbox k), "mtra*" = materia orbs
 // (incl. hmtra/kuromtra), "potion *" = pickup bottles (color variants; the
 // BOTTLE is the visual, the script decides the actual item, hence generic
@@ -7527,12 +7590,12 @@ static ModelClass ClassifyModelLabel(const std::wstring& lbl,
     }
     if (lbl.find(L"fieldbg") == std::wstring::npos) {
         // v2.30.18: a few scene props carry NO "fieldbg" prefix but are
-        // clearly not people — observed listed as "People" with no
+        // clearly not people â€” observed listed as "People" with no
         // walkable path in 7th Heaven (player report 2026-07-23):
         // "camera" (cutscene camera dummy, 1 occurrence game-wide in the
         // flevel catalog) and "swordc"/"swordc00"/"swordc09" (sword
         // props, 3 occurrences). v2.30.19: CONTAINS-matched, not
-        // exact/prefix — the .char labels arrive with location-word
+        // exact/prefix â€” the .char labels arrive with location-word
         // prefixes ("nible camera", "modify swordc", same-day log), which
         // the first attempt's exact match silently missed. Both tokens
         // are unique in the catalog (no "cameraman"-style collisions), so
@@ -7562,12 +7625,12 @@ static ModelClass ClassifyModelLabel(const std::wstring& lbl,
     }
     // v2.30.18: a "fieldbg" label that matched NONE of the interactable
     // substrings above is background scenery, not a person. The offline
-    // flevel catalog shows dozens of these game-wide (doors "…dr", the
-    // train "kisya", cosmetics "cos"/"props"/"v2"/"zuta"…), and the
+    // flevel catalog shows dozens of these game-wide (doors "â€¦dr", the
+    // train "kisya", cosmetics "cos"/"props"/"v2"/"zuta"â€¦), and the
     // 2026-07-23 player report caught three of them listed as unreachable
     // "People" in 7th Heaven alone (hana = flower vase, cash = register,
     // pinbl = pinball machine). The pinball elevator's INTERACTION is a
-    // separate line trigger (Triggers category) — the model is just its
+    // separate line trigger (Triggers category) â€” the model is just its
     // picture. Previously fell through to MC_PERSON.
     return MC_SCENERY;
 }
@@ -7591,7 +7654,7 @@ static int CategoryForModelClass(ModelClass c)
 // Dev-label translation: romaji/shorthand -> speakable English (v2.20).
 //
 // The v2.16 People names and v2.17 Trigger names are the developers' own
-// dev names — terse romaji ("hei" = soldier, "ballet" = Barret, "ladd0" =
+// dev names â€” terse romaji ("hei" = soldier, "ballet" = Barret, "ladd0" =
 // a ladder line) that a blind player would have to memorize. This block
 // translates them, word by word, into plain English, and resolves party-
 // character words to the character's LIVE savemap name (v2.19 machinery,
@@ -7599,27 +7662,27 @@ static int CategoryForModelClass(ModelClass c)
 //
 // EVIDENCE (both TODO.txt residuals planned this table "from the complete
 // label list, no play collection needed"):
-//   - models:   investigate/flevel_models_catalog_20260714_130007.log —
+//   - models:   investigate/flevel_models_catalog_20260714_130007.log â€”
 //     all 557 distinct model labels in the game's 720 fields.
-//   - entities: investigate/flevel_entity_names_20260715_122652.log —
+//   - entities: investigate/flevel_entity_names_20260715_122652.log â€”
 //     all 2412 distinct script entity names (new game-wide catalog,
 //     2026-07-15; nmkin_2 validation showed the reactor ladder lines
 //     themselves: 'ladu0'/'ladd0'/'slp0', with Jessie as 'av j').
 //   - per-field context for the short stems (v2.28 second pass):
-//     investigate/short_entity_context_20260717 log — the COMPLETE
+//     investigate/short_entity_context_20260717 log â€” the COMPLETE
 //     entity list of every field where each cryptic 2-3 letter stem
 //     occurs; the neighbouring names are the identification evidence
 //     (e.g. 'dr' beside 'door1..door6' in the same field = door).
 // Every entry below appears in those catalogs; words NOT in the tables
 // are spoken unchanged (parity: better to hear the dev word than nothing,
-// and a wrong translation is worse than a terse one — same principle as
+// and a wrong translation is worse than a terse one â€” same principle as
 // the v2.18.2 stale-name guard).
 //
 // MECHANICS: a label is split on spaces; each token is stripped of
 // leading/trailing digits ("man401" -> "man", "22main" -> "main"), then
 // looked up. Single-character stems are dropped (the "n" in "main n
 // cloud", stray "l"/"r" side markers). Digit suffixes are deliberately
-// discarded — the browser's own duplicate ordinals ("man 2") number
+// discarded â€” the browser's own duplicate ordinals ("man 2") number
 // things in stable slot order, which digits in dev names do not.
 // Identity stability holds: translation is a pure function of the label,
 // so a model/line keeps its spoken name while the player moves.
@@ -7645,7 +7708,7 @@ static std::wstring CharDisplayName(uint8_t char_id)
 // like loslake1 list the whole roster in slot order as
 // 'cl ti cid ba ea re ket vin yuf', and blin69_1 shows 'rd' beside
 // 'cl ba ea ti' (Red XIII). The full-catalog dry run confirmed no other
-// entity or model label contains these as a stray token — except 'op cl'
+// entity or model label contains these as a stray token â€” except 'op cl'
 // and 'cl a', which kDevEntityNames intercepts BEFORE the word pass.
 struct DevCharWord { const wchar_t* stem; uint8_t char_id; };
 static const DevCharWord kDevCharWords[] = {
@@ -7663,14 +7726,14 @@ static const DevCharWord kDevCharWords[] = {
 };
 
 // Word stems -> English. out == L"" means DROP the word (category prefixes
-// like "main"/"std"/"midgal" carry no information a blind player needs —
+// like "main"/"std"/"midgal" carry no information a blind player needs â€”
 // the browser's category already says "person"). Named NPCs are romaji or
 // misspellings of their localized names (lude=Rude, hyde=Heidegger,
 // esto=Ester, siera=Shera, irena=Elena, tuon=Tseng, korneo=Don Corneo...).
 // avaman/avawoman/avafat = Biggs/Jessie/Wedge: the entity catalog shows
 // 'av j/av b/av w' (AVALANCHE Jessie/Biggs/Wedge) on the exact bombing-
 // mission fields where those three models stand (md1stin/md1_1/nmkin/
-// elevtr1) — watch item in TODO.txt for the cargo-ship model reuse.
+// elevtr1) â€” watch item in TODO.txt for the cargo-ship model reuse.
 struct DevWord { const wchar_t* stem; const wchar_t* out; };
 static const DevWord kDevWords[] = {
     // -- dropped category/location prefixes --
@@ -7683,7 +7746,7 @@ static const DevWord kDevWords[] = {
     { L"junon", L"" }, { L"towerutai", L"" }, { L"sbwy", L"" },
     { L"min", L"" }, { L"md", L"" },
     // -- devices (v2.30.45; 'evb' = the No.1 reactor elevator button
-    //    line, ff7_reactor_button_probe.py 2026-07-31 — the tester's
+    //    line, ff7_reactor_button_probe.py 2026-07-31 â€” the tester's
     //    "wall switches" report; 'switch' itself already passes through
     //    unchanged, 11 occurrences game-wide in the entity catalog) --
     { L"evb", L"elevator button" },
@@ -7704,7 +7767,7 @@ static const DevWord kDevWords[] = {
     { L"irena", L"Elena" }, { L"tuon", L"Tseng" },
     { L"zangan", L"Zangan" }, { L"emother", L"Elmyra" },
     // marine = Marlene (JP name "Marin"); exactly 1 occurrence game-wide
-    // in the flevel model catalog — the 7th Heaven bar (player report
+    // in the flevel model catalog â€” the 7th Heaven bar (player report
     // 2026-07-23 listed her raw dev name among the unreachable "people";
     // she IS a person, standing behind the bar counter off the walkmesh).
     { L"marine", L"Marlene" }, { L"marin", L"Marlene" },
@@ -7774,7 +7837,7 @@ static const DevWord kDevWords[] = {
     //                crcin_2 dr1..dr5 beside 'door')
     //   jp  = jump  (nmkin_3/mds6_1/elevtr1; colne_b1 has jp0 beside the
     //                ldu/ldd ladder lines; matches existing evjp)
-    //   ev  = event (used interchangeably with 'event1/event2' — rcktin6
+    //   ev  = event (used interchangeably with 'event1/event2' â€” rcktin6
     //                names them event*, ealin_1/gldst/mds6_1 say ev)
     { L"dr", L"door" }, { L"ev", L"event" },
     { L"jp", L"jump" }, { L"ujp", L"jump" }, { L"mjp", L"jump" },
@@ -7815,7 +7878,7 @@ static const DevWord kDevEntityNames[] = {
     // (context catalog evidence, short_entity_context_20260717 log):
     // train-car fields tin_1..4 pair 'dr an'/'tr an' = door/train
     // animation lines; blin60_2 pairs 'op cl1/op cl2' (open-close) with
-    // 'door1/door2' — 'cl' there is NOT Cloud, so intercept before the
+    // 'door1/door2' â€” 'cl' there is NOT Cloud, so intercept before the
     // word pass turns it into his name.
     { L"dr an", L"door" }, { L"tr an", L"train" },
     { L"op cl", L"door" },
@@ -7877,7 +7940,7 @@ static std::wstring TranslateDevLabel(const std::wstring& raw)
         else
             // Unknown words speak their STEM, not the raw token: dev digit
             // suffixes are arbitrary ("man6"/"man401" are just distinct
-            // .char files) — the browser's slot-order ordinals are the
+            // .char files) â€” the browser's slot-order ordinals are the
             // numbering a listener can actually use ("man", "man 2").
             // (Caught by the catalog dry run: the first draft appended the
             // raw token, so "std man6" spoke as "man6".)
@@ -7910,7 +7973,7 @@ static std::wstring TranslateEntityName(const std::wstring& raw)
 // name into a speakable label: "md1stinshinra_hei.char" -> "shinra hei"
 // (strip the current field-name prefix and the ".char" suffix, lowercase,
 // underscores to spaces). Every step is bounds-checked against the
-// section's size prefix — a torn buffer mid field-transition returns false
+// section's size prefix â€” a torn buffer mid field-transition returns false
 // (callers fall back to "Person N") rather than reading garbage.
 // ---------------------------------------------------------------------------
 static bool FieldModelLabel(int model_idx, const char* field_name,
@@ -7958,7 +8021,7 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
         if (m == model_idx) {
             // Build the label: lowercase, strip field-name prefix and
             // ".char" suffix, underscores become spaces. Any non-ASCII
-            // byte inside the name means we're reading the wrong data —
+            // byte inside the name means we're reading the wrong data â€”
             // REJECT the whole name (callers fall back to "Person N").
             // Policy unified with the entity-name reader 2026-07-14: this
             // used to truncate at the first bad byte and speak the prefix,
@@ -8017,7 +8080,7 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
 }
 
 // ---------------------------------------------------------------------------
-// Solid-body helpers (v2.30.22) — implementations for the declarations
+// Solid-body helpers (v2.30.22) â€” implementations for the declarations
 // above WallBumpThread; the derivation and constants live in that block.
 //
 // All of this is self-contained reading (event array, triggers header,
@@ -8025,7 +8088,7 @@ static bool FieldModelLabel(int model_idx, const char* field_name,
 // and the pathfinder thread without shared state: FieldModelLabel /
 // ClassifyModelLabel / TranslateDevLabel are pure per-call parsers over
 // the (engine-owned, read-only to us) field file buffer. Cost is one
-// section-2 parse per model per call — called once per contact episode or
+// section-2 parse per model per call â€” called once per contact episode or
 // once per directions keypress, both far off any hot path.
 // ---------------------------------------------------------------------------
 static float HeldDirInputDeg(uint32_t keys)
@@ -8044,7 +8107,7 @@ static float HeldDirInputDeg(uint32_t keys)
 // Fill out[] with every placed MC_PERSON model except the player and
 // exclude_slot. Same filters as the destination-list build: the parked
 // signature (tri==0 AND pos==(0,0), v2.30.19) is skipped, but OFF-mesh
-// models (tri<0) are kept — Marlene behind the bar counter is off-mesh
+// models (tri<0) are kept â€” Marlene behind the bar counter is off-mesh
 // yet very much a solid body. v2.30.24: each body carries its LIVE
 // collision radius; a radius of 0 (script-set intangible) or negative
 // means the model cannot block anything right now and is not collected.
@@ -8090,7 +8153,7 @@ static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
         if (tri == 0 && mx == 0 && my == 0)
             continue;                       // parked (v2.30.19)
         // Live collision radius (v2.30.24). <=0 = intangible right now
-        // (script-cleared) — no body to block or name. Implausibly large
+        // (script-cleared) â€” no body to block or name. Implausibly large
         // values (torn read) clamp to the common default 30.
         const int16_t rr = *reinterpret_cast<const int16_t*>(
             me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
@@ -8113,8 +8176,8 @@ static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
 }
 
 // The player's own live collision radius (same +0x72 field on the player's
-// element). Falls back to 32 — the value both 2026-07-25 contact anchors
-// solved for — when the element is unreadable or the value implausible.
+// element). Falls back to 32 â€” the value both 2026-07-25 contact anchors
+// solved for â€” when the element is unreadable or the value implausible.
 static float PlayerCollisionRadius()
 {
     const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
@@ -8134,7 +8197,7 @@ static float PlayerCollisionRadius()
 
 // Nearest person within its contact distance (+ naming slack) whose
 // bearing lies within the blocking cone of the given world direction.
-// The d<1 case (standing literally on the body's coordinates — scripted
+// The d<1 case (standing literally on the body's coordinates â€” scripted
 // overlaps) counts as a hit regardless of bearing.
 static bool BodyInDirection(float px, float py, float world_deg,
                             int exclude_slot, std::wstring& out_name,
@@ -8165,7 +8228,7 @@ static bool BodyInDirection(float px, float py, float world_deg,
 }
 
 // First person (smallest advance along the ray) whose contact circle the
-// segment from (px,py) of the given length enters — "will walking this
+// segment from (px,py) of the given length enters â€” "will walking this
 // quantized leg run into somebody?"
 static bool BodyOnRay(float px, float py, float world_deg, float length,
                       int exclude_slot, std::wstring& out_name)
@@ -8201,7 +8264,7 @@ static bool BodyOnRay(float px, float py, float world_deg, float length,
 // 2026-07-14 after code review).
 //
 // The script section header carries an 8-char ASCII name per entity at
-// +0x20 + id*8 ("cloud", "svisen1", "yubiwa"...) — the same
+// +0x20 + id*8 ("cloud", "svisen1", "yubiwa"...) â€” the same
 // developer-naming trick that labels people (v2.16), applied to the entity
 // that OWNS a LINE trigger zone.
 //
@@ -8209,7 +8272,7 @@ static bool BodyOnRay(float px, float py, float world_deg, float length,
 // the WHOLE name table span exactly once per keypress instead of
 // re-reading the script pointer and re-probing pages for every line (the
 // review's efficiency finding), and so the validation actually covers
-// every byte that gets read — the old single function probed only the
+// every byte that gets read â€” the old single function probed only the
 // header page and the LAST byte of one name, leaving the nEntities byte
 // and name[0..6] unguarded when they fell on a different page (the
 // review's crash-risk finding).
@@ -8241,7 +8304,7 @@ static bool FieldEntityNameTable(const uint8_t** table_out,
 // Speakable name for one entity from a table validated by the call above.
 // Underscores become spaces. Returns false (caller falls back to
 // "Trigger N") when the id is out of range or the bytes aren't printable
-// ASCII — same reject-garbage policy as FieldModelLabel.
+// ASCII â€” same reject-garbage policy as FieldModelLabel.
 static bool EntityNameFromTable(const uint8_t* table, uint8_t n_entities,
                                 int entity_id, std::wstring& out)
 {
@@ -8260,17 +8323,17 @@ static bool EntityNameFromTable(const uint8_t* table, uint8_t n_entities,
 }
 
 // ---------------------------------------------------------------------------
-// Cross-layer JOURNEY planning (v2.23) — "which ladder first?"
+// Cross-layer JOURNEY planning (v2.23) â€” "which ladder first?"
 //
 // User request 2026-07-16: when a destination sits on another walkmesh
-// LEVEL, "No walkable path found" says WHAT but not HOW — the player wants
+// LEVEL, "No walkable path found" says WHAT but not HOW â€” the player wants
 // the connector sequence: which ladder/slide to take FIRST, then next, in
 // order.
 //
 // The walkmesh alone cannot answer: levels are DISCONNECTED graph
 // components by design, and the join is a scripted LINE trigger (ladder,
 // slide, elevator) that MOVES the player. The script's destination is not
-// readable statically — but the geometry is: a ladder's bottom zone and
+// readable statically â€” but the geometry is: a ladder's bottom zone and
 // top zone are XY-PROXIMATE lines on different components. Live nmkin_2
 // data (2026-07-16 session log): 'ladder up' bottom line midpoint sits
 // 134 XY units from 'ladder down' top line midpoint, 217 units apart in
@@ -8285,7 +8348,7 @@ static bool EntityNameFromTable(const uint8_t* table, uint8_t n_entities,
 // spoken result is a walking route to the FIRST connector plus the
 // ordered names of the rest: "Exit 1: on another level. First take
 // ladder up, up 3 seconds. Then slide. Then ask again." Re-querying after
-// each connector recomputes from the new level — the same re-query flow
+// each connector recomputes from the new level â€” the same re-query flow
 // the pathfinder already teaches.
 //
 // A false pairing (two unrelated triggers stacked in XY) would give a
@@ -8295,7 +8358,7 @@ static bool EntityNameFromTable(const uint8_t* table, uint8_t n_entities,
 // no connector chain is found.
 // ---------------------------------------------------------------------------
 
-// Connected components of the walkmesh adjacency graph — each component is
+// Connected components of the walkmesh adjacency graph â€” each component is
 // one "level"/region reachable by plain walking. Iterative flood fill.
 static int WalkmeshComponents(const std::vector<WalkTri>& m,
                               std::vector<int>& comp)
@@ -8324,9 +8387,9 @@ static int WalkmeshComponents(const std::vector<WalkTri>& m,
     return n_comps;
 }
 
-// Spoken name for a LINE trigger — the same naming rules as the Triggers
+// Spoken name for a LINE trigger â€” the same naming rules as the Triggers
 // category (owning entity's dev name, translated; stale-guarded by the
-// entity→slot map; "Trigger N" fallback).
+// entityâ†’slot map; "Trigger N" fallback).
 static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
                                   std::wstring& out)
 {
@@ -8365,7 +8428,7 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
     std::vector<int> comp;
     const int n_comps = WalkmeshComponents(mesh, comp);
     if (n_comps < 2 || comp[start] == comp[goal])
-        return false;   // same level — not a journey problem
+        return false;   // same level â€” not a journey problem
 
     // Snapshot enabled LINE triggers: standing point (line midpoint, with
     // height), its component, and identity. Same array and enabled-guard
@@ -8406,8 +8469,8 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
     }
 
     // Connector edges between components (see header comment):
-    //   pair rule — two triggers on different components, XY-close;
-    //   span rule — one trigger whose own endpoints are on two components.
+    //   pair rule â€” two triggers on different components, XY-close;
+    //   span rule â€” one trigger whose own endpoints are on two components.
     constexpr float JOURNEY_PAIR_DIST = 300.0f;
     struct JEdge { int ca, cb; int via; };   // stand on jl[via] (in ca)
     std::vector<JEdge> edges;
@@ -8464,7 +8527,7 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
 
     // Walking route to the FIRST connector (same pipeline as a direct
     // route; the connector is in the player's own component by
-    // construction, so A* cannot fail — guarded anyway).
+    // construction, so A* cannot fail â€” guarded anyway).
     std::wstring route;
     {
         const JLine& first = jl[hops[0]];
@@ -8515,7 +8578,7 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
 
 // ---------------------------------------------------------------------------
 // Friendly location name (v2.24): the game's own menu caption ("Sector 1
-// Station"), read from the MPNAM buffer — full derivation and the live
+// Station"), read from the MPNAM buffer â€” full derivation and the live
 // verification at ff7_addresses.h LOCATION_NAME_BUFFER. Returns false when
 // the buffer is empty/blank (before the first MPNAM of a new game) or
 // undecodable; callers fall back to the internal field name.
@@ -8530,8 +8593,8 @@ static bool FriendlyLocationName(std::wstring& out)
     for (uint32_t i = 0; i < FF7Addr::LOCATION_NAME_MAX; ++i) {
         const uint8_t b = p[i];
         if (b == 0xFF)
-            break;   // ⚠ bytes past the terminator hold the PREVIOUS
-                     // name's tail (live-observed) — never read on
+            break;   // âš  bytes past the terminator hold the PREVIOUS
+                     // name's tail (live-observed) â€” never read on
         const wchar_t c = FF7Text::DecodeChar(b);
         if (c != L'\0')
             out += c;
@@ -8547,26 +8610,26 @@ static bool FriendlyLocationName(std::wstring& out)
 }
 
 // ---------------------------------------------------------------------------
-// Visited-places cache (v2.25) — friendly captions BY FIELD ID, learned
+// Visited-places cache (v2.25) â€” friendly captions BY FIELD ID, learned
 // from the v2.24 MPNAM buffer as the player travels and persisted to
 // ffvii_accessibility_places.txt next to the DLL.
 //
 // WHY: gateways know their destination FIELD ID, and the maplist gives
-// every id an internal name ("nmkin_2") — but the FRIENDLY caption
+// every id an internal name ("nmkin_2") â€” but the FRIENDLY caption
 // ("No. 1 Reactor") for another field cannot be read at runtime (each
 // field's caption lives in its own script). It CAN be remembered: while
 // the player stands on field X, the mod sees both X and X's caption, so
 // exits to anywhere the player has ever been speak the friendly name.
-// New games start with what previous sessions learned — the file is the
+// New games start with what previous sessions learned â€” the file is the
 // player's own map knowledge, growing as they explore.
 //
 // INHERITANCE CAVEAT (documented, accepted): a field whose script sets no
 // MPNAM keeps the PREVIOUS field's caption, and the cache records that
-// inherited caption for it — which is exactly what the sighted menu
+// inherited caption for it â€” which is exactly what the sighted menu
 // displays while standing there, so parity holds.
 //
 // THREADING: everything here runs on FieldNavThread only (load at thread
-// start, learn in its poll, lookups in its list build) — no locks needed.
+// start, learn in its poll, lookups in its list build) â€” no locks needed.
 // ---------------------------------------------------------------------------
 static wchar_t g_places[FF7FieldNames::kCount][24];   // zeroed = unknown
 
@@ -8698,7 +8761,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     int     category     = 0;
     int     selection    = 0;
 
-    // Screen-change announcement tracker (v2.23) — separate from
+    // Screen-change announcement tracker (v2.23) â€” separate from
     // nav_field_id, which only updates on the KEYPRESS path; this one runs
     // every poll so the announcement fires the moment control returns on
     // the new screen. 0 = nothing announced yet this session.
@@ -8716,7 +8779,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // Per-model movement tracker (v2.15.1): last sampled position and the
     // tick it last CHANGED, updated every 50ms poll while on a field. A
     // person who moved within the last WANDER_WINDOW_MS gets a short high
-    // beep appended to their announcements — the cue that this target is
+    // beep appended to their announcements â€” the cue that this target is
     // WANDERING and directions may go stale (user request 2026-07-13).
     // 880Hz keeps it clearly distinct from the 220Hz wall-bump tone.
     int32_t   track_x[32] = {}, track_y[32] = {};
@@ -8753,7 +8816,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         // Normal field control only (same gate set as the wall-bump tone,
-        // minus the dialog-activity window — a scan DURING dialog is
+        // minus the dialog-activity window â€” a scan DURING dialog is
         // harmless, the announce just queues after the dialog speech).
         const int16_t field_id = *reinterpret_cast<const volatile int16_t*>(
             FF7Addr::FIELD_ID);
@@ -8761,7 +8824,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             FF7Addr::GAME_MODE);
         const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::MENU_OPEN);
-        // v2.30.37: GameOverTitleContext — the GAME OVER film reel passes
+        // v2.30.37: GameOverTitleContext â€” the GAME OVER film reel passes
         // every byte gate above (frozen field, stale FIELD_ID): without the
         // latch, J/L/K would still browse and route the DEAD field's
         // destinations over the game-over screen.
@@ -8792,7 +8855,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const int32_t py = pos[1] >> 12;
         const int32_t pz = pos[2] >> 12;   // height (v2.23 layer locates)
         // Player's live walkmesh triangle (v2.22): the turn-by-turn route's
-        // start node — exact even on stacked layers. <0 (briefly off-mesh,
+        // start node â€” exact even on stacked layers. <0 (briefly off-mesh,
         // e.g. a scripted jump) makes the route builder point-locate instead.
         const int16_t player_tri = *reinterpret_cast<const int16_t*>(
             elem + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
@@ -8815,11 +8878,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // ---- screen-change announcement (v2.23) ---------------------------
         // Fires the first poll after control returns on a NEW screen. Each
         // screen has its own fixed camera, so an exit crossing REBASES what
-        // "up" means (control_direction changed) — the user experienced
+        // "up" means (control_direction changed) â€” the user experienced
         // this as directions "shifting as if the perspective changed" and
         // found it disorienting. Sighted players get the camera cut as
         // their cue; this is the audio equivalent. interrupt=false: a
-        // transition often follows dialog or an announcement — queue behind
+        // transition often follows dialog or an announcement â€” queue behind
         // it, never clobber. Also announces the first screen after launch/
         // load (announced_field_id starts 0), which doubles as a "you're on
         // the field now" orientation cue.
@@ -8827,7 +8890,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             announced_field_id = field_id;
             if (Config::Get().announce_map_change) {
                 // v2.24: prefer the game's own menu caption ("Sector 1
-                // Station") from the MPNAM buffer — the friendly name a
+                // Station") from the MPNAM buffer â€” the friendly name a
                 // sighted player reads in the menu. Fall back to the
                 // internal header name when the buffer is still blank
                 // (before a new game's first MPNAM).
@@ -8845,7 +8908,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         if (c < 0x20 || c > 0x7E)
                             break;  // non-ASCII = header mid-write; stop
                         // Underscores speak as pauses/garbage on some
-                        // synthesizers — say them as spaces.
+                        // synthesizers â€” say them as spaces.
                         msg += (c == '_') ? L' ' : static_cast<wchar_t>(c);
                         have_name = have_name || c != '_';
                     }
@@ -8867,7 +8930,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // ---- per-model movement tracking (every poll) --------------------
         // Sample every model's position; stamp the tick when it changes.
         // Field change invalidates the samples (positions jump between
-        // fields — without the reset every model would read as "wandering"
+        // fields â€” without the reset every model would read as "wandering"
         // for one window after each transition).
         {
             if (field_id != track_field) {
@@ -8905,24 +8968,24 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // this chirp is that glance: it fires once when the player enters
         // an object's interaction range and re-arms after they leave.
         // Ranges: the model's talk_radius OR body contact, whichever is
-        // larger (v2.30.26). ⚠ The original "talk_radius = the exact
+        // larger (v2.30.26). âš  The original "talk_radius = the exact
         // circle the OK button tests" reading is WRONG for large-bodied
         // models: Barret's talk radius is 70 but his collision radius is
-        // 48 — the player's center bottoms out at ~80 from his and can
+        // 48 â€” the player's center bottoms out at ~80 from his and can
         // NEVER enter the 70 circle, yet talking at contact works (the
         // 2026-07-25 street scene: blocked at 81, talk ushered the
         // player into the bar; play report: "it does not beep when I
         // get near him"). The engine-side check reader was hunted
-        // statically (ff7_talk_range_static.py — found the TALKR/TLKR2
+        // statically (ff7_talk_range_static.py â€” found the TALKR/TLKR2
         // handlers 0x618253/0x6182DF and the scale-based defaults
-        // col=30·s>>9 / talk=80·s>>9, but not the reader), so the rule
+        // col=30Â·s>>9 / talk=80Â·s>>9, but not the reader), so the rule
         // shipped is the behaviorally PROVEN one: body contact always
-        // suffices to interact → chirp at
+        // suffices to interact â†’ chirp at
         //   max(talk_radius, player_col + model_col + one step).
         // Unchanged for default-sized NPCs (talk 70 > contact ~62).
-        // Skips talk-disabled people (the +0x61 byte — the Jessie lesson:
+        // Skips talk-disabled people (the +0x61 byte â€” the Jessie lesson:
         // no ping for someone who won't respond), off-mesh models, and
-        // anything on another LAYER (z gate — a walkway overhead must not
+        // anything on another LAYER (z gate â€” a walkway overhead must not
         // ping the floor below). Suppressed during scripted scenes
         // (uc_lock) and while a dialog is up, so it never plays over
         // conversation; the armed state still updates then, so no
@@ -8972,7 +9035,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const bool talk_off = *reinterpret_cast<const uint8_t*>(
                     me + FF7Addr::FIELD_EVENT_TALK_OFF) != 0;
                 // v2.30.26: effective range = max(talk radius, body
-                // contact + one step) — see the header comment above.
+                // contact + one step) â€” see the header comment above.
                 // A script-cleared collision radius (<=0, intangible)
                 // contributes nothing, leaving the plain talk circle.
                 const int16_t mcr = *reinterpret_cast<const int16_t*>(
@@ -8986,7 +9049,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const float dy = static_cast<float>((mp[1] >> 12) - py);
                 const float dist = sqrtf(dx * dx + dy * dy);
                 const int32_t dz = (mp[2] >> 12) - pzv;
-                // v2.30.45: a script-hidden model (VISI 0 — collected
+                // v2.30.45: a script-hidden model (VISI 0 â€” collected
                 // pickups above all) shows a sighted player NOTHING, so
                 // it must not ping. The chirp's promise is "something
                 // usable is here"; a hidden model isn't.
@@ -9069,7 +9132,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const bool focused = (fg_pid == GetCurrentProcessId());
 
         // v2.30.42: while the F8 settings menu is open it OWNS J/L/K and
-        // the bracket/minus/equals aliases — one keypress must never both
+        // the bracket/minus/equals aliases â€” one keypress must never both
         // change a setting and cycle a destination. Suppress edges the
         // same way unfocus does (state still tracked, so closing the menu
         // cannot manufacture a stale edge here).
@@ -9086,10 +9149,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
         // Right-analog-stick input (v2.21): polled every tick like the keys
         // so held-state tracking stays fresh, with edges suppressed while
-        // unfocused — the exact focus rule the keyboard uses. XInput is a
+        // unfocused â€” the exact focus rule the keyboard uses. XInput is a
         // read-only shared query, so the game (and FFNx) see the controller
         // exactly as before; the stick and R3 carry no native function
-        // (verified — see gamepad.h). gamepad_nav=false skips even the poll.
+        // (verified â€” see gamepad.h). gamepad_nav=false skips even the poll.
         GamepadNav::Actions pad = {};
         if (Config::Get().gamepad_nav)
             pad = GamepadNav::Poll(focused && !settings_menu_open);
@@ -9101,11 +9164,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         if (ctrl)
             memset(pressed, 0, sizeof(pressed));   // Ctrl+\ (layer filter)
-                // etc. not applicable yet — Ctrl suppresses only the KEYS;
+                // etc. not applicable yet â€” Ctrl suppresses only the KEYS;
                 // a simultaneous stick action is unrelated and proceeds.
 
         // Decode key presses into browser actions (accessiblity_keys.txt),
-        // then OR in the stick's alternate triggers (v2.21 — same actions,
+        // then OR in the stick's alternate triggers (v2.21 â€” same actions,
         // second input path):
         //   J/[ prev dest, L/] next dest (unshifted)   | stick left/right
         //   Shift+J/- prev category, Shift+L/= next    | stick up/down
@@ -9141,7 +9204,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         if (act_map_name) {
             // v2.24: friendly menu caption first, then the internal name
             // as the unique per-screen identifier ("Sector 1 Station,
-            // md1stin") — several screens share one caption, and M is the
+            // md1stin") â€” several screens share one caption, and M is the
             // precision key, so it speaks both. Screen-change announces
             // stay caption-only for brevity.
             std::wstring msg;
@@ -9164,10 +9227,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // ---- apply state mutations BEFORE building the list ---------------
         // v2.15.2 bug fix: the list used to be built first, so a category
         // change announced the PREVIOUS category's count ("Exits, 8" when
-        // arriving from All, "Exits, 6" when arriving from People — the
+        // arriving from All, "Exits, 6" when arriving from People â€” the
         // reported direction-dependent numbers). Category/field mutations
         // now happen first and the list is built for the NEW state.
-        // (CAT_* constants are file-scope since v2.18.2 — see
+        // (CAT_* constants are file-scope since v2.18.2 â€” see
         // CategoryForModelClass above.)
 
         // Field change invalidates selection and category.
@@ -9191,11 +9254,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         // ---- rebuild the destination list (fresh every keypress) ---------
-        // Max 12 gateways + 32 models — rebuilding on demand is cheaper
+        // Max 12 gateways + 32 models â€” rebuilding on demand is cheaper
         // than any caching scheme and always reflects the live field
         // (NPCs move; a fresh read gives their current position). Slot
         // order is the destination's IDENTITY: "Exit 2" / "Person 3" keep
-        // their names as the player moves — never renumbered by distance.
+        // their names as the player moves â€” never renumbered by distance.
         constexpr int kMaxDests =
             FF7Addr::FTRIG_GATEWAY_COUNT + 32    // exits + model cap
             + FF7Addr::FLINE_MAX;                // + LINE trigger zones
@@ -9203,14 +9266,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         int n_dests = 0;
 
         if (category == CAT_ALL || category == CAT_EXITS) {
-            // v2.25: exits are named by DESTINATION — "To No. 1 Reactor"
+            // v2.25: exits are named by DESTINATION â€” "To No. 1 Reactor"
             // (visited-place caption), "To nmkin 2" (maplist internal
-            // name), "To World map" — with "Exit N" only when the id
+            // name), "To World map" â€” with "Exit N" only when the id
             // resolves to nothing (see DestinationName). Two passes so
             // duplicate destinations get ordinals ("To Platform 2"), the
             // same slot-order identity rule as every other category. A
             // name can UPGRADE mid-session (internal -> caption once the
-            // place is visited) — slot order still never changes.
+            // place is visited) â€” slot order still never changes.
             struct GwTmp {
                 const int16_t* v;
                 std::wstring   base;
@@ -9261,7 +9324,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 d.line_x2 = v[3]; d.line_y2 = v[4];
                 d.line_z1 = v[2]; d.line_z2 = v[5];
                 d.model_slot = -1;
-                d.target_tri = -1;   // exits carry no triangle id — the
+                d.target_tri = -1;   // exits carry no triangle id â€” the
                                      // route builder point-locates them
             }
         }
@@ -9277,18 +9340,18 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // FieldModelLabel; duplicates get " 2"/" 3" ordinals in slot order
         // (like the battle "MP A"/"MP B" letters). Parse failure falls back
         // to "Person N" by model slot. A label containing "save" classifies
-        // the model as a SAVE POINT — originally a heuristic, CONFIRMED
+        // the model as a SAVE POINT â€” originally a heuristic, CONFIRMED
         // game-wide by the v2.18 offline flevel catalog ("fieldbg saveicn"
-        // ×57 is the only save label in all 720 fields). Item props
+        // Ã—57 is the only save label in all 720 fields). Item props
         // (chests, materia, pickups, keys) classify into the ITEMS
-        // category the same way — catalog evidence at the classification
+        // category the same way â€” catalog evidence at the classification
         // block in pass 1 below. v2.15.2 note kept for history: the
         // character_id (+0x6C) naming idea was live-DISPROVED (an NPC read
-        // as "Red XIII") — never name from that field.
+        // as "Red XIII") â€” never name from that field.
         if (category == CAT_ALL || category == CAT_PEOPLE ||
             category == CAT_SAVE || category == CAT_ITEMS) {
             // The array span was not fully validated above (only the
-            // player's element) — validate every element this walk reads.
+            // player's element) â€” validate every element this walk reads.
             const uint32_t n_walk = (nmod < 32u) ? nmod : 32u;
             const bool span_ok = IsReadableSpan(
                 reinterpret_cast<const void*>(arr),
@@ -9299,11 +9362,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // assigned regardless of eligibility (v2.18.2): the ordinal
             // pass counts by label over ALL labeled models so a collected
             // pickup's despawn cannot rename its surviving sibling
-            // ("Item 2" stays "Item 2" after "Item" is taken — the
+            // ("Item 2" stays "Item 2" after "Item" is taken â€” the
             // identity-stability rule; the review confirmed the old
             // eligible-only counting silently renumbered). Corollary: a
             // never-on-mesh labeled model still reserves its ordinal, so a
-            // field can list "guard 2" with no "guard" — accepted, slot
+            // field can list "guard 2" with no "guard" â€” accepted, slot
             // order IS the identity.
             bool       eligible[32] = {};
             ModelClass cls[32]      = {};
@@ -9329,12 +9392,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // v2.30.45: entity id (for the prop-catalog lookup) and
                 // the VISI visibility byte (+0x62). Provenance: the VISI
                 // opcode handler (0x618A01) writes its operand here, and
-                // the CHAR bind handler stores 1 at 0x6143D2 — every
+                // the CHAR bind handler stores 1 at 0x6143D2 â€” every
                 // bound model STARTS visible, so 0 can only mean a script
                 // hid it (both disasm'd 2026-07-31; see FIELD_EVENT_VISIBLE
                 // in ff7_addresses.h). Pickup scripts hide collected
                 // items exactly this way (offline proof: nmkin_3 'po0' /
-                // nmkin_5 'mtr' talk scripts are LOOT+VISI —
+                // nmkin_5 'mtr' talk scripts are LOOT+VISI â€”
                 // ff7_prop_interact_catalog.py).
                 const uint8_t ent_id = *reinterpret_cast<const uint8_t*>(
                     me + FF7Addr::FIELD_EVENT_ENTITY_ID);
@@ -9346,7 +9409,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
                 if (Config::Get().debug_log) {
                     // col = live collision radius (+0x72, confirmed
-                    // v2.30.24 — the rc6E/rc70 candidates are retired,
+                    // v2.30.24 â€” the rc6E/rc70 candidates are retired,
                     // both rejected by the 2026-07-25 dump).
                     char dbg[224];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
@@ -9363,20 +9426,20 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
                 if (have_lbl) {
                     // One classifier decides class AND spoken base name
-                    // (v2.18.2 — see ClassifyModelLabel for the catalog
+                    // (v2.18.2 â€” see ClassifyModelLabel for the catalog
                     // evidence). The friendly name replaces the label so
                     // the ordinal pass yields "Chest 2", "Materia 3".
                     // People (no friendly name) get the v2.20 dev-label
                     // translation instead: romaji -> English, character
                     // words -> live savemap names. Translation runs BEFORE
                     // the ordinal pass, so duplicates group on the SPOKEN
-                    // name ("man", "man 2" — even when the dev names
+                    // name ("man", "man 2" â€” even when the dev names
                     // differed only by their meaningless digit suffixes).
                     const wchar_t* friendly = nullptr;
                     cls[m] = ClassifyModelLabel(lbl, &friendly);
                     // v2.30.45: resurrect talk-scripted scenery as a
                     // DEVICE (button/lever/valve). The offline catalog is
-                    // keyed by (field, script entity) — see MC_PROP's
+                    // keyed by (field, script entity) â€” see MC_PROP's
                     // enum comment. Only scenery consults it: everything
                     // else is already browsable somewhere.
                     if (cls[m] == MC_SCENERY && field_id > 0 &&
@@ -9389,7 +9452,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                               _TRUNCATE);
                     if (cls[m] == MC_CHEST) {
                         // Chest lid state (v2.18.1, tightened v2.18.2):
-                        // opened = lid animation held AT its final frame —
+                        // opened = lid animation held AT its final frame â€”
                         // lastFrame != 0 AND currentFrame == lastFrame<<4
                         // (the subframe scale both confirmed states showed:
                         // 0x1D0 == 0x1D << 4 after settle AND after field
@@ -9397,7 +9460,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         // extra currentFrame term keeps a non-lid animation
                         // that RETURNS to rest (deny rattle, cutscene pose)
                         // from reading as opened; the residual risk flips
-                        // to a missed "opened" — the safer direction, a
+                        // to a missed "opened" â€” the safer direction, a
                         // wasted walk instead of skipped treasure.
                         const int16_t last_frame =
                             *reinterpret_cast<const int16_t*>(
@@ -9414,17 +9477,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     continue;   // off the walkmesh = not a reachable target
 
                 // v2.30.19: PARKED-model filter. Models a scene hasn't
-                // placed yet sit at EXACTLY (0,0) with triangle id 0 —
+                // placed yet sit at EXACTLY (0,0) with triangle id 0 â€”
                 // the 2026-07-23 hideout log showed Tifa (upstairs at the
                 // time), the camera dummy, and a not-yet-granted materia
                 // all with this exact signature, while every VISIBLE
                 // model had a nonzero position (three of them also read
-                // tri=0, which is why tri alone can't tell — 0 is a valid
+                // tri=0, which is why tri alone can't tell â€” 0 is a valid
                 // triangle id, only the tri==0 AND pos==(0,0) combination
                 // marks "parked"). Listing them produced unreachable
                 // ghost "people"/"items". The scan re-runs continuously,
                 // so the moment the script actually places the model it
-                // gains a real position and appears — hiding is dynamic,
+                // gains a real position and appears â€” hiding is dynamic,
                 // not permanent.
                 if (tri == 0 && mx == 0 && my == 0)
                     continue;
@@ -9446,29 +9509,29 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 ey[m] = static_cast<int16_t>(my);
                 ez[m] = static_cast<int16_t>(mpos[2] >> 12);
                 etri[m] = tri;
-                // v2.26: TLKON state — see FIELD_EVENT_TALK_OFF for the
+                // v2.26: TLKON state â€” see FIELD_EVENT_TALK_OFF for the
                 // derivation and the Jessie incident that motivated it.
                 talk_off[m] = *reinterpret_cast<const uint8_t*>(
                     me + FF7Addr::FIELD_EVENT_TALK_OFF) != 0;
             }
 
-            // Pass 2: duplicate-label counts (so "shinra guard" ×3 becomes
+            // Pass 2: duplicate-label counts (so "shinra guard" Ã—3 becomes
             // "shinra guard", "shinra guard 2", "shinra guard 3").
             // Counted over ALL labeled models, eligible or not (v2.18.2)
-            // — despawned pickups keep reserving their ordinal so
+            // â€” despawned pickups keep reserving their ordinal so
             // survivors are never renamed.
             // Pass 3: emit destinations in slot order. The category
-            // filter is ONE comparison against the class→category map —
+            // filter is ONE comparison against the classâ†’category map â€”
             // mutual exclusion is structural, not hand-maintained
             // (v2.18.2; the old sv/it boolean chain was the review's
             // drift-risk finding).
             for (uint16_t m = 0; m < 32; ++m) {
                 if (!eligible[m])
                     continue;
-                // v2.30.18: scenery is browsable NOWHERE — not even All.
+                // v2.30.18: scenery is browsable NOWHERE â€” not even All.
                 // A sighted player doesn't "navigate to" the cash register
                 // or the camera dummy; listing them (usually with no
-                // walkable path — they sit inside furniture) is pure noise.
+                // walkable path â€” they sit inside furniture) is pure noise.
                 if (cls[m] == MC_SCENERY)
                     continue;
                 if (category != CAT_ALL &&
@@ -9507,7 +9570,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     wcsncat_s(d.name, _countof(d.name), L", opened",
                               _TRUNCATE);
                 // v2.26: definitive "cannot talk right now" marker (the
-                // TLKON-off byte — the Jessie ladder-tutorial incident:
+                // TLKON-off byte â€” the Jessie ladder-tutorial incident:
                 // the pathfinder placed the player 17 units from her,
                 // inside her talk radius, and OK did nothing because her
                 // dialog was script-disabled). People only, and only the
@@ -9516,7 +9579,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 if (cls[m] == MC_PERSON && talk_off[m])
                     wcsncat_s(d.name, _countof(d.name), L", talk disabled",
                               _TRUNCATE);
-                // v2.30.45: devices say what they are — the label alone
+                // v2.30.45: devices say what they are â€” the label alone
                 // ("nmkdr 3") reads like scenery; the suffix is the cue
                 // that OK does something here. Same suffix philosophy as
                 // the line catalog's ", press OK".
@@ -9531,11 +9594,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
         }
 
-        // LINE trigger zones (v2.17): script-created lines — ladders,
+        // LINE trigger zones (v2.17): script-created lines â€” ladders,
         // elevators, touch/cross zones. Stored in the engine's static line
         // array (see ff7_addresses.h SECTION 1g for the full derivation:
         // three opcode handlers disassembled, all agreeing on the layout).
-        // Disabled lines (LINON 0) are skipped — the script has switched
+        // Disabled lines (LINON 0) are skipped â€” the script has switched
         // that zone off, so walking to it does nothing; this also gives
         // information parity with what the zone would DO for a sighted
         // player right now. Named by the owning entity's dev name
@@ -9546,21 +9609,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 FF7Addr::FIELD_LINE_COUNT);
 
             // Entity-name table resolved and span-validated ONCE per
-            // build, not per line (v2.18.2 — review efficiency finding).
+            // build, not per line (v2.18.2 â€” review efficiency finding).
             const uint8_t* ent_table = nullptr;
             uint8_t        ent_count = 0;
             const bool have_names =
                 FieldEntityNameTable(&ent_table, &ent_count);
 
             // Gather first, then emit: names must all be known before
-            // duplicate ordinals can be computed (v2.18.2 — the review
+            // duplicate ordinals can be computed (v2.18.2 â€” the review
             // confirmed two same-named lines used to speak identically,
             // which J/L cycling cannot disambiguate by ear).
             struct TrigLine {
                 int16_t x1, y1, x2, y2;
                 int16_t z1, z2;     // heights (v2.23, layer locates)
                 uint8_t line_idx;
-                wchar_t name[24];   // translated entity name (v2.20 —
+                wchar_t name[24];   // translated entity name (v2.20 â€”
                                     // widened from 16 for "AVALANCHE
                                     // member"); empty = fallback
                 const FF7LineCatalog::LineInfo* info;  // behavior catalog
@@ -9577,14 +9640,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const uint8_t ent = le[FF7Addr::FLINE_OFF_ENTITY];
 
                 TrigLine& t = tl[n_tl++];
-                // x1,y1,z1,x2,y2,z2 — heights kept since v2.23 (layer
+                // x1,y1,z1,x2,y2,z2 â€” heights kept since v2.23 (layer
                 // location for turn-by-turn); routing itself stays 2D.
                 t.x1 = v[0]; t.y1 = v[1]; t.z1 = v[2];
                 t.x2 = v[3]; t.y2 = v[4]; t.z2 = v[5];
                 t.line_idx = static_cast<uint8_t>(i);
                 t.name[0] = L'\0';
                 // v2.30.23: what this line DOES, from the offline script
-                // catalog — keyed by the same (field, owning entity)
+                // catalog â€” keyed by the same (field, owning entity)
                 // identity the engine's own line array carries. A field
                 // mid-transition can briefly pair the OLD array with the
                 // NEW field id; a mismatched key then simply finds no
@@ -9593,12 +9656,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 t.info = FF7LineCatalog::Find(
                     static_cast<uint16_t>(field_id), ent);
 
-                // Name only when the engine's own entity→line-slot map
+                // Name only when the engine's own entityâ†’line-slot map
                 // agrees this slot belongs to that entity (the LINE
                 // handler writes both together). During a field
                 // transition the line array can briefly hold the OLD
                 // field's entries while the script pointer already serves
-                // the NEW field's names — the review's cross-field
+                // the NEW field's names â€” the review's cross-field
                 // mismatch finding; a stale entry then speaks a
                 // plausible-but-wrong name. On mismatch the line stays
                 // LISTED (stale geometry for one keypress is the accepted
@@ -9655,13 +9718,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
                                  L"Trigger %u", tl[a].line_idx + 1u);
 
-                // v2.30.23: behavior suffix from the offline catalog —
+                // v2.30.23: behavior suffix from the offline catalog â€”
                 // the 2026-07-25 hideout lesson (player hunted the way
                 // upstairs on a cutscene 'border' line while the real
                 // exit was the 'pinball' lift line). A sighted player
                 // SEES lift platform vs floor patch; this suffix is that
                 // glance: "pinball, exit to Seventh Heaven" / "border,
-                // scene". Suffixes state only what the SCRIPTS contain —
+                // scene". Suffixes state only what the SCRIPTS contain â€”
                 // an exit may still be story-gated at any given moment.
                 if (tl[a].info != nullptr) {
                     using namespace FF7LineCatalog;
@@ -9684,7 +9747,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     }
                     case LK_CLIMB:
                         // Ladder names already say "ladder up/down"
-                        // (v2.20 translation) — only unnamed/odd climbs
+                        // (v2.20 translation) â€” only unnamed/odd climbs
                         // need the word.
                         if (wcsstr(d.name, L"ladder") == nullptr)
                             sfx = L", climb";
@@ -9712,17 +9775,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 d.target_tri = -1;   // LINE zones are point-located like exits
             }
 
-            // v2.30.46: hand-curated STORY HOTSPOTS — interaction spots
+            // v2.30.46: hand-curated STORY HOTSPOTS â€” interaction spots
             // the engine exposes NOTHING for: no LINE in the runtime
             // array, no prop model, because the whole interaction is an
             // NPC's script reacting to the player (the defining case:
             // elevtr1's reactor elevator switch, where "Switch On." is
-            // JESSIE's script — MES text 46 in av_j's slots, traced
+            // JESSIE's script â€” MES text 46 in av_j's slots, traced
             // 2026-08-01 after the tester screenshots; the panel spot
             // merely sits inside her talk radius). Players hunt for a
             // "button" destination the browser cannot derive from any
             // engine state, so these few entries are curated by hand
-            // from played evidence ONLY — the same never-guess rule as
+            // from played evidence ONLY â€” the same never-guess rule as
             // the v2.30.18 non-fieldbg scenery list. Listed always
             // (story-gating a curated spot would need the story var,
             // which is exactly the guessing this list refuses to do).
@@ -9785,7 +9848,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         };
 
         // Category changes were applied BEFORE the list build (v2.15.2 fix)
-        // — only the announcement remains to be made here, with the count
+        // â€” only the announcement remains to be made here, with the count
         // of the list actually built for the new category.
         if (announce_cat) {
             speak_category();
@@ -9831,13 +9894,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const float world_deg = atan2f(dx, dy) * (180.0f / 3.14159265f);
 
         // Screen/d-pad angle. FULLY CONFIRMED 2026-07-13 in two steps:
-        // calibration walkabout (md1stin, control_dir=124 -> 174.4°:
-        // pressing Up moved the player at world bearing 5.6° = 180° −
-        // control_deg exactly, Down at 185.6°) fixed the rotation —
-        // control_direction is the world bearing of screen-DOWN — and the
+        // calibration walkabout (md1stin, control_dir=124 -> 174.4Â°:
+        // pressing Up moved the player at world bearing 5.6Â° = 180Â° âˆ’
+        // control_deg exactly, Down at 185.6Â°) fixed the rotation â€”
+        // control_direction is the world bearing of screen-DOWN â€” and the
         // follow-up play test confirmed left/right land correctly, so the
         // mapping is a pure rotation with no mirror. (The first guess,
-        // world − control, was 180° off: "down" for a dead-ahead exit.)
+        // world âˆ’ control, was 180Â° off: "down" for a dead-ahead exit.)
         const float input_deg = world_deg + control_deg - 180.0f;
 
         if (Config::Get().debug_log) {
@@ -9855,19 +9918,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // Plans a real walkmesh route to the SAME target point the
         // straight-line style aims at (nearest point of the line, computed
         // above; height interpolated along the line the same way). Outcomes:
-        //   SPOKEN_ROUTE — the route is the announcement, done;
-        //   NO_PATH      — mesh healthy but the target is graph-unreachable:
-        //                  usually ANOTHER LEVEL — try the v2.23 journey
+        //   SPOKEN_ROUTE â€” the route is the announcement, done;
+        //   NO_PATH      â€” mesh healthy but the target is graph-unreachable:
+        //                  usually ANOTHER LEVEL â€” try the v2.23 journey
         //                  planner ("first take ladder up..."); only when
         //                  that also finds no connector chain, fall back to
         //                  straight-line + an explicit "no walkable path"
         //                  prefix (the FF4 mod's out-of-range behavior);
-        //   UNAVAILABLE  — mesh unreadable or failed its self-guards:
+        //   UNAVAILABLE  â€” mesh unreadable or failed its self-guards:
         //                  silent straight-line fallback.
-        // v2.30.25: how far short of the target the walk may stop — a
+        // v2.30.25: how far short of the target the walk may stop â€” a
         // person is reached at their TALK RADIUS (read live; floor 20 so
         // talk=0/1 models still get approached, cap 90). v2.30.26: OR at
-        // body contact, whichever is larger — the same behaviorally
+        // body contact, whichever is larger â€” the same behaviorally
         // proven rule as the proximity chirp (Barret: contact 80 > talk
         // 70, and talking at contact works). Exits/lines keep 0: those
         // must be stepped on. Used by the route builder's body tests AND
@@ -9919,15 +9982,15 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // v2.30.22 body caution: the route is walkmesh-correct,
                 // but a solid PERSON standing on the first quantized leg
                 // stops the player exactly like a wall (the 2026-07-25
-                // hideout report — Tifa in the aisle to Barret). Warn in
+                // hideout report â€” Tifa in the aisle to Barret). Warn in
                 // the same utterance so "left 1 second" comes with the
                 // reason it may thud. The destination model itself is
-                // excluded — routes TO a person always end at their body.
+                // excluded â€” routes TO a person always end at their body.
                 if (first_sector >= 0) {
                     const float ray_world = first_sector * 45.0f
                                             - control_deg + 180.0f;
                     // v2.30.25: never probe INSIDE the target's reach
-                    // bubble — a companion standing next to the target
+                    // bubble â€” a companion standing next to the target
                     // is not "in the way" of a walk that stops at talk
                     // range. dist = straight-line distance to target.
                     float clen = first_len + 40.0f;
@@ -9952,7 +10015,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     TTS::Speak(jmsg, /*interrupt=*/true);
                     spoke_route = true;
                 } else {
-                    // v2.30.25: no journey either — the target stands
+                    // v2.30.25: no journey either â€” the target stands
                     // OFF the walkable floor (Biggs on the crates, Tifa
                     // behind the locked counter). Route to the nearest
                     // reachable point instead of a bare straight-line
@@ -10009,7 +10072,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                              secs, secs == 1 ? L"second" : L"seconds");
             // v2.30.22 body caution, straight-line flavor: test the
             // QUANTIZED direction the announcement names (not the exact
-            // bearing — the player walks the d-pad word they heard),
+            // bearing â€” the player walks the d-pad word they heard),
             // over the first ~2 seconds of travel.
             {
                 const float ray_world =
@@ -10030,7 +10093,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
             TTS::Speak(msg, /*interrupt=*/true);
         }
-        // Wandering cue on the directions query too — a moving target's
+        // Wandering cue on the directions query too â€” a moving target's
         // direction is a snapshot, and the beep says exactly that.
         if (is_wandering(d.model_slot))
             Tones::Play(WANDER_BEEP_HZ, WANDER_BEEP_MS);
@@ -10053,17 +10116,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 // the complete name after each change catches that immediately.
 //
 // All addresses live-confirmed 2026-07-12 (ff7_name_entry_scan.py +
-// ff7_name_entry_verify.py) — see ff7_addresses.h name-entry section for the
+// ff7_name_entry_verify.py) â€” see ff7_addresses.h name-entry section for the
 // full discovery story, including why the buffer base is 0xDD45F0 and why
 // 0xDD46F8 is the char index (not a cursor, despite the Echo mod's label).
 //
 // GATE: GAME_MODE == 6 (name entry, new live-observed value) AND
 // NAME_ENTRY_ACTIVE == 1, held for 2 consecutive polls (same streak pattern
-// as MenuCursorThread's MENU_OPEN debounce — a single stale poll of either
+// as MenuCursorThread's MENU_OPEN debounce â€” a single stale poll of either
 // byte never triggers the announce logic).
 //
 // WHY WE NEVER PREDICT CURSOR MOVEMENT: the cursor does not wrap at the
-// right grid edge — it JUMPS to the side panel (player-observed, then
+// right grid edge â€” it JUMPS to the side panel (player-observed, then
 // live-confirmed 2026-07-12). Entering the panel can also CHANGE the ROW
 // byte (observed 1 -> 4), and leaving restores the remembered grid column.
 // We only ever announce the cell/button the cursor actually landed on, so
@@ -10072,17 +10135,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 // SIDE PANEL (resolved 2026-07-12): NAME_ENTRY_PANE_FLAG (0x921ED4) is 1
 // while the cursor is on the Space/Delete/Select/Default panel, and
 // NAME_ENTRY_PANEL_INDEX (0xDD4574) says which button (0-3, wraps).
-// Grid-letter announcements are gated on pane_flag == 0 — without that
+// Grid-letter announcements are gated on pane_flag == 0 â€” without that
 // gate, the ROW change at panel entry would speak a phantom letter.
 // Indices 0/1 (Space/Delete) proven by their effect on the name buffer;
 // 2/3 (Select/Default) from on-screen order, player ear-confirmed. If
 // final testing shows 2/3 swapped, fix kPanelNames below.
 //
-// MULTI-SCREEN HANDOFF: FF7 can chain naming screens back-to-back (Cloud →
+// MULTI-SCREEN HANDOFF: FF7 can chain naming screens back-to-back (Cloud â†’
 // Barret at game start) without NAME_ENTRY_ACTIVE dropping 0 long enough to
 // guarantee our 100ms poll sees it. NAME_ENTRY_CHAR_INDEX changing is the
-// reliable handoff signal (0→1 captured live at the exact frame the Barret
-// screen replaced Cloud's) — we re-announce the screen when it changes.
+// reliable handoff signal (0â†’1 captured live at the exact frame the Barret
+// screen replaced Cloud's) â€” we re-announce the screen when it changes.
 //
 // Gated by Config::Get().speak_menus (the naming screen is a menu-module
 // screen; no separate config option needed).
@@ -10112,7 +10175,7 @@ static const wchar_t kNameGrid[7][10] = {
 
 // Spoken form of a single name character. Punctuation gets its word (SAPI
 // and most screen readers skip or mangle lone punctuation), and uppercase
-// letters get a "capital" prefix so A/a are distinguishable by ear — Tolk
+// letters get a "capital" prefix so A/a are distinguishable by ear â€” Tolk
 // passes plain text, so we cannot rely on a screen reader's pitch-change
 // capital indication being enabled.
 static std::wstring SpokenNameChar(wchar_t c)
@@ -10180,7 +10243,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
     uint8_t  last_buf[FF7Addr::NAME_ENTRY_BUFFER_CAP] = {};
     // Set when a wholesale buffer rewrite is seen; the announce is deferred
     // one poll so a chained-screen handoff (buffer rewritten before the
-    // char-index flips — two separate game writes we sample 100ms apart)
+    // char-index flips â€” two separate game writes we sample 100ms apart)
     // resolves to the screen-open announce instead of a spurious
     // "Name is now Barret" immediately followed by "Name entry ... Barret".
     bool     rewrite_pending = false;
@@ -10216,17 +10279,17 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
         if (gate_streak < 2) gate_streak++;
         if (gate_streak < 2) continue;
 
-        // Read the live state — TWICE, requiring both samples identical.
+        // Read the live state â€” TWICE, requiring both samples identical.
         // The game writes these values on its own thread; a poll can land
         // mid-update (e.g. between the new char byte and the moved 0xFF
         // terminator of an append, or between the COL and ROW writes of a
         // wrap). A torn snapshot decodes to a name/cell that never existed
         // on screen, so on any mismatch we skip this poll and pick up the
-        // settled state 100ms later — imperceptible, and self-correcting.
+        // settled state 100ms later â€” imperceptible, and self-correcting.
         //
         // ROW/COL are read as u8: the confirming scans only ever observed the
         // LOW byte of each DWORD slot changing, and the three high bytes are
-        // unverified — if they held nonzero data, a u32 read would fail the
+        // unverified â€” if they held nonzero data, a u32 read would fail the
         // grid bound check forever and silence the whole feature.
         uint8_t row, col, pane, panel, char_index;
         uint8_t buf[FF7Addr::NAME_ENTRY_BUFFER_CAP];
@@ -10261,14 +10324,14 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
             if (row1 != row2 || col1 != col2 || pan1 != pan2 ||
                 pix1 != pix2 || idx1 != idx2 ||
                 memcmp(buf, buf2, sizeof(buf)) != 0) {
-                continue;   // torn read — retry next poll
+                continue;   // torn read â€” retry next poll
             }
             row = row1; col = col1; pane = pan1; panel = pix1;
             char_index = idx1;
         }
 
         // Screen (re)open: first gated poll, or the game chained straight to
-        // the next character's screen (char_index change, e.g. Cloud→Barret).
+        // the next character's screen (char_index change, e.g. Cloudâ†’Barret).
         if (!on_screen || char_index != last_char_index) {
             const std::wstring name = DecodeNameBuffer(buf, sizeof(buf));
 
@@ -10306,7 +10369,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
             continue;
         }
 
-        // Cursor movement — pane-aware. Grid letters are announced ONLY
+        // Cursor movement â€” pane-aware. Grid letters are announced ONLY
         // while the cursor is actually in the grid (pane == 0): entering the
         // panel can change the ROW byte (observed live, 1 -> 4), which would
         // otherwise speak a phantom letter. All branches announce where the
@@ -10318,7 +10381,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                     TTS::Speak(kPanelNames[panel], /*interrupt=*/true);
                 }
             } else if (row < 7 && col < 10) {
-                // Back on the grid — the game restores the remembered grid
+                // Back on the grid â€” the game restores the remembered grid
                 // column, so tell the player where they landed.
                 std::wstring msg = L"grid, ";
                 msg += SpokenNameChar(kNameGrid[row][col]);
@@ -10334,7 +10397,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 TTS::Speak(kPanelNames[panel], /*interrupt=*/true);
             }
             last_panel = panel;
-            last_row   = row;    // keep grid state in sync silently — the
+            last_row   = row;    // keep grid state in sync silently â€” the
             last_col   = col;    // ROW byte can drift while on the panel
         } else if (pane == 0 && (row != last_row || col != last_col)) {
             if (row < 7 && col < 10) {
@@ -10354,7 +10417,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
         // Name edits. The raw memcmp is only the cheap change GATE (no
         // per-poll allocations); classification and announce decisions use
         // the DECODED names, so a change in stale bytes past the 0xFF
-        // terminator (indices beyond the visible name — unverified BSS up to
+        // terminator (indices beyond the visible name â€” unverified BSS up to
         // the 12-byte cap) can never fire a spurious announce.
         if (memcmp(buf, last_buf, sizeof(buf)) != 0) {
             const std::wstring now_name  = DecodeNameBuffer(buf, sizeof(buf));
@@ -10382,7 +10445,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 // Self-check: the appended byte is ground truth for the cell
                 // the cursor is on. Log any disagreement with kNameGrid so a
                 // normal play session verifies the uncertain cells (row 5
-                // cols 8-9) without needing a sighted tester — TODO.txt's
+                // cols 8-9) without needing a sighted tester â€” TODO.txt's
                 // "fix when observed" plan depends on this record existing.
                 // Only meaningful for GRID confirms: the panel's Space button
                 // also appends a character while row/col still point at a
@@ -10392,7 +10455,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                     char dbg[112];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] NAME-ENTRY GRID MISMATCH row=%u col=%u "
-                        "guessed=0x%04X game-wrote=0x%04X — fix kNameGrid",
+                        "guessed=0x%04X game-wrote=0x%04X â€” fix kNameGrid",
                         row, col,
                         static_cast<unsigned>(kNameGrid[row][col]),
                         static_cast<unsigned>(now_name.back()));
@@ -10407,7 +10470,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 msg += SpellName(now_name);
                 rewrite_pending = false;
             } else {
-                // Wholesale rewrite — either the Default button restoring the
+                // Wholesale rewrite â€” either the Default button restoring the
                 // original name, or the first half of a chained-screen
                 // handoff whose char-index flip we haven't sampled yet.
                 // Defer ONE poll: if the char index changes by next poll, the
@@ -10415,7 +10478,7 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
                 // in-screen rewrite and we announce it 100ms late.
                 if (!rewrite_pending) {
                     rewrite_pending = true;
-                    // Deliberately do NOT update last_buf — next poll must
+                    // Deliberately do NOT update last_buf â€” next poll must
                     // re-detect this same change to complete the deferral.
                     continue;
                 }
@@ -10442,8 +10505,8 @@ static DWORD WINAPI NameEntryThread(LPVOID /*unused*/)
 static DWORD WINAPI InitThread(LPVOID /*unused*/)
 {
     // Wait for DllMain to return and the loader lock to be released before
-    // calling LoadLibrary (TTS::Init → Tolk.dll). The 200ms is purely for
-    // loader-lock safety — it does NOT guarantee FFNx has finished initializing.
+    // calling LoadLibrary (TTS::Init â†’ Tolk.dll). The 200ms is purely for
+    // loader-lock safety â€” it does NOT guarantee FFNx has finished initializing.
     // FFNx timing is handled by Resolve() checking execute_opcode_table[0x40]:
     // we only install hooks after FFNx's voice_init() has patched that entry,
     // which is a reliable signal that ff7_find_externals has already completed.
@@ -10482,7 +10545,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
     // Resolve the waveOut tone player (v2.30.41). Must run after Log::Init
     // (its ready/fallback line is a diagnostic we want in every bug-report
-    // log — the 2026-07-31 "no tones" report was undebuggable without
+    // log â€” the 2026-07-31 "no tones" report was undebuggable without
     // knowing which playback path was active) and BEFORE any of the tone-
     // playing threads below are created, so Tones::Play never races the
     // one-time pointer resolution.
@@ -10506,7 +10569,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         // Game-over watch (v2.30.37): 30ms GAME_MODE poll for the ~60ms
         // game-over blip (value 26). Must start before the field module can
-        // run — a wipe is reachable in the first battle. See the
+        // run â€” a wipe is reachable in the first battle. See the
         // g_game_over_latch declaration for the full design.
         g_gameover_thread = CreateThread(nullptr, 0, GameOverWatchThread, nullptr, 0, nullptr);
         if (g_gameover_thread) {
@@ -10531,8 +10594,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         // Config sub-menu row tracking. Confirmed address: 0x00DC10F0 (see
         // ff7_addresses.h CONFIG_ROW). Found by ff7_config_menu_scan.py (2026-07-02):
         // isolate scan inside the config sub-menu subtracted idle background changes
-        // from navigation changes; 0x00DC10F0 was the sole candidate in row range 0–9.
-        // Verified by ff7_config_menu_verify.py: clean 0–9 sequential tracking.
+        // from navigation changes; 0x00DC10F0 was the sole candidate in row range 0â€“9.
+        // Verified by ff7_config_menu_verify.py: clean 0â€“9 sequential tracking.
         g_config_thread = CreateThread(nullptr, 0, ConfigMenuThread, nullptr, 0, nullptr);
         if (g_config_thread) {
             Log::Write("[FF7Access] Config menu polling thread started.");
@@ -10543,7 +10606,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         // Save/Load menu TTS (v2.29). Cursor/phase addresses from the
         // guided scan ff7_save_menu_scan.py (2026-07-17, grid cursor
         // live-verified in-session); slot previews parsed from the save
-        // files on disk (research doc §5 layout table).
+        // files on disk (research doc Â§5 layout table).
         g_savemenu_thread = CreateThread(nullptr, 0, SaveMenuThread, nullptr, 0, nullptr);
         if (g_savemenu_thread) {
             Log::Write("[FF7Access] Save menu polling thread started.");
@@ -10585,7 +10648,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         // Shop menus TTS (v2.30.28). Entirely static-derived in one offline
         // session (ff7_shop_static.py): GAME_MODE==8 gate, 7-state loop,
-        // cursor widgets, catalog, and price table — provenance in
+        // cursor widgets, catalog, and price table â€” provenance in
         // ff7_addresses.h's SHOP block. Debug logging on state changes is
         // the live-confirm channel.
         g_shopmenu_thread = CreateThread(nullptr, 0, ShopMenuThread, nullptr, 0, nullptr);
@@ -10596,7 +10659,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         }
 
         // Materia menu TTS (v2.30.33). Dispatch index 3; all state
-        // static-derived (ff7_materia_menu_static.py — the MATMENU block
+        // static-derived (ff7_materia_menu_static.py â€” the MATMENU block
         // in ff7_addresses.h). Mode-change debug lines are the live
         // verify.
         g_materiamenu_thread = CreateThread(nullptr, 0, MateriaMenuThread, nullptr, 0, nullptr);
@@ -10608,7 +10671,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         // Equip menu TTS (v2.30.34). Dispatch index 4 (FFNx
         // menu_sub_705D16 = table[4]); state static-derived
-        // (ff7_equip_menu_static.py — EQMENU block in ff7_addresses.h).
+        // (ff7_equip_menu_static.py â€” EQMENU block in ff7_addresses.h).
         g_equipmenu_thread = CreateThread(nullptr, 0, EquipMenuThread, nullptr, 0, nullptr);
         if (g_equipmenu_thread) {
             Log::Write("[FF7Access] Equip menu polling thread started.");
@@ -10617,7 +10680,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         }
 
         // Limit menu TTS (v2.30.35). Dispatch index 7 (row->index
-        // pattern); state static-derived (ff7_limit_menu_static.py —
+        // pattern); state static-derived (ff7_limit_menu_static.py â€”
         // LIMITMENU block in ff7_addresses.h).
         g_limitmenu_thread = CreateThread(nullptr, 0, LimitMenuThread, nullptr, 0, nullptr);
         if (g_limitmenu_thread) {
@@ -10694,7 +10757,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
         // Battle command-menu navigation TTS (v2.9). Polls the battle menu
         // widget state machine solved 2026-07-12: BATTLE_MENU_STATE=0x91EF9C,
         // widget block 0xDC20A0+slot*0x700, command table 0xDBA4E4+slot*0x440,
-        // target index 0xDC3C94 — all live-confirmed by
+        // target index 0xDC3C94 â€” all live-confirmed by
         // ff7_battle_menu_cursor_live_verify.py before implementation.
         g_battlemenu_thread = CreateThread(nullptr, 0, BattleMenuThread, nullptr, 0, nullptr);
         if (g_battlemenu_thread) {
@@ -10705,7 +10768,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         // Wall-bump navigation tone. Addresses resolved statically via FFNx's
         // discovery chains (ff7_wall_nav_static.py) and the detection signal
-        // verified live (ff7_wall_nav_verify.py), both 2026-07-09 — see the
+        // verified live (ff7_wall_nav_verify.py), both 2026-07-09 â€” see the
         // WallBumpThread header comment and ff7_addresses.h SECTION 1d.
         g_wallbump_thread = CreateThread(nullptr, 0, WallBumpThread, nullptr, 0, nullptr);
         if (g_wallbump_thread) {
@@ -10726,7 +10789,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
 
         // Field exit scan (v2.14). Triggers header resolved statically via
         // FFNx's chain with three name-embedded cross-checks
-        // (ff7_field_triggers_static.py, 2026-07-13) — see the FieldNavThread
+        // (ff7_field_triggers_static.py, 2026-07-13) â€” see the FieldNavThread
         // header comment and ff7_addresses.h SECTION 1e.
         g_fieldnav_thread = CreateThread(nullptr, 0, FieldNavThread, nullptr, 0, nullptr);
         if (g_fieldnav_thread) {
@@ -10735,8 +10798,8 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
             Log::Write("[FF7Access] Warning: could not start field navigation thread.");
         }
 
-        // F8 in-game accessibility menu (v2.30.42). Started here — not
-        // gated on any game state — because settings should be reachable
+        // F8 in-game accessibility menu (v2.30.42). Started here â€” not
+        // gated on any game state â€” because settings should be reachable
         // from the title screen onward (the menu itself refuses only the
         // naming screen). Takes the shared stop event like every other
         // polling thread.
@@ -10783,7 +10846,7 @@ static DWORD WINAPI InitThread(LPVOID /*unused*/)
     //   1. FF7's field opcode table is populated (field module has loaded), AND
     //   2. FFNx's voice_init() has patched table[0x40] (if FFNx is running),
     //      confirming that ff7_find_externals has safely finished reading it.
-    // The 50ms poll interval is imperceptible — FF7 takes seconds to reach
+    // The 50ms poll interval is imperceptible â€” FF7 takes seconds to reach
     // the first field map. Once both conditions clear, Install() is idempotent
     // and the thread exits.
     while (!Hooks::Install()) {
@@ -10841,7 +10904,7 @@ void Init()
     if (hThread) {
         CloseHandle(hThread); // Don't need to join; thread exits on its own.
     } else {
-        // Log::Init has not been called yet here either — still direct.
+        // Log::Init has not been called yet here either â€” still direct.
         OutputDebugStringA("[FF7Access] Warning: could not create init thread. "
                            "Hooks will not be installed.\n");
     }

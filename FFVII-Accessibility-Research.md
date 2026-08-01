@@ -4385,6 +4385,49 @@ No addresses — trace only. Deployed both installs, hash-verified
 
 ---
 
+### v2.30.47 (2026-08-01): 7th Heaven spell names — retranslation-tolerant signatures
+
+**Report**: under 7th Heaven the battle magic list speaks only "row N",
+never spell names. The user's own 10:34 log (2013 install, Echo-S via
+7H) shows the mechanism precisely: `BMENU list ... => row 1` fallbacks,
+and the in-battle urgent kernel2 scans resolving EVERY section EXCEPT
+magic and command (`magic=00000000 command=00000000`, all nine others
+found). The magic signature is the literal vanilla head "Cure|Cure2|" —
+7H text mods use modern tier names (Cure/Cura/Curaga), so entry 1's
+bytes differ while Potion/Buster Sword/MP Plus sections still match.
+(Same log also live-confirmed v2.30.42's F8 menu writing
+speak_dialog=false and v2.30.45's speaker classification running.)
+
+**Ground truth before coding** (ff7_kernel2_sig_ranges.py over vanilla
+kernel2.bin): magic name section = 256 entries (first_off 0x200) and
+bare "Cure|" self-validates at exactly ONE place in the whole file;
+command table = 24 entries (first_off 0x30). Bonus finding: in the
+kernel2 FILE "Attack|Magic|" does NOT self-validate (F9-compressed
+file text — the v2.30.28 expanded-at-runtime lesson from the other
+direction); only the runtime copy matches it.
+
+**Fix — signature ladders with structural bands**: FindSectionBase
+gains an optional first_off acceptance band (defaults keep all callers
+identical); magic/command scans try the vanilla two-entry head first,
+then fall back to the single-entry head ("Cure|" banded 0x1F0-0x210,
+"Attack|" banded 0x28-0x40) — entry COUNT is fixed by the kernel
+format, so the band blocks a stray matching word in other text (the
+measured file has 5 bare "Attack|" hits; only shape-checking survives).
+The matched signature is REMEMBERED (g_k2_magic_sig/g_k2_command_sig)
+so ValidatedSection's per-read stale check tests the same bytes that
+found the section; scan log line now appends msig=/csig=. If a text
+mod renames even entry 0, the log self-diagnoses (section 0 + primary
+sig shown) and a new rung is one line.
+
+VERIFY (play, 7H install): battle magic list speaks spell names as
+shown on screen (Cura etc. if retranslated); scan log shows magic
+nonzero with msig='Cure|'; command names likewise; vanilla installs
+unchanged (primary sigs still match first).
+
+Deployed both installs, hash-verified (45921165B2AD5AD9).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

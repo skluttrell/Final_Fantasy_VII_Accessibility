@@ -5,6 +5,19 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[K2SIG] 7th Heaven spell names — SHIPPED v2.30.47 (2026-08-01), awaiting play-test
+------------------------------------------------------------------------
+7H text mods rename spell tiers (Cure/Cura/Curaga) => the vanilla
+"Cure|Cure2|" / "Attack|Magic|" heads never match => magic+command
+sections unfound => battle magic list spoke bare "row N". Fix:
+signature ladders with entry-count bands (magic 256 entries, command
+24 — measured from vanilla kernel2.bin); matched sig remembered for
+ValidatedSection re-checks; scan log appends msig=/csig=. VERIFY (7H):
+spells speak by name in battle; log shows magic nonzero + msig='Cure|'.
+If magic STAYS 0, entry 0 itself was renamed — log now proves it;
+add a rung. NOTE: magic entries >=128 carry limit names (v2.30.35) —
+ear-check a limit name on 7H too.
+
 [HOTSPOT] elevtr1 elevator switch — SHIPPED v2.30.46 (2026-08-01), awaiting play-test
 ------------------------------------------------------------------------
 The in-car switch is JESSIE'S SCRIPT (no line, no prop, no key opcode
