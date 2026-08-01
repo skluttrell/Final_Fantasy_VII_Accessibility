@@ -5249,13 +5249,26 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool timer_live = frozen || running ||
             (val > 0 && val <= kMaxSane && now - last_change < kStaleMs);
+        // v2.30.56: a clock the player can SEE counting down, that the
+        // arming gate has suppressed (unarmed = no STTIM/WSPCL this run).
+        // The T key must never answer "no active timer" about a number
+        // that is visibly ticking — that is what the tester hit after
+        // loading a save made mid-escape. The value is reported, with an
+        // honest qualifier, and Shift+T is allowed to freeze it (the
+        // freeze is a pure savemap write — if the ticking value turns out
+        // to be a stale leftover, holding it still harms nothing).
+        const bool ticking_unarmed =
+            !timer_live && val > 0 && val <= kMaxSane &&
+            have_last && now - last_change < kStaleMs;
         // v2.34.1: one line per T press â€” ground truth if anything still
         // misbehaves (shift read, live-detection, freeze state).
-        char kdbg[112];
+        char kdbg[144];
         _snprintf_s(kdbg, sizeof(kdbg), _TRUNCATE,
-            "[FF7Access] TIMER key T shift=%d frozen=%d running=%d live=%d val=%lu",
+            "[FF7Access] TIMER key T shift=%d frozen=%d running=%d live=%d "
+            "unarmed_tick=%d val=%lu",
             shift ? 1 : 0, frozen ? 1 : 0, running ? 1 : 0,
-            timer_live ? 1 : 0, static_cast<unsigned long>(val));
+            timer_live ? 1 : 0, ticking_unarmed ? 1 : 0,
+            static_cast<unsigned long>(val));
         Log::Write(kdbg);
 
         if (!shift) {
@@ -5264,12 +5277,14 @@ static DWORD WINAPI TimerThread(LPVOID /*unused*/)
                 TimerSpeakRemaining(frozen_val, L"Timer frozen. ");
             else if (timer_live)
                 TimerSpeakRemaining(val, L"");
+            else if (ticking_unarmed)
+                TimerSpeakRemaining(val, L"Clock counting down. ");
             else
                 TTS::Speak(L"No active timer", /*interrupt=*/true);
         } else {
             // Shift+T: freeze toggle.
             if (!frozen) {
-                if (timer_live) {
+                if (timer_live || ticking_unarmed) {
                     frozen = true;
                     frozen_val = val;
                     char dbg[96];

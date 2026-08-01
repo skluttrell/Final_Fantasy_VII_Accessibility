@@ -5,6 +5,26 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TIMERLOAD] Timer on mid-countdown save load — SHIPPED v2.30.56 (2026-08-01), awaiting tester
+------------------------------------------------------------------------
+Tester loaded a save made mid-escape: countdown resumed silently and T
+said "no active timer" while it ticked (their log: value 288 -> 241,
+running=0). Engine truth (research §8 v2.30.56): the decrement at
+0x40AC3C is UNCONDITIONAL — no "timer active" flag exists, so ticking
+alone can't prove a live timer (that's the v2.30.8 stale case). Fix:
+(1) hook WSPCL 0x36 (the opcode that puts the clock ON SCREEN) as a
+second arming signal, types 1/2, every call logged with id+type;
+(2) T/Shift+T stop lying — a visibly ticking but unarmed clock reads
+"Clock counting down. N minutes…" and can be frozen. Auto announcements
+still gated (a stale ticker must not narrate itself).
+⚠ ASK THE TESTER: on a mid-countdown load, does the log show a WSPCL
+line? If NOT, the clock window isn't re-created by script on load and
+the next step is reading the window-state table directly (type byte
+[0xCFF5D3+win*0x30] + per-window state) instead of the opcode hook.
+Also worth confirming: is the on-screen clock visible after such a load?
+7H/Echo-S 5-min timer is only why testers meet this sooner, not a
+different mechanism.
+
 [MAGICTABS] Magic = THREE-TAB screen — CONFIRMED by user 2026-08-01 (v2.30.54/.55)
 ------------------------------------------------------------------------
 ✓ CLOSED: user confirmed the tab selector + lists speak correctly.

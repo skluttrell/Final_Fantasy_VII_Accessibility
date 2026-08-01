@@ -229,6 +229,11 @@ static int (__cdecl* s_old_ask)(int) = nullptr;
 // parameters, handler reads its h/m/s script args directly.
 static int (__cdecl* s_old_sttim)() = nullptr;
 
+// Saved opcode table entry for WSPCL (0x36, "special window" — creates the
+// on-screen countdown clock; v2.30.56 second arming signal). Same
+// convention as STTIM.
+static int (__cdecl* s_old_wspcl)() = nullptr;
+
 // Saved opcode table entry for TUTOR (0x21, "play menu tutorial" --
 // v2.30.27). Same convention as MESSAGE/STTIM.
 static int (__cdecl* s_old_tutor)() = nullptr;
@@ -1963,6 +1968,48 @@ static int __cdecl hook_sttim()
 }
 
 // ---------------------------------------------------------------------------
+// Hook: WSPCL opcode (0x36) — "special window" (v2.30.56)
+//
+// THE SECOND ARMING SIGNAL, added after a tester loaded a save made
+// mid-countdown: the clock ticked on (the engine's decrement at 0x40AC3C
+// is UNCONDITIONAL — there is no "timer active" flag anywhere, which is
+// exactly why a finished escape's leftover value keeps counting), but no
+// STTIM fires on a load, so the v2.30.8 guard suppressed a REAL timer and
+// the T key answered "no active timer" while the clock ran down.
+//
+// WSPCL is what puts the clock ON SCREEN: handler 0x61FD5C stores its
+// type argument to byte [0xCFF5D3 + window*0x30] and the position to the
+// words at +0xE0/+0xE2 (disasm 2026-08-01, ff7_timer_window_static.py).
+// Vanilla only shows that window while a countdown is really running —
+// the display is the honest discriminator the savemap value cannot give.
+// So: a special window of the CLOCK type being created means a live
+// countdown, whether or not STTIM fired this run.
+//
+// The type value is taken from the script argument rather than assumed:
+// param 1 is the window id, param 2 the type. We arm on any type in the
+// clock family and LOG the raw arguments, so a report from a field whose
+// type byte differs is self-diagnosing rather than silent.
+// ---------------------------------------------------------------------------
+static int __cdecl hook_wspcl()
+{
+    const uint8_t win_id = FF7Addr::get_opcode_param_byte(0);
+    const uint8_t type   = FF7Addr::get_opcode_param_byte(1);
+    // Types 1 and 2 are the numeric/clock special windows (the countdown
+    // clock and the timer-style counters); type 0 is the plain numeric
+    // display. Arming on 1/2 keeps a pure number window from counting as
+    // a countdown while still covering the clock variants.
+    if (type == 1 || type == 2)
+        s_sttim_seen = 1;
+    char dbg[128];
+    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+        "[FF7Access] WSPCL special window: id=%u type=%u%s",
+        win_id, type,
+        (type == 1 || type == 2) ? " -- countdown clock armed" : "");
+    Log::Write(dbg);
+    return s_old_wspcl();
+}
+
+// ---------------------------------------------------------------------------
 // Hook: TUTOR opcode (0x21) — "play menu tutorial" (v2.30.27, retuned
 // v2.30.29)
 //
@@ -2043,6 +2090,17 @@ bool Install()
         *reinterpret_cast<uint32_t*>(sttim_entry_addr));
     patch_dword(sttim_entry_addr, reinterpret_cast<uint32_t>(&hook_sttim));
 
+    // --- WSPCL hook (opcode 0x36, v2.30.56) ---
+    //
+    // The clock-window creation signal — arms the countdown announcer on
+    // a save loaded mid-escape, where no STTIM ever fires. See hook_wspcl.
+    const uint32_t wspcl_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x36 * sizeof(uint32_t);
+
+    s_old_wspcl = reinterpret_cast<int (__cdecl*)()>(
+        *reinterpret_cast<uint32_t*>(wspcl_entry_addr));
+    patch_dword(wspcl_entry_addr, reinterpret_cast<uint32_t>(&hook_wspcl));
+
     // --- TUTOR hook (opcode 0x21, v2.30.27) ---
     //
     // Same pattern. Speaks menu-tutorial text (a script system the
@@ -2056,7 +2114,7 @@ bool Install()
     patch_dword(tutor_entry_addr, reinterpret_cast<uint32_t>(&hook_tutor));
 
     s_installed = true;
-    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM+TUTOR opcode table).");
+    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM+WSPCL+TUTOR opcode table).");
     return true;
 }
 

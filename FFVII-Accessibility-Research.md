@@ -4746,6 +4746,59 @@ carries no probe code.
 
 ---
 
+### v2.30.56 (2026-08-01): timer on a mid-countdown save load — WSPCL arming + honest T
+
+**Report**: a tester loaded a save made with the timer "disabled"; the
+countdown silently resumed, and T answered "timer disabled" while it
+was visibly counting down. Their log is unambiguous:
+`TIMER ticking value 288 suppressed (no STTIM this run…)` then T
+presses at val 284 → 281 → 277 → 269 → 241, all `running=0 live=0`.
+(288s ≈ the 5-minute reactor timer the 7H/Echo-S mod substitutes for
+vanilla's 10 — that is why testers meet this case: a shortened escape
+makes saving mid-countdown far likelier, not because 7H changes the
+mechanism.)
+
+**Engine truth, established this session**
+(ff7_timer_window_static.py): the countdown decrement at **0x40AC3C**
+is inside the global tick (0x40AB81) and is gated ONLY by two pause
+bytes (savemap +0x1134/+0x1138) and a count-up flag bit
+(0xDC093B & 2 → the 0x40AC56 increment branch). **There is no
+"timer active" flag anywhere** — which is precisely why a finished
+escape's leftover value keeps ticking invisibly (the v2.30.8 report)
+and why "it is ticking" can never, by itself, prove a live timer.
+Bonus map: 0xDC08C0/0xDC08C4 are two ×0x444 accumulators (play-time
+and countdown), 0xDC08B8 the play-time seconds.
+
+**The honest discriminator is the DISPLAY**: vanilla shows the clock
+only while a countdown really runs. WSPCL (0x36) creates that window —
+handler 0x61FD5C writes its type arg to byte [0xCFF5D3 + win*0x30] and
+the position to +0xE0/+0xE2. So v2.30.56 hooks WSPCL as a SECOND
+arming signal (types 1/2 = clock family; every call logs id+type, so a
+field using a different type is self-diagnosing). A save loaded
+mid-escape arms as soon as the script re-creates its clock.
+
+**And the T key no longer lies**: a sane, nonzero, actively-decreasing
+value that the arming gate has suppressed now reads as "Clock counting
+down. N minutes…" instead of "No active timer", and Shift+T may freeze
+it (a pure savemap write — harmless even if the value is a stale
+leftover). Automatic announcements stay gated, so a stale ticker still
+cannot start narrating on its own.
+
+⚠ OPEN (needs the tester): whether the clock window is actually
+re-created on a mid-countdown load. If WSPCL does not fire there, the
+log will show the ticking-value line with no WSPCL line, and the next
+step is reading the window-state table directly (the type byte above +
+the per-window state array) rather than an opcode hook.
+
+VERIFY: load a save made during the reactor escape — the log should
+show `WSPCL special window: id=… type=… -- countdown clock armed` and
+normal countdown announcements; T should report the time either way,
+never "no active timer" while it ticks.
+
+Deployed both installs, hash-verified (E0B2D04573B2B3E0).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview
