@@ -1110,13 +1110,21 @@ constexpr uint32_t MAGICMENU_MODE         = 0x00921100; // s32 input mode
 //    3+ = confirm / use-on-whom sub-modes (not yet observed live)
 constexpr int32_t  MAGICMENU_MODE_ENTERING  = -1;
 constexpr int32_t  MAGICMENU_MODE_TABS      = 0;   // tab selector
+// v2.30.59 LIVE-MEASURED: OK on a field-usable spell goes to mode 1 and
+// Cancel returns to the list mode (log 2026-08-01: "MAGICM mode 2 -> 1"
+// on selecting Cure, "1 -> 2" on cancel). This is the "use on whom?"
+// character picker. ⚠ historical trap: 1 was ALSO v2.30.52's wrong guess
+// for the spell list — the number is right here for a different pane.
+constexpr int32_t  MAGICMENU_MODE_TARGET    = 1;
 constexpr int32_t  MAGICMENU_MODE_LIST_MIN  = 2;   // 2/3/4 = the three lists
 constexpr int32_t  MAGICMENU_MODE_LIST_MAX  = 4;
 constexpr uint32_t MAGICMENU_TARGET_SLOT  = 0x00DD16D4; // u32 party slot the
                                                         // OK path indexes into
                                                         // SAVEMAP_PARTY_IDS
                                                         // (0x7137F8) — the
-                                                        // use-on-whom cursor
+                                                        // use-on-whom cursor.
+                                                        // PLAY-CONFIRMED
+                                                        // 2026-08-01 (v2.30.59)
 constexpr uint32_t MAGIC_MENU_USABLE_TABLE = 0x00714440; // u8[0x34] in .text
 constexpr uint32_t MAGIC_MENU_USABLE_GRAY_CASE = 3;      // case 3 = grayed
 

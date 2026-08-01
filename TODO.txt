@@ -5,7 +5,15 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[MAGICTARGET] Magic target pane spoken — SHIPPED v2.30.58 (2026-08-01), awaiting play-test
+[MAGICTARGET] Magic target pane — CONFIRMED by user 2026-08-01 (v2.30.59)
+------------------------------------------------------------------------
+✓ CLOSED: "spoke characters cleanly when I selected cure". Target pane
+= mode 1 (measured); cursor = 0xDD16D4 (confirmed). Root cause of the
+.58 silence was CONTROL FLOW, not addresses: the tab-selector guard
+swallowed mode 1 before the target branch — MSVC eliminated the
+unreachable block, which is why its log string was missing from the
+DLL. Standing check added: grep the built DLL for the new code's log
+strings; absence = dead code, not a stale build. Scanner removed.
 ------------------------------------------------------------------------
 Choosing a field-usable spell (Cure etc.) opens a character picker that
 was silent. Implemented MODE-AGNOSTICALLY (no live capture of its mode

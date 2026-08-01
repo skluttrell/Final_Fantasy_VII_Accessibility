@@ -4006,8 +4006,17 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
         // move under the player's presses (0→1→2→0). Speaking it is what
         // the three broken versions were missing: the player was on this
         // selector the whole time, hearing character names.
-        if (pane < FF7Addr::MAGICMENU_MODE_LIST_MIN ||
-            pane > FF7Addr::MAGICMENU_MODE_LIST_MAX) {
+        //
+        // ⚠ v2.30.59 CONTROL-FLOW FIX: this guard used to swallow EVERY
+        // mode outside 2..4 — including the target pane (mode 1) — and
+        // `continue`, so the v2.30.58 target branch below was never
+        // reached. MSVC proved that unreachability and eliminated the
+        // whole block, which is how it was caught: the branch's log
+        // string was missing from the shipped DLL even after a clean
+        // rebuild. Excluding the target mode here restores the fallthrough.
+        if (pane != FF7Addr::MAGICMENU_MODE_TARGET &&
+            (pane < FF7Addr::MAGICMENU_MODE_LIST_MIN ||
+             pane > FF7Addr::MAGICMENU_MODE_LIST_MAX)) {
             if (tab < 3 && tab != last_trow) {
                 const bool first = (last_trow == 0xFFFFFFFF);
                 last_trow = tab;
@@ -4020,27 +4029,21 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
         }
 
         // ---- TARGET pane: "use Cure on whom?" (v2.30.58) -------------------
-        // Report: choosing a field-usable spell opens a character picker
-        // that was silent. Deliberately MODE-AGNOSTIC — I have no live
-        // capture of this pane's mode value, and guessing state numbers on
-        // this screen has already cost three broken versions. Instead:
-        //   * the pane is recognised as "a mode that is neither the tab
-        //     selector nor one of the three list modes", and
-        //   * the announce is driven by MAGICMENU_TARGET_SLOT actually
-        //     CHANGING — the slot the game's own OK path indexes into
-        //     SAVEMAP_PARTY_IDS (0x7137F8), i.e. the picker's cursor.
-        // Whichever of those two fires, the player hears the character.
-        // last_tslot is reset on every mode change, so the pane's initial
+        // Choosing a field-usable spell (Cure...) opens the character
+        // picker. BOTH pieces are now play-confirmed (2026-08-01):
+        //   * the pane is mode 1 (MAGICMENU_MODE_TARGET, measured from
+        //     the "mode 2 -> 1" transition when Cure was selected), and
+        //   * MAGICMENU_TARGET_SLOT (0xDD16D4) IS its cursor — the same
+        //     slot the game's OK path feeds to SAVEMAP_PARTY_IDS at
+        //     0x7137F8; the picker "spoke characters cleanly" once the
+        //     control-flow fix below let this branch run.
+        // last_tslot resets on every mode change, so the pane's initial
         // write cannot speak a name before the player has moved.
-        // The log line records the real mode value so the next session
-        // turns this from mode-agnostic into documented.
         const uint32_t tslot = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MAGICMENU_TARGET_SLOT);
-        const bool in_list_mode = (pane >= FF7Addr::MAGICMENU_MODE_LIST_MIN &&
-                                   pane <= FF7Addr::MAGICMENU_MODE_LIST_MAX);
-        const bool in_tab_mode  = (pane == FF7Addr::MAGICMENU_MODE_TABS ||
-                                   pane == FF7Addr::MAGICMENU_MODE_ENTERING);
-        if (!in_list_mode && !in_tab_mode) {
+
+
+        if (pane == FF7Addr::MAGICMENU_MODE_TARGET) {
             if (tslot <= 2 && tslot != last_tslot) {
                 const bool first = (last_tslot == 0xFFFFFFFF);
                 last_tslot = tslot;

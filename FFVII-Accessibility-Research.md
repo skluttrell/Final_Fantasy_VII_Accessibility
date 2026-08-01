@@ -4872,6 +4872,38 @@ Deployed both installs, hash-verified (62910DC38C370FA5).
 
 ---
 
+### v2.30.59 (2026-08-01): target pane reached at last — a control-flow bug the COMPILER found
+
+**Report on .58**: the picker still said nothing. The log gave the
+missing constant though: `MAGICM mode 2 -> 1` on selecting Cure and
+`1 -> 2` on cancel ⇒ **the target pane is mode 1**
+(MAGICMENU_MODE_TARGET; note 1 was also v2.30.52's WRONG guess for the
+spell list — right number, different pane).
+
+**But the silence had a second cause, and the toolchain diagnosed it.**
+The v2.30.54 TAB-SELECTOR guard catches every mode outside 2..4 —
+including mode 1 — and `continue`s, so the .58 target branch (and the
+delta scanner added to debug it, which is why THAT produced no output
+either) sat downstream of an unconditional continue. MSVC proved the
+block unreachable and eliminated it: the giveaway was that the
+branch's log string was **absent from the shipped DLL even after a
+forced clean rebuild** of proxy.cpp. Verifying a binary by grepping it
+for the strings the new code should contain is now a standing check —
+"the literal isn't in the DLL" means dead code, not a stale build.
+
+Fix: the tab guard excludes the target mode, the target branch keys on
+MAGICMENU_MODE_TARGET explicitly, and 0xDD16D4 is confirmed as the
+picker's cursor by play ("spoke characters cleanly"). Scanner removed;
+the one-line MAGICM target log stays, matching the other menu threads.
+
+⚠ LESSON: when a new branch never fires, check its ORDER against the
+existing early-`continue` guards before doubting its addresses — this
+screen's data was right and its control flow was wrong.
+
+Deployed both installs, hash-verified (663C47D00AD6CD0E).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview
