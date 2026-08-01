@@ -4691,6 +4691,55 @@ Deployed both installs, hash-verified (CAA7D3A1AB45D9CD).
 
 ---
 
+### v2.30.54 (2026-08-01): the magic screen is a THREE-TAB screen — delta scan ends the guessing
+
+**Three failed versions in a row** (.48 wrong cursor semantics, .52
+inverted modes, .53 wrong encoding) all shared one root cause: I kept
+INFERRING which variable the player's presses move. v2.30.54 measured
+it. A debug-only DELTA SCANNER (in the mod: snapshot 0xDD1600-0xDD18FF
++ 0x921000-0x9211FF every poll while the screen is open, log every
+dword that changes with its address) plus a scripted user test —
+"open Magic, wait 2s, press Down exactly three times slowly" — gave
+the answer in ONE session:
+
+    MAGICM scan 0x00DD169C: 0 -> 1
+    MAGICM scan 0x00DD169C: 1 -> 2
+    MAGICM scan 0x00DD169C: 2 -> 0
+
+ONE address moved, wrapping at THREE. Not a spell cursor, not a
+character cursor: **the Magic / Summon / Enemy Skill TAB SELECTOR**.
+Everything else fell out immediately:
+- mode = TAB + 2 (the 0x713638/0x713693 writes) ⇒ mode 2 = Magic list,
+  3 = Summon, 4 = Enemy Skill; mode 0 = the selector; -1 = entering.
+  (That is also why .53's "grid = mode 2" worked in one session and
+  looked wrong in the next — the player was on the SELECTOR both times.)
+- Each tab owns a canonical widget and a per-character list base (draw
+  0x710F94/0x71186E/0x711EB8, OK 0x7137A9/0x712C46/0x713284):
+  Magic 0xDD1708 / +0x108 / 3 columns; Summon 0xDD1740 / +0x2C8 /
+  2 columns; **Enemy Skill 0xDD1778 / +0x348 / 2 columns** — a
+  previously unknown third per-character list.
+
+**Shipped**: tab-aware MagicMenuThread — the selector speaks
+"Magic"/"Summon"/"Enemy Skill", each list browses with its OWN widget,
+base and column count, names via the v2.30.47 kernel2 signature, and
+the ", battle only" suffix from the exe's own grey table. The scanner
+is removed; the one-line state diagnostic stays until play-confirmed.
+
+⚠ THE LESSON, stated plainly: static analysis gives structure, never
+live semantics. When a screen's behavior doesn't match the model,
+MEASURE THE MEMORY (a scoped delta scan costs one build and one 30s
+session) instead of re-reading the disassembly for a better story.
+Three shipped-broken versions is what the alternative cost.
+
+VERIFY: Magic → hear "Magic"/"Summon"/"Enemy Skill" as you move the
+tabs → OK → spell names with "battle only" where greyed → arrows
+track → cancel back to tab names; Summon/E.Skill tabs list their own
+entries.
+
+Deployed both installs, hash-verified (68BC1A7646402DEA).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

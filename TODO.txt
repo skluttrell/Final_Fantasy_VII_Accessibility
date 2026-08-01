@@ -5,7 +5,22 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[MAGICMODE2] Magic grid = mode 2 — SHIPPED v2.30.53 (2026-08-01), awaiting retest
+[MAGICTABS] Magic = THREE-TAB screen — SHIPPED v2.30.54 (2026-08-01), awaiting retest
+------------------------------------------------------------------------
+Delta scan (mod-side memory diff + scripted 3-press test) found the
+ONE address that moves: 0xDD169C, wrapping 0..2 = the Magic/Summon/
+Enemy Skill TAB SELECTOR. mode = tab+2 (2/3/4 = the three lists);
+each tab has its own widget + list base + column count (Magic
+0xDD1708/+0x108/3col, Summon 0xDD1740/+0x2C8/2col, E.Skill
+0xDD1778/+0x348/2col — new offset). Thread is now tab-aware.
+VERIFY: tab names on the selector; each list speaks its own entries;
+"battle only" still marks greyed spells; cancel returns to tabs.
+⚠ METHOD RULE (cost: 3 broken versions): static analysis gives
+structure, not live semantics — when behavior contradicts the model,
+delta-scan memory rather than re-reading disasm. Diagnostic line
+still in; remove when play-confirmed.
+
+[MAGICMODE2] Magic grid = mode 2 — v2.30.53 (superseded by .54)
 ------------------------------------------------------------------------
 Second diag session gave LIVE mode values: -1 entering, 0 char select,
 2 = SPELL GRID (trio moves there, proven against the player's presses),

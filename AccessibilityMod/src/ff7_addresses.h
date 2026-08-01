@@ -1066,6 +1066,38 @@ constexpr uint32_t MAGICMENU_PARTY_SLOT   = 0x00DD17E8; // u32 0..2
 constexpr uint32_t MAGICMENU_LIST_COL     = 0x00DD1708; // u32 widget +0 (0..2)
 constexpr uint32_t MAGICMENU_LIST_ROW     = 0x00DD170C; // u32 widget +4
 constexpr uint32_t MAGICMENU_LIST_SCROLL  = 0x00DD171C; // u32 widget +0x14
+// ---------------------------------------------------------------------------
+// v2.30.54 — THE MAGIC SCREEN IS A THREE-TAB SCREEN. Settled by a live
+// delta scan (the mod snapshotted this whole BSS block and logged every
+// dword that moved while the player pressed Down three times): the ONLY
+// address that moved was MAGICMENU_TAB, stepping 0→1→2→0. Three items,
+// wrapping — the Magic / Summon / Enemy Skill tabs. Everything else
+// falls out of that:
+//   mode (0x921100) = TAB + 2 on OK (0x713638/0x713693), so
+//     mode 2 = Magic list, 3 = Summon list, 4 = Enemy Skill list,
+//     mode 0 = the tab selector itself, -1 = entering.
+//   Each tab has its OWN canonical widget and per-character list base
+//   (draw paths 0x710F94 / 0x71186E / 0x711EB8, OK paths 0x7137A9 /
+//   0x712C46 / 0x713284):
+//     Magic  widget 0xDD1708, base +0x108, THREE columns
+//            (index = col + 3·(row+scroll))
+//     Summon widget 0xDD1740, base +0x2C8, TWO columns
+//            (index = col + 2·(row+scroll) — lea [col + row*2])
+//     E.Skill widget 0xDD1778, base +0x348, TWO columns  ← new offset,
+//            the third per-character list (0xDBA7E0 - 0xDBA498)
+// ⚠ THE COST OF NOT MEASURING: v2.30.48/.52/.53 each guessed a piece of
+// this from static reads (a "3-column grid" that was really three tabs;
+// a mode inversion; a case-index-vs-stored-value mismatch) and each
+// shipped broken. The delta scan answered all of it in one session.
+constexpr uint32_t MAGICMENU_TAB          = 0x00DD169C; // u32 0=Magic
+                                                        // 1=Summon 2=E.Skill
+constexpr uint32_t MAGICMENU_SUM_COL      = 0x00DD1740;
+constexpr uint32_t MAGICMENU_SUM_ROW      = 0x00DD1744;
+constexpr uint32_t MAGICMENU_SUM_SCROLL   = 0x00DD1754;
+constexpr uint32_t MAGICMENU_ESK_COL      = 0x00DD1778;
+constexpr uint32_t MAGICMENU_ESK_ROW      = 0x00DD177C;
+constexpr uint32_t MAGICMENU_ESK_SCROLL   = 0x00DD178C;
+constexpr uint32_t BCHAR_OFF_ESKILL_LIST  = 0x348;      // 8-byte entries
 constexpr uint32_t MAGICMENU_MODE         = 0x00921100; // s32 input mode
 // LIVE-MEASURED values (2026-08-01 diag session, v2.30.53 — these
 // supersede every static guess; the jump-table case indices are NOT
@@ -1077,9 +1109,9 @@ constexpr uint32_t MAGICMENU_MODE         = 0x00921100; // s32 input mode
 //        observed against the player's own arrow presses)
 //    3+ = confirm / use-on-whom sub-modes (not yet observed live)
 constexpr int32_t  MAGICMENU_MODE_ENTERING  = -1;
-constexpr int32_t  MAGICMENU_MODE_CHARSEL   = 0;
-constexpr int32_t  MAGICMENU_MODE_LIST      = 2;
-constexpr int32_t  MAGICMENU_MODE_TARGET_MIN = 3;
+constexpr int32_t  MAGICMENU_MODE_TABS      = 0;   // tab selector
+constexpr int32_t  MAGICMENU_MODE_LIST_MIN  = 2;   // 2/3/4 = the three lists
+constexpr int32_t  MAGICMENU_MODE_LIST_MAX  = 4;
 constexpr uint32_t MAGICMENU_TARGET_SLOT  = 0x00DD16D4; // u32 party slot the
                                                         // OK path indexes into
                                                         // SAVEMAP_PARTY_IDS
