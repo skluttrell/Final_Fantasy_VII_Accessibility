@@ -3335,10 +3335,14 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
 // Savemap record VA for the character the char-select pane committed
 // (CHARSEL_CHOSEN party slot), with the same leader/alias guards as
 // AppendPartyHpMp. 0 = layout check failed (speak nothing wrong).
-static uint32_t CharRecFromCharselSlot()
+// v2.30.50: takes the party slot EXPLICITLY. The equip thread used to
+// route through CHARSEL_CHOSEN here, but the equip screen's live
+// character is EQMENU_PARTY_SLOT (the L1/R1 cycler) — CHARSEL only
+// receives a copy on specific key paths, so gear names could describe
+// the PRE-FLIP character (the Barret "Bronze Bangle" report's second
+// bug, hidden behind the category-cursor one).
+static uint32_t CharRecFromPartySlot(uint32_t sel)
 {
-    const uint32_t sel = *reinterpret_cast<const volatile uint32_t*>(
-        FF7Addr::CHARSEL_CHOSEN);
     if (sel > 2)
         return 0;
     const uint8_t leader_id =
@@ -3360,12 +3364,12 @@ static uint32_t CharRecFromCharselSlot()
 // "Weapon: Gatling Gun" for one equip category row (0/1/2), from the
 // record's equipment id bytes. Gear id namespaces per v2.31's inventory
 // split: weapons 128+, armor 256+, accessories 288+ (0xFF byte = none).
-static void EquipCategoryLine(uint32_t cat, std::wstring& out)
+static void EquipCategoryLine(uint32_t cat, uint32_t slot, std::wstring& out)
 {
     static const wchar_t* const kCat[3] = { L"Weapon", L"Armor", L"Accessory" };
     out = kCat[cat < 3 ? cat : 0];
     out += L": ";
-    const uint32_t rec = CharRecFromCharselSlot();
+    const uint32_t rec = CharRecFromPartySlot(slot);
     if (!rec)
         return;
     static const uint32_t kOff[3]  = { FF7Addr::SAVEMAP_CHAR_WEAPON_OFF,
@@ -3455,8 +3459,10 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
             FF7Addr::EQMENU_CATEGORY);
         const uint32_t pane = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::EQMENU_LIST_OPEN);
+        // v2.30.50: the screen's live character is its own party-slot
+        // cycler, not CHARSEL_CHOSEN (see EQMENU_PARTY_SLOT provenance).
         const uint32_t sel = *reinterpret_cast<const volatile uint32_t*>(
-            FF7Addr::CHARSEL_CHOSEN);
+            FF7Addr::EQMENU_PARTY_SLOT);
 
         bool fresh = false;
         if (!was_open) {
@@ -3495,7 +3501,7 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
             // Category rows: announce on row move OR when the equipped id
             // under the parked cursor changes (an equip just committed).
             uint32_t gear = 0xFFFFFFFE;
-            const uint32_t rec = CharRecFromCharselSlot();
+            const uint32_t rec = CharRecFromPartySlot(sel);
             if (rec && cat < 3) {
                 static const uint32_t kOff[3] = {
                     FF7Addr::SAVEMAP_CHAR_WEAPON_OFF,
@@ -3507,7 +3513,7 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
                 last_cat  = cat;
                 last_gear = gear;
                 std::wstring line;
-                EquipCategoryLine(cat, line);
+                EquipCategoryLine(cat, sel, line);
                 TTS::Speak(line.c_str(), !fresh);
             }
         } else {
@@ -3549,7 +3555,7 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
             if (pane == 1) {
                 EquipListCandidate(cat, full_id);
             } else {
-                const uint32_t rec = CharRecFromCharselSlot();
+                const uint32_t rec = CharRecFromPartySlot(sel);
                 if (rec && cat < 3) {
                     static const uint32_t kOff[3] = {
                         FF7Addr::SAVEMAP_CHAR_WEAPON_OFF,

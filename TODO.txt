@@ -5,7 +5,18 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[DEFEND] Defend/Change announced — SHIPPED v2.30.49 (2026-08-01), awaiting play-test
+[EQUIPFIX] Equip cursor play-correction — SHIPPED v2.30.50 (2026-08-01), awaiting retest
+------------------------------------------------------------------------
+v2.30.34's 0xDCA4A4 "category cursor" was the L1/R1 CHARACTER cycler
+(party-ids skip loop in the very wrap disasm that settled it — two
+0..2 cursors, wrong one picked). Real row cursor = 0xDCA5C4 (OK
+handler passes it to the candidate builder). Also fixed: gear names
+now resolve via the screen's own slot, not CHARSEL_CHOSEN (pre-flip
+character bug). VERIFY (the user's exact repro): choose Barret →
+rows speak with his gear ("Weapon: Gatling Gun"); up/down voiced;
+list tracks; L1/R1 flips announce. §4/§14 corrected.
+
+[DEFEND] Defend/Change announced — SHIPPED v2.30.49 (2026-08-01), awaiting retest
 ------------------------------------------------------------------------
 Defend is vanilla-hidden: Right on Attack = Defend, Left = Change (row
 swap) — dedicated widget states 2/3, not table entries (disasm in

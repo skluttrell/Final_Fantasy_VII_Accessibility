@@ -937,8 +937,20 @@ constexpr uint32_t SAVEMAP_CHAR_AMATERIA_OFF = 0x60;   // u32[8]
 // accepts either index defensively.
 //
 // State (writer sweep + input-handler disasm 0x707040..0x7076xx):
-//   EQMENU_CATEGORY  — Up/Down ±1 with wrap 0..2 (0=Weapon 1=Armor
-//                      2=Accessory; the 0x707079/0x7070C0 ±1 code)
+//   ⚠ v2.30.50 PLAY-CORRECTION (Barret "Bronze Bangle" report,
+//   2026-08-01): the v2.30.34 reading of 0xDCA4A4 as the category row
+//   was WRONG — TWO 0..2-wrapping cursors coexist on this screen and
+//   the July session grabbed the wrong one. The ±1-wrap code at
+//   0x707079/0x7070C0 that "settled" it reads
+//   SAVEMAP_PARTY_IDS[0xDCA4A4] after every step and re-steps on 0xFF
+//   (empty slot skip — re-read 2026-08-01): that is a PARTY-MEMBER
+//   cycler (the L1/R1 character flip), and the 0x707105 block copies
+//   it into CHARSEL_CHOSEN. With a 3-member party both cursors wrap
+//   0..2 — indistinguishable by value range; the party-ids skip loop
+//   was the overlooked discriminator. The REAL category row is
+//   0xDCA5C4: the OK handler (key 0x20 at 0x707175) passes IT to the
+//   candidate-list builder (0x707187 → 0x7083ED), and every bounds
+//   check compares it against 2 (0x705F20/0x706108/...).
 //   EQMENU_LIST_OPEN — 0 = category rows, 1 = candidate list (set at
 //                      0x7071C3 on OK, cleared at 0x707346/0x707601)
 //   candidate list widget @0xDCA5F8 (generic ctor: +4 row, +0x14
@@ -947,11 +959,17 @@ constexpr uint32_t SAVEMAP_CHAR_AMATERIA_OFF = 0x60;   // u32[8]
 //   indices WITHIN the current category's kernel namespace, list
 //   terminated 0xFF, count at EQMENU_LIST_COUNT (written by the list
 //   builder 0x708640).
-// Character shown = CHARSEL_CHOSEN (the v2.32 pane commit; the equip
-// sub's char page-flip writes it at 0x707148/0x70726E). Equipped ids
-// live in the savemap record at +0x1C/+0x1D/+0x1E (v2.33 offsets).
+// Character shown: resolve via EQMENU_PARTY_SLOT → SAVEMAP_PARTY_IDS
+// (CHARSEL_CHOSEN only receives the copy on specific key paths —
+// v2.30.50; the old CHARSEL-based read spoke the pre-flip character
+// after an L1/R1 cycle). Equipped ids live in the savemap record at
+// +0x1C/+0x1D/+0x1E (v2.33 offsets).
 constexpr uint32_t EQMENU_SCREEN_INDEX  = 4;           // (15 = dupe slot)
-constexpr uint32_t EQMENU_CATEGORY     = 0x00DCA4A4;   // u32 0..2
+constexpr uint32_t EQMENU_PARTY_SLOT   = 0x00DCA4A4;   // u32 0..2 (was mis-
+                                                       // named EQMENU_CATEGORY
+                                                       // v2.30.34-.49)
+constexpr uint32_t EQMENU_CATEGORY     = 0x00DCA5C4;   // u32 0..2 row cursor
+                                                       // (0=Wpn 1=Arm 2=Acc)
 constexpr uint32_t EQMENU_LIST_OPEN    = 0x00DCA6A0;   // u32 0/1
 constexpr uint32_t EQMENU_LIST_ROW     = 0x00DCA5FC;   // u32
 constexpr uint32_t EQMENU_LIST_SCROLL  = 0x00DCA60C;   // u32; idx=row+scroll

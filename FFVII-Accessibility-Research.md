@@ -194,7 +194,7 @@ every confirmed address — the clustering itself is a discovery tool.
 | `MATMENU_MODE` | `0x00920FA0` | u32 materia-menu state machine (jump table 0x70E246, modes 0-0xB, v2.30.33 static): 0=Check/Arrange bar, 1=slot navigation, 3=equip list, 4=Check mode, 5/6/7=transient, 8=Arrange popup (Arrange/Exchange/Remove all/Trash), 9/10=arrange list phases, 2/11=empty. Same .data band as SHOP_STATE/BATTLE_MENU_STATE — fourth confirmation of the per-screen state-machine cluster |
 | `MATMENU_*` cursors | `0xDD12BC/F0/F4, 0xDD1364/74, 0xDD14B4/C4, 0xDD147C, 0xDD1398/9C, 0xDD1638` | bar cursor (0=Check 1=Arrange); slot idx/row (row 0=weapon 1=armor, OK on slot -> equip list); equip-list row/scroll (**materia[200] index = row+scroll**, the commit math at 0x70DC80); arrange-list row/scroll; popup row 0..3; Check-mode widget col/row; party slot 0..2 (×0x440 = shared char-data index; weapon slot count byte at chardata+0x21) |
 | `MATMENU_CHARREC_PTR` | `0x00DCA810` | u32 → the viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was THIS screen's state all along |
-| `EQMENU_CATEGORY` | `0x00DCA4A4` | u32 equip-menu category row 0=Weapon 1=Armor 2=Accessory (±1 wrap code at 0x707079/0x7070C0, v2.30.34 static). ⚠ first read suggested "mode" — the ±1-wrap disasm settled it as the cursor |
+| `EQMENU_PARTY_SLOT` | `0x00DCA4A4` | u32 equip-screen PARTY-MEMBER cycler 0..2 (L1/R1 char flip). ⚠ **PLAY-CORRECTED v2.30.50**: v2.30.34 shipped this as the category row — the ±1-wrap code (0x707079/0x7070C0) reads SAVEMAP_PARTY_IDS[value] and re-steps on 0xFF (empty-slot skip), and the 0x707105 path copies it into CHARSEL_CHOSEN: it cycles CHARACTERS. The real category row is `EQMENU_CATEGORY` 0x00DCA5C4 (OK handler 0x707175/0x707187 passes it to the candidate builder 0x7083ED; bounds cmp 2 throughout the sub). Two 0..2 cursors on one screen — the wrap shape alone couldn't tell them apart (§8 v2.30.50 lesson)ettled it as the cursor |
 | `EQMENU_LIST_OPEN` / `EQMENU_LIST_ROW/SCROLL/COUNT/BYTES` | `0xDCA6A0 / 0xDCA5FC / 0xDCA60C / 0xDCA7EC / 0xDCA6A8` | candidate-pane flag (0=rows 1=list); list widget @0xDCA5F8 (+4/+0x14); **candidate = u8[0xDCA6A8][row+scroll]** (the OK-commit's own read at 0x707350) — bytes are category-relative kernel gear indices, 0xFF terminator, count from the list builder 0x708640. Equip menu char = CHARSEL_CHOSEN (char page-flip writes it at 0x707148/0x70726E); equipped ids = record +0x1C/1D/1E. Equip sub = table[4] = FFNx menu_sub_705D16 (table[15] dupes it) |
 | `LIMITMENU_MODE` | `0x009204D8` | u32 limit-menu state 0..4 (draw switch 0x70313A; 0 = Set/Check bar, 1-4 = grid/confirm phases — per-value mapping rides the mod's debug log; v2.30.35 static). Same 0x92 state band as the shop/materia/battle machines |
 | `LIMITMENU_*` cursors | `0xDCA1D0, 0xDCA198/9C, 0xDCA208/0C, 0xDCA3C8` | bar cursor (×0x50 highlight, 0=Set 1=Check); Set grid col/row (×0x124/×0x89 — the 2×2 LEVEL grid, level=row·2+col); Check grid col/row (second instance); party slot 0..2 (the sub resolves char via SAVEMAP_PARTY_IDS + the game's own id→record table 0x919928) |
@@ -4519,6 +4519,53 @@ Deployed both installs, hash-verified (8DC272CE6FEE4AC7).
 
 ---
 
+### v2.30.50 (2026-08-01): equip menu play-correction — 0xDCA4A4 was the CHARACTER, not the category
+
+**Play report**: Barret's equip screen announced "Bronze Bangle" at
+entry, then every cursor move was silent. The log made it exact: entry
+1 (Cloud) logged cat=0, entry 2 (Barret) logged cat=1, and the "cat"
+byte never changed while the pane flag moved freely.
+
+**Root cause — v2.30.34 misidentification**: TWO 0..2-wrapping cursors
+coexist on the equip screen, and the July static session grabbed the
+wrong one. Re-reading the very ±1-wrap disasm that "settled" 0xDCA4A4
+as the category cursor (0x707079/0x7070C0): after each step it reads
+**SAVEMAP_PARTY_IDS[0xDCA4A4]** and RE-STEPS on 0xFF — an empty-party-
+slot skip loop. That is a PARTY-MEMBER cycler (the L1/R1 character
+flip; the 0x707105 key path copies it into CHARSEL_CHOSEN). With a
+full 3-member party, both cursors wrap 0..2 — indistinguishable by
+value range; the skip loop was the overlooked discriminator. The
+"cat=slot" coincidence even made entries LOOK right (Cloud=0=Weapon,
+Barret=1=Armor — hence "Bronze Bangle": Barret's ARMOR row was never
+on screen; his SLOT is 1).
+
+**The real category row = 0xDCA5C4** (ff7_eqcat_writers.py +
+re-reading the July log): the OK handler (key 0x20 test at 0x707175)
+passes IT to the candidate-list builder (0x707187 → 0x7083ED), and
+every bounds check in the sub compares it against 2. Second latent bug
+fixed in the same pass: gear names resolved via CHARSEL_CHOSEN, which
+only updates on specific key paths — after an L1/R1 flip the rows
+would have described the PRE-FLIP character. The thread (and
+EquipCategoryLine/record resolution) now key entirely off
+EQMENU_PARTY_SLOT (0xDCA4A4's true identity), which also makes L1/R1
+character flips announce.
+
+⚠ LESSON (the v2.30.12 principle, static edition): a ±1-wrap disasm
+proves "a cursor", not WHICH cursor — when a screen has multiple
+same-range widgets, the discriminator is what the value INDEXES
+(party-ids skip loop) or what consumes it at commit (the OK path's
+argument), not the wrap shape.
+
+VERIFY (play): Barret equip: entry speaks "Equip. Barret" +
+"Weapon: Gatling Gun" (whatever row the screen actually remembers);
+up/down speaks the three rows with gear names; OK into a list tracks
+candidates; L1/R1 speaks the next character and re-reads rows for THAT
+character; equipping re-announces the new gear.
+
+Deployed both installs, hash-verified (A781162AF70DEEA3).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview
@@ -5087,7 +5134,8 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDCA198/9C` + `0xDCA208/0C` | LIMITMENU Set/Check grid col/row | two instances of the 2×2 LEVEL grid widget (×0x124/×0x89 px draw); limit level = row·2+col (v2.30.35) |
 | `0xDCA1D0` | LIMITMENU bar cursor | 0=Set 1=Check (×0x50 px highlight) (v2.30.35) |
 | `0xDCA3C8` | LIMITMENU party slot | 0..2; char resolved via SAVEMAP_PARTY_IDS + id→record table 0x919928 (v2.30.35) |
-| `0xDCA4A4` | EQMENU_CATEGORY | u32 0=Weapon 1=Armor 2=Accessory (±1-wrap disasm settled it as a cursor, not a mode) (v2.30.34) |
+| `0xDCA4A4` | EQMENU_PARTY_SLOT | u32 equip-screen character cycler 0..2 (⚠ play-corrected v2.30.50 — was shipped as the category row; the wrap code's party-ids skip loop is the tell) |
+| `0xDCA5C4` | EQMENU_CATEGORY | u32 category row 0=Wpn 1=Arm 2=Acc (OK handler passes it to the candidate builder; cmp 2 bounds throughout) (v2.30.50) |
 | `0xDCA5F8` (+4/+0x14) | equip candidate-list widget | EQMENU_LIST_ROW 0xDCA5FC + SCROLL 0xDCA60C (v2.30.34) |
 | `0xDCA6A0` | EQMENU_LIST_OPEN | pane flag: 0=category rows, 1=candidate list (set 0x7071C3, cleared 0x707346/0x707601) (v2.30.34) |
 | `0xDCA6A8` | EQMENU candidate bytes | u8[] category-relative kernel gear indices, 0xFF terminator; candidate = [row+scroll] (the OK-commit's own read) (v2.30.34) |
