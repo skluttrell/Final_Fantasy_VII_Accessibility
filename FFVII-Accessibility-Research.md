@@ -4738,6 +4738,12 @@ entries.
 
 Deployed both installs, hash-verified (68BC1A7646402DEA).
 
+**PLAY-CONFIRMED 2026-08-01** ("I think we got it that time"). The
+magic screen is done: tab selector spoken, all three lists browse
+correctly. v2.30.55 strips the investigation diagnostic (delta scanner
+already removed in .54; the state line now too) — the release build
+carries no probe code.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)

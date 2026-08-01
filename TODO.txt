@@ -5,7 +5,15 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[MAGICTABS] Magic = THREE-TAB screen — SHIPPED v2.30.54 (2026-08-01), awaiting retest
+[MAGICTABS] Magic = THREE-TAB screen — CONFIRMED by user 2026-08-01 (v2.30.54/.55)
+------------------------------------------------------------------------
+✓ CLOSED: user confirmed the tab selector + lists speak correctly.
+v2.30.55 removed the diagnostic. RESIDUALS for a later pass: I-key
+spell descriptions (needs a kernel2 magic-desc signature), MP cost +
+current MP readout, and the ", battle only" grey rule is only verified
+for the Magic tab (Summon/E.Skill entries use the same suffix logic —
+ear-check when a save has summons).
+Original notes:
 ------------------------------------------------------------------------
 Delta scan (mod-side memory diff + scripted 3-press test) found the
 ONE address that moves: 0xDD169C, wrapping 0..2 = the Magic/Summon/

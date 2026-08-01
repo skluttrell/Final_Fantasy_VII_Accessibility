@@ -3842,48 +3842,6 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
         const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
             FF7Addr::BATTLE_END_MODE);
 
-        // v2.30.54 diagnostic, slimmed: the delta scanner that identified
-        // the tab cursor has done its job and is gone; this one line per
-        // state change stays until the screen is play-confirmed (it is
-        // what turned three wrong guesses into a measurement).
-        if (Config::Get().debug_log && menu_open == 1) {
-            const uint8_t gm = *reinterpret_cast<const volatile uint8_t*>(
-                FF7Addr::GAME_MODE);
-            const uint32_t c0 = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::MAGICMENU_LIST_COL);
-            const uint32_t r0 = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::MAGICMENU_LIST_ROW);
-            const uint32_t s0 = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::MAGICMENU_LIST_SCROLL);
-            const uint32_t p0 = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::MAGICMENU_MODE);
-            const uint32_t cs0 = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::CHARSEL_CURSOR);
-            const uint32_t sl0 = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::MAGICMENU_PARTY_SLOT);
-            static uint64_t last_diag = 0xFFFFFFFFFFFFFFFFull;
-            const uint64_t key =
-                (static_cast<uint64_t>(screen & 0xFF) << 48) |
-                (static_cast<uint64_t>(gm) << 40) |
-                (static_cast<uint64_t>(cs0 & 0xFF) << 32) |
-                ((p0 & 0xFF) << 24) | ((sl0 & 0xFF) << 16) |
-                ((c0 & 0xFF) << 8) | ((r0 & 0x0F) << 4) | (s0 & 0x0F);
-            if (key != last_diag) {
-                last_diag = key;
-                char dbg[192];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] MAGICM diag screen=%lu mode=%u mmode=%ld "
-                    "slot=%lu charsel=%lu col=%lu row=%lu scroll=%lu",
-                    static_cast<unsigned long>(screen), gm,
-                    static_cast<long>(p0),
-                    static_cast<unsigned long>(sl0),
-                    static_cast<unsigned long>(cs0),
-                    static_cast<unsigned long>(c0),
-                    static_cast<unsigned long>(r0),
-                    static_cast<unsigned long>(s0));
-                Log::Write(dbg);
-            }
-        }
 
         if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
             screen != FF7Addr::MAGICMENU_SCREEN_INDEX) {
