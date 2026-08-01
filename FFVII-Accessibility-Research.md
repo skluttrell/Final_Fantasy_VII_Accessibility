@@ -4566,6 +4566,38 @@ Deployed both installs, hash-verified (A781162AF70DEEA3).
 
 ---
 
+### v2.30.51 (2026-08-01): character-flip announces cut off — the interrupt-chain class
+
+**Report** (minutes after v2.30.50): L1/R1 on the equip screen spoke
+only the gear row, not the character name. The name WAS spoken —
+interrupt=true — and the row re-announce triggered by the same flip
+landed in the same poll, ALSO interrupt=true, cutting the name after a
+syllable. The identical bug was caught in review on the F8 menu's open
+sequence (v2.30.42) — and the same pattern existed unnoticed in FOUR
+menu threads' character-flip branches: equip (reported), limit (grid
++ bar), magic (selection), materia (cursor line).
+
+**Fix**: every flip branch now marks the poll as an announce sequence
+(the same fresh/announce_context flag each thread's ENTRY path already
+uses) so the follow-up re-announce queues (interrupt=false) behind the
+name. Limit's grid line switched from hard interrupt=true to !fresh to
+participate.
+
+⚠ CLASS RULE, now three sightings (F8 open, magic-menu open guard,
+this): whenever ONE user action produces TWO utterances in the same
+poll (context + detail), the SECOND must queue. Any new "announce A
+then B" sequence should default to interrupt-then-queue, and reviews
+of new menu threads should grep the flip/entry branches for
+back-to-back interrupt=true.
+
+VERIFY: L1/R1 in equip/materia/limit/magic speaks "<Name>" THEN the
+row/selection line in full, both audible; normal cursor moves still
+interrupt crisply.
+
+Deployed both installs, hash-verified (4896259E5B95895D).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

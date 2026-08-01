@@ -3162,6 +3162,8 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
             PartySlotLabel(static_cast<uint8_t>(party), who, _countof(who));
             TTS::Speak(who, true);
             last_key = last_word = 0xFFFFFFFF;   // re-announce the cursor line
+            announce_context = true;   // v2.30.51: the re-announce must
+                                       // QUEUE behind the name (see equip)
         }
 
         if (mode != last_mode) {
@@ -3483,6 +3485,12 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
             PartySlotLabel(static_cast<uint8_t>(sel), who, _countof(who));
             TTS::Speak(who, true);
             last_cat = last_idx = last_gear = 0xFFFFFFFF;
+            // v2.30.51: the row re-announce this reset triggers lands in
+            // the SAME poll — it must QUEUE behind the name or it cuts it
+            // off after a syllable (user report: L1/R1 spoke only the
+            // gear). fresh is exactly the "queue the follow-up" flag the
+            // entry path already uses.
+            fresh = true;
         }
 
         if (pane != last_pane) {
@@ -3718,6 +3726,7 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
             PartySlotLabel(static_cast<uint8_t>(slot), who, _countof(who));
             TTS::Speak(who, true);
             last_bar = last_setg = last_chkg = 0xFFFFFFFF;
+            fresh = true;   // v2.30.51: queue the follow-up (see equip)
         }
 
         if (mode != last_mode) {
@@ -3770,7 +3779,9 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
                     if (level != 0xFFFFFFFF) {
                         std::wstring line;
                         LimitLevelLine(slot <= 2 ? slot : 0, level, line);
-                        TTS::Speak(line.c_str(), true);
+                        // v2.30.51: !fresh so a slot-flip's grid
+                        // re-announce queues behind the name.
+                        TTS::Speak(line.c_str(), !fresh);
                     }
                 }
             }
@@ -3870,6 +3881,7 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             PartySlotLabel(static_cast<uint8_t>(slot), who, _countof(who));
             TTS::Speak(who, true);
             last_sel = 0xFFFFFFFF;   // new character: re-announce selection
+            fresh = true;   // v2.30.51: queue the follow-up (see equip)
         }
 
         // ---- pane transitions (0 = spell list, 1 = target pane) ----------
