@@ -5,6 +5,18 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[HOTSPOT] elevtr1 elevator switch — SHIPPED v2.30.46 (2026-08-01), awaiting play-test
+------------------------------------------------------------------------
+The in-car switch is JESSIE'S SCRIPT (no line, no prop, no key opcode
+— trace in research §8 v2.30.46): nothing existed for the browser to
+list. New curated story-hotspot table (played-evidence-only rule)
+emits "elevator switch, press OK" under Triggers in elevtr1 at
+(-140,40,5), inside Jessie's talk radius. VERIFY: listed in the
+elevator; route lands at the panel; OK speaks "Switch On.". RESIDUAL:
+the hotspot lists on ALL elevtr1 visits (no story gating — deliberate;
+revisit only if the always-on listing confuses). Future entries: add
+to kStoryHotspots (proxy.cpp) with trace evidence, never guesses.
+
 [FIELD3] System messages + taken items + switches — SHIPPED v2.30.45 (2026-07-31), awaiting play-test
 ------------------------------------------------------------------------
 Three tester reports, one version (research §8 v2.30.45 has the full

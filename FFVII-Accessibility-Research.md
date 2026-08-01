@@ -4339,6 +4339,52 @@ Deployed both installs, hash-verified (7C1EA3C0BB40F163).
 
 ---
 
+### v2.30.46 (2026-08-01): the elevator switch — story hotspots (curated)
+
+**Report + screenshots**: after Jessie's "Push that button over there!"
+(elevtr1), nothing at the panel spot is listed in any pathfinder
+category; players are confused at this exact story beat.
+
+**Trace (all offline + the user's own live log)**: the 09:44 session
+log shows the field change into elevtr1 (121) right before the prompt;
+the runtime line array holds ONLY the 'jump' exit line, and the only
+models are Cloud, Barret (parked, vis=0) and Jessie. Yet OK at the
+panel produced "Switch On.". Script trace
+(ff7_elevtr1_switch_trace.py + the parameterized reactor probe):
+elevtr1 text[46] = 'Switch On.'; BOTH MES ops for it live in
+**Jessie's entity (av_j)** — one in her talk-slot region, one in slot
+3 (the animation + window + MES sequence). There is NO switch object:
+no line, no prop model, no 'key' opcode anywhere in the field. The
+"button" is Jessie's script reacting to the player; the panel spot
+just sits inside her talk radius (she stands at (-96,72), talk 80).
+Her init also VISI-hides her under a story condition — more +0x62
+ecology. Side finding: 'ele' entity = scriptless shell; the earlier
+'evb' line in nmkin_1 is the OUTSIDE call button (separate thing,
+already listed since v2.30.45).
+
+**Why no automatic fix exists**: every browsable source (line array,
+models, prop catalog) is genuinely empty here — the interaction is
+indistinguishable from ordinary NPC dialog at the engine level. Any
+automatic "hotspot detector" would be guessing.
+
+**Fix — curated story hotspots** (same never-guess rule as the
+v2.30.18 scenery list: entries only from played evidence): a small
+hand table {field, x, y, z, name} emitted under Triggers, point-located
+like exits/lines. First entry: elevtr1 (121) "elevator switch, press
+OK" at (-140, 40, 5) — between the panel wall and Jessie, inside her
+talk radius, so walking there + OK runs her switch script. Listed
+whenever the field is visited (story-gating would need the story var —
+exactly the guessing the list refuses).
+
+VERIFY (play): in the elevator, Triggers lists "elevator switch,
+press OK"; directions route to the panel; OK there speaks "Switch
+On."; the 'jump' door line still lists with its exit suffix.
+
+No addresses — trace only. Deployed both installs, hash-verified
+(6B77068526AE09D0).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

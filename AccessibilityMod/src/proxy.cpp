@@ -9711,6 +9711,47 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 d.model_slot = -1;
                 d.target_tri = -1;   // LINE zones are point-located like exits
             }
+
+            // v2.30.46: hand-curated STORY HOTSPOTS — interaction spots
+            // the engine exposes NOTHING for: no LINE in the runtime
+            // array, no prop model, because the whole interaction is an
+            // NPC's script reacting to the player (the defining case:
+            // elevtr1's reactor elevator switch, where "Switch On." is
+            // JESSIE's script — MES text 46 in av_j's slots, traced
+            // 2026-08-01 after the tester screenshots; the panel spot
+            // merely sits inside her talk radius). Players hunt for a
+            // "button" destination the browser cannot derive from any
+            // engine state, so these few entries are curated by hand
+            // from played evidence ONLY — the same never-guess rule as
+            // the v2.30.18 non-fieldbg scenery list. Listed always
+            // (story-gating a curated spot would need the story var,
+            // which is exactly the guessing this list refuses to do).
+            struct StoryHotspot {
+                uint16_t field_id;
+                int16_t  x, y, z;
+                const wchar_t* name;
+            };
+            static const StoryHotspot kStoryHotspots[] = {
+                // elevtr1 (121): the No.1 reactor elevator switch. Spot
+                // chosen between the panel wall and Jessie's scripted
+                // position (-96,72) so it lies inside her talk radius
+                // (80): OK there runs her switch script ("Switch On.").
+                { 121, -140, 40, 5, L"elevator switch, press OK" },
+            };
+            for (const StoryHotspot& h : kStoryHotspots) {
+                if (h.field_id != static_cast<uint16_t>(field_id))
+                    continue;
+                if (n_dests >= static_cast<int>(_countof(dests)))
+                    break;
+                NavDest& d = dests[n_dests++];
+                _snwprintf_s(d.name, _countof(d.name), _TRUNCATE, L"%ls",
+                             h.name);
+                d.line_x1 = d.line_x2 = h.x;
+                d.line_y1 = d.line_y2 = h.y;
+                d.line_z1 = d.line_z2 = h.z;
+                d.model_slot = -1;
+                d.target_tri = -1;   // point-located like exits/lines
+            }
         }
 
         if (selection >= n_dests)

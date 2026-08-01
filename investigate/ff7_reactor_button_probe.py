@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 ff7_reactor_button_probe.py -- where is the No.1 reactor elevator button?
 (2026-07-31, task-3 follow-up)
@@ -178,7 +178,7 @@ def parse_model_labels(dec, sec_offs):
         labels.append(label)
     return labels
 
-for fname in ('nmkin_1', 'nmkin_2'):
+for fname in (sys.argv[1:] or ('nmkin_1', 'nmkin_2')):
     entry_off = toc[fname]
     flen = struct.unpack_from('<I', data, entry_off + 20)[0]
     dec = lzs_decompress(data[entry_off + 24:entry_off + 24 + flen][4:],
@@ -213,10 +213,12 @@ for fname in ('nmkin_1', 'nmkin_2'):
                 if code[line_off] == 0xD0 else None
             row.append(f"LINE {coords}")
         print("  " + "  ".join(row))
-        for s in range(0, 8):
+        for s in range(0, 32):
             reach = walk(code, offs[s])
             ops = set(reach.values()) - {0x00}
             if not ops:
                 continue
             names = [NAMES.get(op, f"{op:02X}") for op in sorted(ops)]
             print(f"      slot{s}: {' '.join(names)}")
+
+
