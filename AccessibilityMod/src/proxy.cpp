@@ -3841,6 +3841,7 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
     uint32_t  last_slot  = 0xFFFFFFFF;
     uint32_t  last_pane  = 0xFFFFFFFF;
     uint32_t  last_trow  = 0xFFFFFFFF;
+    uint32_t  last_tslot = 0xFFFFFFFF;   // v2.30.58: target-pane cursor
     uint32_t  last_id    = 0xFFFFFFFF;   // v2.30.57: spell under the cursor
     bool      i_was_down = false;        // v2.30.57: I-key edge (descriptions)
     ULONGLONG next_scan_tick = 0;
@@ -4016,6 +4017,67 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
                     TTS::Speak(kTabs[tab].name, /*interrupt=*/!fresh);
             }
             continue;   // no list is focused yet
+        }
+
+        // ---- TARGET pane: "use Cure on whom?" (v2.30.58) -------------------
+        // Report: choosing a field-usable spell opens a character picker
+        // that was silent. Deliberately MODE-AGNOSTIC — I have no live
+        // capture of this pane's mode value, and guessing state numbers on
+        // this screen has already cost three broken versions. Instead:
+        //   * the pane is recognised as "a mode that is neither the tab
+        //     selector nor one of the three list modes", and
+        //   * the announce is driven by MAGICMENU_TARGET_SLOT actually
+        //     CHANGING — the slot the game's own OK path indexes into
+        //     SAVEMAP_PARTY_IDS (0x7137F8), i.e. the picker's cursor.
+        // Whichever of those two fires, the player hears the character.
+        // last_tslot is reset on every mode change, so the pane's initial
+        // write cannot speak a name before the player has moved.
+        // The log line records the real mode value so the next session
+        // turns this from mode-agnostic into documented.
+        const uint32_t tslot = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::MAGICMENU_TARGET_SLOT);
+        const bool in_list_mode = (pane >= FF7Addr::MAGICMENU_MODE_LIST_MIN &&
+                                   pane <= FF7Addr::MAGICMENU_MODE_LIST_MAX);
+        const bool in_tab_mode  = (pane == FF7Addr::MAGICMENU_MODE_TABS ||
+                                   pane == FF7Addr::MAGICMENU_MODE_ENTERING);
+        if (!in_list_mode && !in_tab_mode) {
+            if (tslot <= 2 && tslot != last_tslot) {
+                const bool first = (last_tslot == 0xFFFFFFFF);
+                last_tslot = tslot;
+                wchar_t who[32];
+                PartySlotLabel(static_cast<uint8_t>(tslot), who, _countof(who));
+                std::wstring m;
+                if (first) m = L"Use on whom? ";
+                m += who;
+                // v2.30.57's MP line applies to the CASTER, not the
+                // target; the target's own MP/HP is what the picker
+                // shows, so speak the target's HP the way the screen does.
+                const uint32_t rec = CharRecFromPartySlot(tslot);
+                if (rec) {
+                    const uint16_t hp = *reinterpret_cast<const volatile uint16_t*>(
+                        rec + FF7Addr::SAVEMAP_CHAR_HP_OFF);
+                    const uint16_t hpmax = *reinterpret_cast<const volatile uint16_t*>(
+                        rec + FF7Addr::SAVEMAP_CHAR_MAXHP_OFF);
+                    if (hpmax != 0 && hp <= hpmax) {
+                        wchar_t buf[40];
+                        _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                                     L", %u of %u HP",
+                                     static_cast<unsigned>(hp),
+                                     static_cast<unsigned>(hpmax));
+                        m += buf;
+                    }
+                }
+                if (Config::Get().debug_log) {
+                    char dbg[112];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] MAGICM target mode=%ld slot=%lu",
+                        static_cast<long>(pane),
+                        static_cast<unsigned long>(tslot));
+                    Log::Write(dbg);
+                }
+                TTS::Speak(m.c_str(), true);
+            }
+            continue;   // the spell grid is parked while targeting
         }
 
         // ---- list browsing (modes 2/3/4 = Magic / Summon / Enemy Skill) ---

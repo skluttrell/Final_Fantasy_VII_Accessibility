@@ -4839,6 +4839,39 @@ post-embed rebuild).
 
 ---
 
+### v2.30.58 (2026-08-01): magic TARGET pane ("use Cure on whom?") spoken
+
+**Report**: picking a field-usable spell opens a character picker that
+was silent.
+
+**Deliberately MODE-AGNOSTIC.** I have no live capture of this pane's
+mode value, and guessing state numbers on this screen has already cost
+three broken versions (.48/.52/.53). So instead of asserting a number:
+the pane is recognised as "a mode that is neither the tab selector nor
+one of the three list modes", AND the announce is driven by
+MAGICMENU_TARGET_SLOT (0xDD16D4) actually CHANGING — the slot the
+game's own OK path feeds to SAVEMAP_PARTY_IDS at 0x7137F8, i.e. the
+picker's cursor. Either signal alone is enough for the player to hear
+the character; last_tslot resets on every mode change so the pane's
+initial write cannot speak before the player moves.
+
+Speaks the target's name plus **HP** ("Barret, 314 of 442 HP") — the
+picker shows each character's HP/MP, and HP is what decides a heal.
+(The caster's MP is already on the entry announce, v2.30.57.)
+
+A debug line records the pane's REAL mode value the first time a
+target is announced, so one play session upgrades this from
+mode-agnostic to documented — the same measure-then-document discipline
+the delta scan established.
+
+VERIFY: Magic → Cure → the picker speaks a character (with HP) and
+tracks up/down; cancel returns to the spell list; log shows
+`MAGICM target mode=N slot=…` (report N so the constant can be named).
+
+Deployed both installs, hash-verified (62910DC38C370FA5).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

@@ -5,6 +5,17 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MAGICTARGET] Magic target pane spoken — SHIPPED v2.30.58 (2026-08-01), awaiting play-test
+------------------------------------------------------------------------
+Choosing a field-usable spell (Cure etc.) opens a character picker that
+was silent. Implemented MODE-AGNOSTICALLY (no live capture of its mode
+value; guessing state numbers here already cost 3 versions): pane =
+"not tab, not a list mode" AND/OR MAGICMENU_TARGET_SLOT (0xDD16D4 — the
+slot the OK path feeds to SAVEMAP_PARTY_IDS) changing. Speaks name +
+HP. VERIFY: picker speaks and tracks; cancel returns to the list; then
+READ THE LOG for "MAGICM target mode=N" and name that constant in
+ff7_addresses.h (turns this into documented state).
+
 [MAGICFULL] Magic menu completed — SHIPPED v2.30.57 (2026-08-01), awaiting play-test
 ------------------------------------------------------------------------
 Closes the v2.30.54 residuals. MP cost (list entry byte +1) and
