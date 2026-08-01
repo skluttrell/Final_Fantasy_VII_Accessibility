@@ -997,6 +997,47 @@ constexpr uint32_t LIMITMENU_PARTY_SLOT  = 0x00DCA3C8; // u32 0..2
 constexpr uint32_t SAVEMAP_CHAR_LIMITBITS_OFF = 0x22;  // u16 learned mask
 
 // ---------------------------------------------------------------------------
+// MAGIC menu (v2.30.48, 2026-08-01) — the last un-narrated main-menu screen
+// besides PHS. ALL STATIC (investigate/ff7_magic_menu_static.py, log
+// magic_menu_static_20260801_110149):
+//
+//   Screen = menu_subs_call_table[2] = 0x710DFA (row->index pattern: Item
+//   row 0 = 1, Materia row 2 = 3, Status row 4 = 5 => Magic row 1 = 2).
+//
+//   THE SPELL LIST IS THE BATTLE LIST: the sub computes
+//   [MAGICMENU_PARTY_SLOT]*0x440 + 0xDBA5A0 — and 0xDBA5A0 ==
+//   BATTLE_CHAR_BLOCK + BCHAR_OFF_MAGIC_LIST exactly (the [ptr]+offset ==
+//   static proof pattern), so the menu shares battle's per-slot magic
+//   entries: stride 8, u8 spell id @+0 (0xFF = empty cell), the v2.36
+//   layout verbatim. index = col + (row + scroll)*3 (3-column grid, read
+//   off the draw loop at sub+0x92C..0x99F).
+//
+//   MAGICMENU_LIST_* is a STANDARD list widget (ctor 0x6F4D30 family):
+//   0xDD1708 +0 col / +4 row / +0x14 scroll — the three fields the sub
+//   reads for its index math sit at exactly the canonical offsets.
+//
+//   MAGIC_MENU_USABLE_TABLE: the renderer's OWN menu-usable classifier —
+//   u8[0x714440 + id] (ids 0..0x33) selects a jump-table case (0x714430);
+//   cases 0/1/2 draw color 7 (white/usable), case 3 and all ids > 0x33
+//   draw color 0 (grayed, battle-only). Read LIVE from the exe image so
+//   the spoken "battle only" state mirrors the drawn gray by
+//   construction (disk bytes: usable = ids {0,1,2,7,8,0x33}).
+//
+//   MAGICMENU_PANE: 0 = spell list, 1 = the second pane (cmp sites
+//   0x710E0E/0x710FBA select the alternate draw path). Pane-1 cursor
+//   candidate = MAGICMENU_TARGET_ROW (drawn at row*0x78). ⚠ pane
+//   semantics + target row are the least-proven pieces — verify live.
+constexpr uint32_t MAGICMENU_SCREEN_INDEX = 2;
+constexpr uint32_t MAGICMENU_PARTY_SLOT   = 0x00DD17E8; // u32 0..2
+constexpr uint32_t MAGICMENU_LIST_COL     = 0x00DD1708; // u32 widget +0 (0..2)
+constexpr uint32_t MAGICMENU_LIST_ROW     = 0x00DD170C; // u32 widget +4
+constexpr uint32_t MAGICMENU_LIST_SCROLL  = 0x00DD171C; // u32 widget +0x14
+constexpr uint32_t MAGICMENU_PANE         = 0x00921100; // u32 0=list 1=target
+constexpr uint32_t MAGICMENU_TARGET_ROW   = 0x00DD16D4; // u32 (verify live)
+constexpr uint32_t MAGIC_MENU_USABLE_TABLE = 0x00714440; // u8[0x34] in .text
+constexpr uint32_t MAGIC_MENU_USABLE_GRAY_CASE = 3;      // case 3 = grayed
+
+// ---------------------------------------------------------------------------
 // MENU TUTORIAL live state (v2.30.29, 2026-07-26) — the per-slide sync the
 // v2.30.27 narrator lacked. ALL STATIC (investigate/ff7_tutorial_static.py,
 // log tutorial_static_20260726_110911 + the writer sweeps in the same
@@ -1594,8 +1635,12 @@ constexpr uint32_t BATTLE_CHAR_BLOCK        = 0x00DBA498;
 constexpr uint32_t BATTLE_CHAR_SLOT_STRIDE  = 0x440;
 constexpr uint32_t BCHAR_OFF_CMD_NCOLS      = 0x21;   // u8 command column count
 constexpr uint32_t BCHAR_OFF_CMD_TABLE      = 0x4C;   // 6-byte entries
-constexpr uint32_t BCHAR_OFF_MAGIC_LIST     = 0x108;  // 6-byte entries
-constexpr uint32_t BCHAR_OFF_SUMMON_LIST    = 0x2C8;  // 6-byte entries
+constexpr uint32_t BCHAR_OFF_MAGIC_LIST     = 0x108;  // 8-byte entries (v2.36
+                                                      // stride correction; the
+                                                      // magic MENU's draw loop
+                                                      // re-confirms *8 —
+                                                      // v2.30.48 disasm)
+constexpr uint32_t BCHAR_OFF_SUMMON_LIST    = 0x2C8;  // 8-byte entries (v2.36)
 constexpr uint32_t BCHAR_OFF_EFF_STATS      = 0x02;   // 6× u8 (see above)
 constexpr uint32_t BCHAR_OFF_ATTACK         = 0x08;   // u16
 constexpr uint32_t BCHAR_OFF_DEFENSE        = 0x0A;   // u16

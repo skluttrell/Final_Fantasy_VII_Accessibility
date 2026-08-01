@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MAGICMENU] Magic menu connected — SHIPPED v2.30.48 (2026-08-01), awaiting play-test
+------------------------------------------------------------------------
+Last main-menu gap besides PHS. Static session (research §8 v2.30.48):
+table[2]=0x710DFA; spell list = battle's per-slot list (0xDBA5A0 =
+BATTLE_CHAR_BLOCK+0x108, stride 8); widget 0xDD1708 col/row/scroll;
+slot 0xDD17E8; "battle only" = the exe's own gray table 0x714440
+(read live — parity by construction). VERIFY: entry announce; names
+match screen (7H retranslation included); grayed spells say "battle
+only"; "Empty" cells; character switch (L1/R1?) re-announces; pane-1
+"Use on whom?" + target names (LEAST-PROVEN — 0x921100/0xDD16D4;
+if wrong, log MAGICM pane lines tell). RESIDUALS: I-key descriptions
+(kernel2 magic-desc sig needed), MP cost + current MP, Summon and
+Enemy Skill tabs (their widgets unmapped; watch logs when tabs used).
+
 [K2SIG] 7th Heaven spell names — SHIPPED v2.30.47 (2026-08-01), awaiting play-test
 ------------------------------------------------------------------------
 7H text mods rename spell tiers (Cure/Cura/Curaga) => the vanilla

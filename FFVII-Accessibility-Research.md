@@ -199,6 +199,10 @@ every confirmed address — the clustering itself is a discovery tool.
 | `LIMITMENU_MODE` | `0x009204D8` | u32 limit-menu state 0..4 (draw switch 0x70313A; 0 = Set/Check bar, 1-4 = grid/confirm phases — per-value mapping rides the mod's debug log; v2.30.35 static). Same 0x92 state band as the shop/materia/battle machines |
 | `LIMITMENU_*` cursors | `0xDCA1D0, 0xDCA198/9C, 0xDCA208/0C, 0xDCA3C8` | bar cursor (×0x50 highlight, 0=Set 1=Check); Set grid col/row (×0x124/×0x89 — the 2×2 LEVEL grid, level=row·2+col); Check grid col/row (second instance); party slot 0..2 (the sub resolves char via SAVEMAP_PARTY_IDS + the game's own id→record table 0x919928) |
 | *(limit data)* | — | learned mask = charrec **+0x22** u16, bit = level·3+technique (the sub's own `imul 3/shl` test at 0x702190); technique names = magic text 128 + block·7 + (level·2+tech; L4=+6) with the KERNEL'S Aeris/Tifa block swap (kernel2 ground truth: 128 Braver/Cloud, 135 Barret, 142 AERIS, 149 TIFA, 156 Red XIII); current limit level = charrec +0x0E |
+| `MAGICMENU_PARTY_SLOT` | `0x00DD17E8` | u32 party slot 0..2 shown by the MAGIC menu (v2.30.48 static, ff7_magic_menu_static.py): the sub computes [this]·0x440 + 0xDBA5A0 = BATTLE_CHAR_BLOCK + BCHAR_OFF_MAGIC_LIST — **the menu's spell list IS battle's per-slot magic list** (stride 8, u8 id @+0, 0xFF empty; the [ptr]+offset==static proof pattern). ⚠ same address the v2.30.38 E8-scan lesson flagged as an operand false-positive — now identified: it was this slot variable all along |
+| `MAGICMENU_LIST_*` | `0xDD1708 / 0xDD170C / 0xDD171C` | standard list widget (ctor 0x6F4D30 family: +0 col, +4 row, +0x14 scroll); spell index = col + (row+scroll)·3 (3-column grid, draw loop at 0x711726..0x711789). Window struct ptr at 0xDD1690 (+0x10/+0x12 screen coords) |
+| `MAGIC_MENU_USABLE_TABLE` | `0x00714440` | u8[0x34] **in .text** — the renderer's own menu-usable classifier: table[id] → jump table 0x714430; cases 0/1/2 draw color 7 (white/usable — disk bytes: ids {0,1,2,7,8,0x33}), case 3 + ids >0x33 draw color 0 (grayed). Mod reads it LIVE so ", battle only" mirrors the drawn gray by construction (v2.30.48) |
+| `MAGICMENU_PANE` / `_TARGET_ROW` | `0x00921100` / `0x00DD16D4` | pane selector (0=spell list, 1=target pane; cmp sites 0x710E0E/0x710FBA) and the pane-1 cursor row (drawn at ·0x78). ⚠ least-proven of the v2.30.48 set — flagged verify-live |
 | `TUTORIAL_RUNNING` | `0x00DBFD30` | u32, 1 while a menu tutorial's byte-code VM runs (set by menu start_tutorial 0x6CB620, cleared by the VM's END opcode 0x7185AC / stop paths). v2.30.29's authoritative tutorial gate + "Tutorial finished." edge (ff7_tutorial_static.py 2026-07-26) |
 | `TUTWIN_STATE` | `0x00DC1310` | u8 tutorial/message window renderer state: 0=closed, 1=opening, 2=TEXT SHOWING, 3=closing (= FFNx's menu_tutorial_window_state, operand at renderer 0x6C49FD+0x9; FFNx's voice hook uses the same 0→1→2→3→0 edges). v2.30.29 speaks each slide on the →2 edge |
 | `TUTWIN_TEXT_PTR` | `0x00DC1214` | u32 → the CURRENT window's FF7-encoded text (= FFNx menu_tutorial_window_text_ptr, operand +0x18). For tutorial slides it points INTO the field buffer (the VM passes its script PC); for the save screens' info popups (same renderer, callers 0x6FFB65-0x6FFEAD/0x721Fxx) it points at exe .data strings — v2.30.29 speaks both |
@@ -4428,6 +4432,56 @@ Deployed both installs, hash-verified (45921165B2AD5AD9).
 
 ---
 
+### v2.30.48 (2026-08-01): MAGIC MENU connected — one static session, the six-menu recipe
+
+**User report**: spells "not showing up" in the out-of-battle spell
+list — the screen was the last un-narrated main-menu sub except PHS
+(known gap since v2.30.35); silence read as an empty list.
+
+**Static session** (ff7_magic_menu_static.py — the shop/limit recipe):
+magic sub = menu_subs_call_table[2] = 0x710DFA (row→index pattern,
+third fixed point). Key derivations, all from the annotated disasm:
+- **The menu's spell list IS battle's**: the sub computes
+  [0xDD17E8]·0x440 + 0xDBA5A0, and 0xDBA5A0 == BATTLE_CHAR_BLOCK +
+  BCHAR_OFF_MAGIC_LIST exactly ([ptr]+offset == static proof pattern
+  again) ⇒ 0xDD17E8 = the menu's PARTY SLOT, entries = the v2.36
+  battle layout verbatim (stride 8, u8 id @+0, 0xFF empty). Also
+  re-confirms stride 8 — the stale "6-byte" comment on
+  BCHAR_OFF_MAGIC_LIST corrected this commit.
+- **Standard widget at 0xDD1708**: the sub's index math reads +0 col /
+  +4 row / +0x14 scroll (exactly the 0x6F4D30 ctor offsets);
+  index = col + (row+scroll)·3 — a 3-column grid.
+- **The grayed "battle only" state is a STATIC EXE TABLE**: the draw
+  loop maps u8[0x714440 + id] (ids ≤0x33) through jump table 0x714430 —
+  cases 0/1/2 draw color 7 (white), case 3 and ids >0x33 draw color 0
+  (gray). Disk bytes: white = ids {0,1,2,7,8,0x33} only. The mod reads
+  the SAME table live (in-process .text, no ASLR) ⇒ spoken state
+  mirrors the drawn gray by construction — no spell-list semantics
+  were guessed.
+- 0x921100 = pane (0 list / 1 target), 0xDD16D4 = pane-1 cursor row
+  (drawn at ·0x78) — the two LEAST-PROVEN pieces, flagged verify-live.
+
+**Shipped MagicMenuThread** (LimitMenuThread clone): gate = dispatch
+index 2 + the standard stand-downs; entry "Magic. <char>"; per-cell
+speech = kernel2 magic name (through the v2.30.47 retranslation-
+tolerant signature — the 7H report that exposed this screen gets
+correct names too) + ", battle only" per the exe table; "Empty" cells;
+slot-change re-announce; pane-1 "Use on whom?" + target names.
+
+RESIDUALS (TODO [MAGICMENU]): I-key descriptions (needs a kernel2
+magic-desc signature), MP cost, Summon/Enemy-Skill top-bar tabs
+(unmapped — the list widget tracked is the MAGIC tab's), pane-1
+semantics verify. Menu family now: everything except PHS.
+
+VERIFY (play): open Magic — "Magic. Cloud" + first spell; arrows speak
+names matching the screen incl. grayed ones as "battle only"; empty
+cells say "Empty"; on 7H, names match the retranslation. Log lines
+"MAGICM ...".
+
+Deployed both installs, hash-verified (37ADB82E73E2904B).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview
@@ -4782,6 +4836,7 @@ Proven payoffs of cluster reasoning so far:
 | `0x70CF0B` | materia menu sub (menu_subs_call_table[3]) | mode jump table 0x70E246 (12 cases on MATMENU_MODE 0x920FA0); equip-list commit 0x70DC80..0x70DD0C = the materia[200] index formula row+scroll (v2.30.33) |
 | `0x705D16` | equip menu sub (table[4] = FFNx menu_sub_705D16; table[15] dupes it) | category ±1-wrap at 0x707079/0x7070C0 (what settled 0xDCA4A4 as a cursor); candidate-list builder 0x708640; OK-commit reads u8[0xDCA6A8][row+scroll] at 0x707350..0x70735E (v2.30.34) |
 | `0x70212A` | limit menu sub (table[7]) | draw switch 0x70313A on LIMITMENU_MODE 0x9204D8; resolves char via SAVEMAP_PARTY_IDS + the id→record table 0x919928 (0x70216A..0x702186); learned-mask bit test (imul 3/shl) at 0x702190 (v2.30.35) |
+| `0x710DFA` | MAGIC menu sub (table[2]) | slot·0x440+0xDBA5A0 spell-list resolve at 0x710F89 (= BATTLE_CHAR_BLOCK+0x108 — battle's list, stride 8 re-confirmed); 3-col index math + draw loop 0x711726..0x7117FB; usable classifier = u8[0x714440]→jump 0x714430 (color 7 white / 0 gray); kernel text via the 0x41963C getter; widget 0xDD1708, window struct 0xDD1690; pane cmp sites 0x710E0E/0x710FBA on 0x921100 (ff7_magic_menu_static.py, v2.30.48) |
 | `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
 
 Pattern: field module code sits in 0x60xxxx–0x6Exxxx, world map in 0x75xxxx,
