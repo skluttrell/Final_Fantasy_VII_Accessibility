@@ -4598,6 +4598,58 @@ Deployed both installs, hash-verified (4896259E5B95895D).
 
 ---
 
+### v2.30.52 (2026-08-01): magic menu modes were INVERTED — diagnostic-led correction
+
+**Report**: the magic list speaks the selected spell on entry, then
+arrows say nothing (left/right do nothing at all).
+
+**Method note — the diagnostic paid for itself.** Static reasoning had
+two live-plausible causes (stale cursor addresses vs. a gate bailing
+out), so instead of guessing, a debug-only probe logged the gate inputs
+plus the cursor trio on every change. One 20-second session settled it:
+`screen=2` held for the whole 9 seconds (so the thread was NOT bailing
+— my leading theory was wrong) and the cursor trio never moved through
+eight presses. Cost: one build + one short test; the alternative was
+another wrong-guess release.
+
+**Root cause**: the v2.30.48 mode semantics were INVERTED. The screen
+dispatches input through a jump table at 0x7144CC:
+**case 0 (0x7135F8) = CHARACTER-SELECT pane** (its up/down cycles the
+party slot with the SAVEMAP_PARTY_IDS 0xFF skip — the third sighting of
+that cycler shape, after equip v2.30.34/.50), **case 1 (0x71377F) = THE
+SPELL GRID** (it computes the spell index from the cursor trio and runs
+the OK press with the MP check: cost = list entry byte +1, current MP =
+[slot·0x440 + 0xDBA4AC]). The mod had 0 = list and treated 1 as a
+"target pane" it SKIPPED — so it announced a spell the instant the
+screen opened (while the player was still choosing a character) and
+then went permanently silent once the grid actually had focus. The
+player's arrows were moving the character pane, which the mod wasn't
+watching at all.
+
+**Fix**: modes corrected (0/-1 = character select, 1 = grid, 2/3 =
+confirm sub-modes written as mode+2 at 0x713638/0x713693). The
+character pane now announces, and — Limit-menu style — watches BOTH
+candidate cursors (MAGICMENU_PARTY_SLOT and CHARSEL_CURSOR),
+announcing whichever the game moves, so a wrong guess about which one
+this pane uses cannot silence it again. Grid entry re-announces the
+selection. MAGICMENU_TARGET_ROW renamed MAGICMENU_TARGET_SLOT (the OK
+path indexes SAVEMAP_PARTY_IDS with it at 0x7137F8).
+
+⚠ THIRD SIGHTING of the party-cycler-vs-cursor confusion (equip twice,
+magic once): when a menu variable wraps 0..2, check for the
+party-ids-skip loop BEFORE calling it a row cursor.
+
+The diagnostic stays in this build (now logging charsel too) until the
+retest confirms; it is debug_log-gated and one line per change.
+
+VERIFY: open Magic — hear the character pane (names as you move), pick
+a character, then arrows speak spell names with "battle only" where the
+screen greys them; log shows `MAGICM mode 0 -> 1` at the transition.
+
+Deployed both installs, hash-verified (AB959BC597EA5026).
+
+---
+
 ## 9. Menu and Config TTS (v2.0–v2.3, 2026-07-01–02)
 
 ### Overview

@@ -1041,17 +1041,39 @@ constexpr uint32_t SAVEMAP_CHAR_LIMITBITS_OFF = 0x22;  // u16 learned mask
 //   the spoken "battle only" state mirrors the drawn gray by
 //   construction (disk bytes: usable = ids {0,1,2,7,8,0x33}).
 //
-//   MAGICMENU_PANE: 0 = spell list, 1 = the second pane (cmp sites
-//   0x710E0E/0x710FBA select the alternate draw path). Pane-1 cursor
-//   candidate = MAGICMENU_TARGET_ROW (drawn at row*0x78). ⚠ pane
-//   semantics + target row are the least-proven pieces — verify live.
+//   MAGICMENU_MODE (0x921100): the screen's input MODE, dispatched
+//   through the jump table at 0x7144CC (8 cases). ⚠ v2.30.52
+//   PLAY-CORRECTION — the v2.30.48 guess (0 = spell list, 1 = target)
+//   was INVERTED, which is why arrow keys spoke nothing:
+//     case 0 (handler 0x7135F8) = CHARACTER-SELECT pane. Its up/down
+//       (keys 4/8 via 0x6F53F1) cycle MAGICMENU_PARTY_SLOT 0..2 with
+//       the SAVEMAP_PARTY_IDS 0xFF skip — the same party-cycler shape
+//       that mis-identified the equip cursor in v2.30.34/.50.
+//     case 1 (handler 0x71377F) = THE SPELL LIST: it computes the
+//       spell index from the cursor trio and runs the OK press (MP
+//       check reads block+0x14 = current MP at [slot*0x440+0xDBA4AC],
+//       cost = list entry byte +1) — the definitive "this mode owns
+//       the spell grid" evidence, the same what-consumes-it rule that
+//       settled the equip category row.
+//     -1 seen at screen entry (pre-init), 2/3 written as mode+2 on OK
+//       (0x713638/0x713693) = the confirm/target sub-modes.
+//   LIVE EVIDENCE (2026-08-01 diag session): mode ran -1 → 0 and STAYED
+//   0 while the player pressed up/down eight times; the cursor trio
+//   never moved — because those presses were the case-0 character
+//   cycler, not the grid.
 constexpr uint32_t MAGICMENU_SCREEN_INDEX = 2;
 constexpr uint32_t MAGICMENU_PARTY_SLOT   = 0x00DD17E8; // u32 0..2
 constexpr uint32_t MAGICMENU_LIST_COL     = 0x00DD1708; // u32 widget +0 (0..2)
 constexpr uint32_t MAGICMENU_LIST_ROW     = 0x00DD170C; // u32 widget +4
 constexpr uint32_t MAGICMENU_LIST_SCROLL  = 0x00DD171C; // u32 widget +0x14
-constexpr uint32_t MAGICMENU_PANE         = 0x00921100; // u32 0=list 1=target
-constexpr uint32_t MAGICMENU_TARGET_ROW   = 0x00DD16D4; // u32 (verify live)
+constexpr uint32_t MAGICMENU_MODE         = 0x00921100; // u32 input mode
+constexpr uint32_t MAGICMENU_MODE_CHARSEL = 0;          // character pane
+constexpr uint32_t MAGICMENU_MODE_LIST    = 1;          // spell grid
+constexpr uint32_t MAGICMENU_TARGET_SLOT  = 0x00DD16D4; // u32 party slot the
+                                                        // OK path indexes into
+                                                        // SAVEMAP_PARTY_IDS
+                                                        // (0x7137F8) — the
+                                                        // use-on-whom cursor
 constexpr uint32_t MAGIC_MENU_USABLE_TABLE = 0x00714440; // u8[0x34] in .text
 constexpr uint32_t MAGIC_MENU_USABLE_GRAY_CASE = 3;      // case 3 = grayed
 

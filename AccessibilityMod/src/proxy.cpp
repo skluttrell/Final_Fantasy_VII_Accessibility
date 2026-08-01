@@ -3841,6 +3841,56 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             FF7Addr::MENU_DISPATCH_INDEX);
         const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
             FF7Addr::BATTLE_END_MODE);
+
+        // v2.30.52 DIAGNOSTIC (debug_log only): the play report "only the
+        // first spell speaks, arrows say nothing" is consistent with the
+        // cursor trio being correct (the sub DRAWS its highlight from
+        // 0xDD1708/0xDD170C — row·0x24 / col·0xA8, disasm 0x7111A9) while
+        // something upstream stops the thread. This logs the gate inputs
+        // AND the trio on any change while a menu is open, so one short
+        // session tells us whether the dispatch index moves under the
+        // spell grid, whether GAME_MODE trips the foreign-screen
+        // stand-down, or whether the cursor values genuinely never move.
+        // Runs BEFORE the gates on purpose. Removed once the cause is in.
+        if (Config::Get().debug_log && menu_open == 1) {
+            const uint8_t gm = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::GAME_MODE);
+            const uint32_t c0 = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MAGICMENU_LIST_COL);
+            const uint32_t r0 = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MAGICMENU_LIST_ROW);
+            const uint32_t s0 = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MAGICMENU_LIST_SCROLL);
+            const uint32_t p0 = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MAGICMENU_MODE);
+            const uint32_t cs0 = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::CHARSEL_CURSOR);
+            const uint32_t sl0 = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::MAGICMENU_PARTY_SLOT);
+            static uint64_t last_diag = 0xFFFFFFFFFFFFFFFFull;
+            const uint64_t key =
+                (static_cast<uint64_t>(screen & 0xFF) << 48) |
+                (static_cast<uint64_t>(gm) << 40) |
+                (static_cast<uint64_t>(cs0 & 0xFF) << 32) |
+                ((p0 & 0xFF) << 24) | ((sl0 & 0xFF) << 16) |
+                ((c0 & 0xFF) << 8) | ((r0 & 0x0F) << 4) | (s0 & 0x0F);
+            if (key != last_diag) {
+                last_diag = key;
+                char dbg[192];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] MAGICM diag screen=%lu mode=%u mmode=%ld "
+                    "slot=%lu charsel=%lu col=%lu row=%lu scroll=%lu",
+                    static_cast<unsigned long>(screen), gm,
+                    static_cast<long>(p0),
+                    static_cast<unsigned long>(sl0),
+                    static_cast<unsigned long>(cs0),
+                    static_cast<unsigned long>(c0),
+                    static_cast<unsigned long>(r0),
+                    static_cast<unsigned long>(s0));
+                Log::Write(dbg);
+            }
+        }
+
         if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
             screen != FF7Addr::MAGICMENU_SCREEN_INDEX) {
             was_open = false;
@@ -3861,7 +3911,7 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
         const uint32_t scroll = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MAGICMENU_LIST_SCROLL);
         const uint32_t pane = *reinterpret_cast<const volatile uint32_t*>(
-            FF7Addr::MAGICMENU_PANE);
+            FF7Addr::MAGICMENU_MODE);
 
         bool fresh = false;
         if (!was_open) {
@@ -3884,37 +3934,53 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             fresh = true;   // v2.30.51: queue the follow-up (see equip)
         }
 
-        // ---- pane transitions (0 = spell list, 1 = target pane) ----------
+        // ---- mode transitions --------------------------------------------
+        // v2.30.52: modes CORRECTED (see MAGICMENU_MODE provenance) —
+        // 0 = character-select pane, 1 = spell grid, 2/3 = confirm/target.
         if (pane != last_pane) {
             if (last_pane != 0xFFFFFFFF) {
                 char dbg[64];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] MAGICM pane %lu -> %lu",
-                    static_cast<unsigned long>(last_pane),
-                    static_cast<unsigned long>(pane));
+                    "[FF7Access] MAGICM mode %ld -> %ld",
+                    static_cast<long>(last_pane), static_cast<long>(pane));
                 Log::Write(dbg);
-                if (pane == 1)
-                    TTS::Speak(L"Use on whom?", true);
             }
             last_pane = pane;
             last_trow = 0xFFFFFFFF;
+            last_sel  = 0xFFFFFFFF;   // re-announce on entering the grid
         }
 
-        if (pane == 1) {
-            // Target pane: the drawn cursor row (least-proven static piece
-            // — see the ff7_addresses.h note). Rows are party slots.
-            const uint32_t trow = *reinterpret_cast<const volatile uint32_t*>(
-                FF7Addr::MAGICMENU_TARGET_ROW);
-            if (trow != last_trow && trow <= 2) {
-                last_trow = trow;
-                wchar_t who[32];
-                PartySlotLabel(static_cast<uint8_t>(trow), who, _countof(who));
-                TTS::Speak(who, true);
+        if (pane != FF7Addr::MAGICMENU_MODE_LIST) {
+            // CHARACTER-SELECT pane (mode 0 / the pre-init -1). The
+            // player is choosing whose magic to open; the spell grid is
+            // not focused, so speaking a spell here was the v2.30.48 bug
+            // (it announced "Ice" the moment the screen opened).
+            //
+            // Which variable moves is settled by the game, not by us
+            // (the Limit menu's mode-agnostic trick): the case-0 handler
+            // cycles MAGICMENU_PARTY_SLOT, while the standard party pane
+            // uses CHARSEL_CURSOR — announce whichever changes, so a
+            // wrong guess cannot silence the pane.
+            const uint32_t csel = *reinterpret_cast<const volatile uint32_t*>(
+                FF7Addr::CHARSEL_CURSOR);
+            const uint32_t who_now = (slot <= 2) ? slot
+                                   : (csel <= 2 ? csel : 0xFFFFFFFF);
+            const uint32_t key = ((slot & 0xFF) << 8) | (csel & 0xFF);
+            if (key != last_trow && who_now != 0xFFFFFFFF) {
+                const bool first = (last_trow == 0xFFFFFFFF);
+                last_trow = key;
+                if (!first || !fresh) {
+                    wchar_t who[32];
+                    PartySlotLabel(static_cast<uint8_t>(
+                        csel <= 2 && csel != slot ? csel : who_now),
+                        who, _countof(who));
+                    TTS::Speak(who, /*interrupt=*/!fresh);
+                }
             }
-            continue;   // list cursor is parked while targeting
+            continue;   // grid cursor is parked until a character is chosen
         }
 
-        // ---- spell list selection -----------------------------------------
+        // ---- spell list selection (mode 1) --------------------------------
         if (col > 2 || row > 20 || scroll > 20 || slot > 2)
             continue;   // widget mid-rebuild; values settle next poll
         const uint32_t sel = col | ((row + scroll) << 8);

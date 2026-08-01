@@ -5,7 +5,22 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[FLIPCUT] Char-flip announce cut off — SHIPPED v2.30.51 (2026-08-01), awaiting retest
+[MAGICMODE] Magic menu modes inverted — SHIPPED v2.30.52 (2026-08-01), awaiting retest
+------------------------------------------------------------------------
+Diagnostic-led (probe build + 20s session; screen stayed 2, trio never
+moved => not a gate bail). v2.30.48 had modes backwards: jump table
+0x7144CC case 0 = CHARACTER pane, case 1 = SPELL GRID (its handler
+does the index + MP-check OK press). Mod announced a spell at screen
+open then skipped the real grid. Fixed + character pane now announces
+(watches BOTH party-slot and CHARSEL_CURSOR, Limit-menu style).
+⚠ 3rd sighting: 0..2 wrap + party-ids-skip loop = CHARACTER cycler,
+never a row cursor — check before naming. DIAG STILL IN (debug-gated,
+logs charsel too): REMOVE once the retest passes. VERIFY: character
+names as you choose, then spell names + "battle only"; log shows
+"MAGICM mode 0 -> 1". Then also re-verify L1/R1 (v2.30.51 confirmed
+working by the user before this build overwrote it).
+
+[FLIPCUT] Char-flip announce cut off — SHIPPED v2.30.51 (2026-08-01), CONFIRMED by user 2026-08-01
 ------------------------------------------------------------------------
 L1/R1 spoke only the gear row: the name announce (interrupt) was cut
 by the same-poll row re-announce (also interrupt). Fixed in ALL FOUR
