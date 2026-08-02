@@ -251,6 +251,8 @@ KINDS = ["EXIT", "EXIT_OK", "CLIMB", "OK", "SCENE", "INERT"]
 K_EXIT, K_EXIT_OK, K_CLIMB, K_OK, K_SCENE, K_INERT = range(6)
 
 entries = []          # (field_id, ent, kind, dest)
+cond_edges = []       # (field_id, ent, kind, dest) — one per CANDIDATE dest
+                      # of a multi-destination exit (v2.30.65 journey graph)
 stats = dict(fields=0, lines=0, walk_errors=0, preq_skipped=0,
              multi_dest=0, kinds=[0] * 6)
 detail = {}           # field_name -> [(ent, ename, kind, dest, coords)]
@@ -358,6 +360,21 @@ for fname, entry_off in toc:
             dest = dests[0] if len(uniq) == 1 else -1
             if len(uniq) > 1:
                 stats['multi_dest'] += 1
+                # v2.30.65 journey graph: the FULL candidate set still
+                # matters for routing — the elevtr1 lift is exactly such a
+                # line, and without these edges the reactor's two halves
+                # are disconnected (the 2026-08-02 dry-run finding). Each
+                # candidate is a real "this line CAN take you there" edge;
+                # which one fires depends on state, and the journey's
+                # arrival recompute self-heals if the other one did.
+                # The engine remaps MAPJUMP field 0x313 -> 0x159 in the
+                # handler (static disasm 2026-08-02) — mirror it here so
+                # graph ids match where the player actually lands.
+                for d2 in sorted(uniq):
+                    if d2 == 0x313:
+                        d2 = 0x159
+                    for fid2 in name_to_ids[fname]:
+                        cond_edges.append((fid2, e, kind, d2))
         elif lader:
             kind, dest = K_CLIMB, -1
         elif ok_nonempty:
@@ -463,6 +480,25 @@ inline constexpr LineInfo kLines[] = {
         h.write(f"    {{{fid2}, {e}, {kind}, {dest}}},\n")
     h.write("""};
 
+// Conditional multi-destination exits (v2.30.65 journey graph): LINE
+// entities whose reachable MAPJUMPs DISAGREE (elevators, story doors).
+// kLines above records dest=-1 for these -- speech must never guess --
+// but routing wants the full candidate set: each row is one "this line
+// CAN take you there" edge. Which candidate fires depends on game state;
+// the journey's on-arrival recompute self-heals when it was the other
+// one. Same (field_id, entity_id) identity as kLines; a given pair can
+// appear once per candidate destination. MAPJUMP's engine-side field
+// remap (0x313 -> 0x159) is already applied.
+inline constexpr LineInfo kCondExits[] = {
+""")
+    cond_edges.sort()
+    for fid2, e, kind, dest in cond_edges:
+        h.write(f"    {{{fid2}, {e}, {kind}, {dest}}},\n")
+    h.write("""};
+
+inline constexpr size_t kCondExitCount =
+    sizeof(kCondExits) / sizeof(kCondExits[0]);
+
 inline const LineInfo* Find(uint16_t field_id, uint8_t entity_id)
 {
     size_t lo = 0, hi = sizeof(kLines) / sizeof(kLines[0]);
@@ -483,5 +519,6 @@ inline const LineInfo* Find(uint16_t field_id, uint8_t entity_id)
 
 } // namespace FF7LineCatalog
 """)
-print(f"\nHeader written: {hdr_path} ({len(entries)} entries)")
+print(f"\nHeader written: {hdr_path} ({len(entries)} entries, "
+      f"{len(cond_edges)} conditional-exit edges)")
 print("VALIDATION VERDICT:", "PASS" if ok else "FAIL -- do not ship")

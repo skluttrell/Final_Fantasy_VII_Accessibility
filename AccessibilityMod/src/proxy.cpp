@@ -80,6 +80,7 @@
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
 #include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
+#include "ff7_field_graph.h"          // generated: gateway edges (journeys, v2.30.65)
 #include "ff7_prop_catalog.h" // generated: talk-scripted model entities
                               // (device whitelist for MC_PROP, v2.30.45)
                                       // (exit/climb/OK/scene, v2.30.23)
@@ -91,6 +92,7 @@
 #include <vector>    // walkmesh snapshot + A* state (v2.22 turn-by-turn)
 #include <cfloat>    // FLT_MAX as the A* "unvisited" cost (v2.22)
 #include <set>       // battle scene-message dedup by buffer_idx (v2.36)
+#include <algorithm> // std::sort for the Places nearest-first list (v2.30.65)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -7314,6 +7316,10 @@ struct NavDest {
                            // their live +0x78 id â€” exact even on stacked
                            // layers); -1 = unknown, turn-by-turn locates the
                            // target point geometrically instead (v2.22)
+    int16_t place_field;   // CAT_PLACES only (v2.30.65): the destination
+                           // FIELD id this entry names; meaningless (and
+                           // unread) in every other category, which is why
+                           // the other builders leave it unset
 };
 
 // ---------------------------------------------------------------------------
@@ -8139,7 +8145,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
 // 2026-07-14 code review's altitude finding).
 // ---------------------------------------------------------------------------
 enum { CAT_ALL = 0, CAT_EXITS = 1, CAT_PEOPLE = 2, CAT_SAVE = 3,
-       CAT_TRIGGERS = 4, CAT_ITEMS = 5 };
+       CAT_TRIGGERS = 4, CAT_ITEMS = 5, CAT_PLACES = 6 };
 
 // What a field model IS, decided in exactly one place from its dev label.
 enum ModelClass : uint8_t {
@@ -9327,6 +9333,208 @@ static bool DestinationName(int dest_id, std::wstring& out)
     return !out.empty();
 }
 
+// ---------------------------------------------------------------------------
+// CROSS-FIELD JOURNEY GRAPH (v2.30.65) â€” "guide me back to Sector 7 slums".
+//
+// Nodes are maplist field ids; directed edges are the ways OUT of a field:
+//   - gateway edges from the offline catalog (ff7_field_graph.h -- 1036
+//     walk-across exit lines game-wide, {src, dst, slot});
+//   - script-exit edges from the line catalog (ff7_line_trigger_catalog.h
+//     kinds EXIT/EXIT_OK with a known unconditional MAPJUMP destination).
+// Both kinds carry only their runtime IDENTITY (gateway slot / owning
+// entity id) -- geometry is always re-read live at guidance time from the
+// same engine structures the Exits/Triggers categories use, so guidance
+// can never disagree with what the engine actually walks on. The reactor
+// play-test lesson (2026-08-02) is baked in: story doors can jump by
+// scripted MAPJUMP rather than their gateway record, so BOTH edge kinds
+// coexist and leg building tries every edge toward the next field until
+// one resolves live.
+//
+// World-map nodes are excluded (journeys are field-only; crossing the
+// world map is its own future campaign). Story locks are the accepted v1
+// honesty gap: the graph knows geometry, not progression flags -- a
+// story-locked door routes normally and the door simply won't fire; the
+// journey then keeps naming that exit rather than inventing a detour.
+//
+// THREADING: FieldNavThread only, like the places cache above.
+// ---------------------------------------------------------------------------
+struct FieldGraphEdge {
+    uint16_t dst;    // destination field id
+    uint8_t  kind;   // 0 = gateway, 1 = line EXIT, 2 = line EXIT_OK
+    uint8_t  key;    // gateway slot (kind 0) or owning entity id (1/2)
+};
+
+// Adjacency lists, built once on first use (~1,500 edges total; index =
+// source field id). static-local so construction is on-demand and
+// thread-confined.
+static const std::vector<std::vector<FieldGraphEdge>>& FieldGraphAdjacency()
+{
+    static std::vector<std::vector<FieldGraphEdge>> adj;
+    static bool built = false;
+    if (built)
+        return adj;
+    built = true;
+    adj.resize(FF7FieldNames::kCount);
+    const auto is_wm = [](int id) {
+        const char* nm = FF7FieldNames::Get(id);
+        return nm && nm[0] == 'w' && nm[1] == 'm';
+    };
+    for (size_t i = 0; i < FF7FieldGraph::kGatewayEdgeCount; ++i) {
+        const FF7FieldGraph::GatewayEdge& e = FF7FieldGraph::kGatewayEdges[i];
+        if (e.src >= FF7FieldNames::kCount || e.dst >= FF7FieldNames::kCount)
+            continue;
+        if (is_wm(e.src) || is_wm(e.dst))
+            continue;
+        adj[e.src].push_back({e.dst, 0, e.slot});
+    }
+    const auto add_line_edge = [&](const FF7LineCatalog::LineInfo& l) {
+        if (l.kind != FF7LineCatalog::LK_EXIT &&
+            l.kind != FF7LineCatalog::LK_EXIT_OK)
+            return;
+        if (l.dest_field <= 0 || l.dest_field >= FF7FieldNames::kCount)
+            return;
+        if (l.field_id >= FF7FieldNames::kCount ||
+            is_wm(l.field_id) || is_wm(l.dest_field))
+            return;
+        if (l.field_id == l.dest_field)
+            return;
+        adj[l.field_id].push_back({
+            static_cast<uint16_t>(l.dest_field),
+            static_cast<uint8_t>(l.kind == FF7LineCatalog::LK_EXIT ? 1 : 2),
+            l.entity_id});
+    };
+    // Unconditional script exits (kLines rows with a real dest)...
+    for (const FF7LineCatalog::LineInfo& l : FF7LineCatalog::kLines)
+        add_line_edge(l);
+    // ...plus every CANDIDATE of the conditional multi-destination exits
+    // (kCondExits -- elevators, story doors). Without these the reactor's
+    // halves are disconnected at elevtr1 (the 2026-08-02 dry-run finding);
+    // with them, "take the lift" is a routable edge to each floor and the
+    // arrival recompute self-heals if the lift went to the other one.
+    for (size_t i = 0; i < FF7LineCatalog::kCondExitCount; ++i)
+        add_line_edge(FF7LineCatalog::kCondExits[i]);
+    return adj;
+}
+
+// Breadth-first search from `from` over the whole graph (788 nodes --
+// microseconds). dist[id] = screens between, -1 unreachable; prev[id] =
+// predecessor field on a shortest path. Hop counts, not walking distance:
+// a screen transition is the player-meaningful unit ("3 screens away"),
+// and per-screen walk lengths are unknowable without loading every mesh.
+static void FieldGraphBFS(int from, std::vector<int16_t>& dist,
+                          std::vector<int16_t>& prev)
+{
+    const auto& adj = FieldGraphAdjacency();
+    dist.assign(FF7FieldNames::kCount, -1);
+    prev.assign(FF7FieldNames::kCount, -1);
+    if (from <= 0 || from >= FF7FieldNames::kCount)
+        return;
+    std::vector<int16_t> queue;
+    queue.reserve(64);
+    queue.push_back(static_cast<int16_t>(from));
+    dist[from] = 0;
+    for (size_t head = 0; head < queue.size(); ++head) {
+        const int cur = queue[head];
+        for (const FieldGraphEdge& e : adj[cur]) {
+            if (dist[e.dst] >= 0)
+                continue;
+            dist[e.dst] = static_cast<int16_t>(dist[cur] + 1);
+            prev[e.dst] = static_cast<int16_t>(cur);
+            queue.push_back(static_cast<int16_t>(e.dst));
+        }
+    }
+}
+
+// First field to head for on the shortest path from -> target, or -1.
+static int FieldGraphNextHop(int from, int target,
+                             const std::vector<int16_t>& prev,
+                             const std::vector<int16_t>& dist)
+{
+    if (target <= 0 || target >= FF7FieldNames::kCount || dist[target] < 0)
+        return -1;
+    int n = target;
+    while (prev[n] != from) {
+        n = prev[n];
+        if (n < 0)
+            return -1;   // chain broken (cannot happen after a clean BFS,
+                         // but never loop on corrupt state)
+    }
+    return n;
+}
+
+// Resolve the concrete thing to WALK TO for the current leg: the live
+// gateway line or script LINE zone leading from field_id to next_field.
+// Tries every graph edge toward next_field until one resolves against the
+// live engine structures -- a script line not yet created (or disabled by
+// LINON) falls through to a gateway alternative and vice versa. Returns
+// false when nothing resolves (e.g. a story-gated line that does not
+// exist yet AND no gateway covers that doorway).
+static bool BuildJourneyLegDest(int field_id, int next_field, uint32_t hdr,
+                                NavDest& out)
+{
+    const auto& adj = FieldGraphAdjacency();
+    if (field_id <= 0 || field_id >= FF7FieldNames::kCount)
+        return false;
+
+    std::wstring dn;
+    if (!DestinationName(next_field, dn))
+        dn = L"next screen";
+
+    for (const FieldGraphEdge& e : adj[field_id]) {
+        if (e.dst != next_field)
+            continue;
+        if (e.kind == 0) {
+            // Gateway: re-read the live record (same eligibility as the
+            // Exits category -- real dest + non-degenerate line). The live
+            // dest is also cross-checked against the catalog edge so a
+            // modded flevel can at worst suppress a leg, never misroute it.
+            const uint8_t* gw = reinterpret_cast<const uint8_t*>(
+                hdr + FF7Addr::FTRIG_OFF_GATEWAYS +
+                e.key * FF7Addr::FTRIG_GATEWAY_SIZE);
+            const int16_t* v = reinterpret_cast<const int16_t*>(gw);
+            const int16_t dest_id =
+                *reinterpret_cast<const int16_t*>(gw + 0x12);
+            if (dest_id != next_field)
+                continue;
+            if (v[0] == 0 && v[1] == 0 && v[3] == 0 && v[4] == 0)
+                continue;
+            _snwprintf_s(out.name, _countof(out.name), _TRUNCATE,
+                         L"To %ls", dn.c_str());
+            out.line_x1 = v[0]; out.line_y1 = v[1]; out.line_z1 = v[2];
+            out.line_x2 = v[3]; out.line_y2 = v[4]; out.line_z2 = v[5];
+            out.model_slot = -1;
+            out.target_tri = -1;
+            out.place_field = static_cast<int16_t>(next_field);
+            return true;
+        }
+        // Script line: find the ENABLED live line owned by that entity
+        // (same identity the Triggers category uses; SLINE moves and
+        // LINON disables are honored by construction because the live
+        // array is the source).
+        const uint16_t n_lines = *reinterpret_cast<const volatile uint16_t*>(
+            FF7Addr::FIELD_LINE_COUNT);
+        for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
+            const uint8_t* le = reinterpret_cast<const uint8_t*>(
+                FF7Addr::FIELD_LINE_ARRAY + i * FF7Addr::FLINE_STRIDE);
+            if (le[FF7Addr::FLINE_OFF_ENABLED] == 0)
+                continue;
+            if (le[FF7Addr::FLINE_OFF_ENTITY] != e.key)
+                continue;
+            const int16_t* v = reinterpret_cast<const int16_t*>(le);
+            _snwprintf_s(out.name, _countof(out.name), _TRUNCATE,
+                         e.kind == 2 ? L"To %ls, press OK" : L"To %ls",
+                         dn.c_str());
+            out.line_x1 = v[0]; out.line_y1 = v[1]; out.line_z1 = v[2];
+            out.line_x2 = v[3]; out.line_y2 = v[4]; out.line_z2 = v[5];
+            out.model_slot = -1;
+            out.target_tri = -1;
+            out.place_field = static_cast<int16_t>(next_field);
+            return true;
+        }
+    }
+    return false;
+}
+
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
     // The FF4-scheme hotkeys we poll, with per-key previous-state for edge
@@ -9347,9 +9555,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // on one field (opening the menu or fighting a battle does NOT reset
     // them); a field change resets both.
     static const wchar_t* const kCategoryNames[] = {
-        L"All", L"Exits", L"People", L"Save points", L"Triggers", L"Items"
+        L"All", L"Exits", L"People", L"Save points", L"Triggers", L"Items",
+        L"Places"
     };
-    constexpr int kCategoryCount = 6;
+    constexpr int kCategoryCount = 7;
+
+    // Cross-field journey state (v2.30.65). A journey is started by
+    // pressing directions (\ or P) on a Places selection and lives until
+    // arrival, an unreachable recompute, or Shift+K. The target NAME is
+    // copied (not looked up per use) so the announcement stays stable
+    // even if the caption cache learns a different spelling mid-journey.
+    bool    journey_active = false;
+    int16_t journey_target = 0;
+    wchar_t journey_name[24] = {};
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
@@ -9685,6 +9903,90 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     msg += L", facing ";
                     msg += kDpadSectors[facing_sector];
                     TTS::Speak(msg, /*interrupt=*/false);
+                }
+            }
+
+            // ---- journey progress (v2.30.65) --------------------------
+            // Runs on the same arrival edge, AFTER the screen announce so
+            // the leg queues behind it (one action, second utterance
+            // queues â€” the v2.30.51 interrupt-chain rule). Recomputes
+            // from the ACTUAL field every time, so wrong turns, warps,
+            // and detours all self-heal: the next leg is always the
+            // shortest path from wherever the player really is.
+            if (journey_active) {
+                wchar_t jmsg[160];
+                if (field_id == journey_target) {
+                    _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
+                                 L"Arrived: %ls. Journey complete.",
+                                 journey_name);
+                    TTS::Speak(jmsg, /*interrupt=*/false);
+                    journey_active = false;
+                } else {
+                    std::vector<int16_t> jdist, jprev;
+                    FieldGraphBFS(field_id, jdist, jprev);
+                    const int nxt = FieldGraphNextHop(
+                        field_id, journey_target, jprev, jdist);
+                    NavDest leg;
+                    if (nxt < 0) {
+                        _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
+                                     L"No known route to %ls from here. "
+                                     L"Journey ended.", journey_name);
+                        TTS::Speak(jmsg, /*interrupt=*/false);
+                        journey_active = false;
+                    } else if (BuildJourneyLegDest(field_id, nxt, hdr, leg)) {
+                        // Straight-line hint only (sector + seconds) â€” the
+                        // full turn-by-turn stays on the \ key, where the
+                        // player asks for it; an automatic multi-sentence
+                        // route every screen would drown the transition.
+                        const float ex2 = static_cast<float>(
+                            leg.line_x2 - leg.line_x1);
+                        const float ey2 = static_cast<float>(
+                            leg.line_y2 - leg.line_y1);
+                        const float wx2 = static_cast<float>(px - leg.line_x1);
+                        const float wy2 = static_cast<float>(py - leg.line_y1);
+                        const float l2 = ex2 * ex2 + ey2 * ey2;
+                        float tt = (l2 > 0.0f)
+                            ? ((wx2 * ex2 + wy2 * ey2) / l2) : 0.0f;
+                        if (tt < 0.0f) tt = 0.0f;
+                        if (tt > 1.0f) tt = 1.0f;
+                        const float jdx = (leg.line_x1 + tt * ex2) - px;
+                        const float jdy = (leg.line_y1 + tt * ey2) - py;
+                        const float jd  = sqrtf(jdx * jdx + jdy * jdy);
+                        const float wdeg =
+                            atan2f(jdx, jdy) * (180.0f / 3.14159265f);
+                        int secs = static_cast<int>(jd / 160.0f + 0.5f);
+                        if (secs < 1) secs = 1;
+                        const int16_t left = jdist[journey_target];
+                        _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
+                                     L"%ls: %d %ls left. Next, %ls, %ls, "
+                                     L"%d %ls.",
+                                     journey_name,
+                                     static_cast<int>(left),
+                                     left == 1 ? L"screen" : L"screens",
+                                     leg.name,
+                                     kDpadSectors[DpadSectorIndex(
+                                         wdeg + control_deg - 180.0f)],
+                                     secs,
+                                     secs == 1 ? L"second" : L"seconds");
+                        TTS::Speak(jmsg, /*interrupt=*/false);
+                    } else {
+                        // Edges exist on the graph but nothing resolves
+                        // live â€” the story-gated case. Keep the journey:
+                        // the door may open after the player does what
+                        // the scene wants.
+                        _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
+                                     L"%ls: the next exit is not available "
+                                     L"here yet.", journey_name);
+                        TTS::Speak(jmsg, /*interrupt=*/false);
+                    }
+                    if (Config::Get().debug_log && journey_active) {
+                        char dbg[128];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] JOURNEY at=%d target=%d next=%d",
+                            static_cast<int>(field_id),
+                            static_cast<int>(journey_target), nxt);
+                        Log::Write(dbg);
+                    }
                 }
             }
         }
@@ -10120,6 +10422,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         bool announce_cat = false;
+        bool journey_cancelled = false;
         if (act_prev_cat || act_next_cat) {
             category += act_next_cat ? 1 : -1;
             if (category < 0) category = kCategoryCount - 1;
@@ -10127,9 +10430,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             selection = 0;
             announce_cat = true;
         } else if (act_reset_cat) {
+            // Shift+K resets the category AND cancels an active journey
+            // (v2.30.65) â€” the one "stop guiding me" gesture, matching
+            // its existing "back to a known state" meaning.
             category  = 0;
             selection = 0;
             announce_cat = true;
+            if (journey_active) {
+                journey_active = false;
+                journey_cancelled = true;
+            }
         }
 
         // ---- rebuild the destination list (fresh every keypress) ---------
@@ -10696,6 +11006,54 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
         }
 
+        // ---- Places (v2.30.65): cross-field journey targets ---------------
+        // Every VISITED place (the v2.25 caption cache â€” parity with a
+        // sighted player's memory of where they have been) reachable on
+        // the journey graph from here, nearest-first by screen count.
+        // Several fields can share one caption ("Sector 1 Station"); only
+        // the nearest of each spoken name is listed â€” J/L cycling cannot
+        // disambiguate identical names by ear, and "take me to the nearest
+        // one" is the right reading of a spoken duplicate anyway. NOT in
+        // CAT_ALL: places are not positions on this screen, and mixing
+        // them into the positional list would break its distance idiom.
+        if (category == CAT_PLACES) {
+            std::vector<int16_t> pdist, pprev;
+            FieldGraphBFS(field_id, pdist, pprev);
+            struct PlaceTmp { int16_t id; int16_t hops; };
+            std::vector<PlaceTmp> places;
+            for (int id = 1; id < FF7FieldNames::kCount; ++id) {
+                if (id == field_id || !g_places[id][0] || pdist[id] < 0)
+                    continue;
+                places.push_back({static_cast<int16_t>(id), pdist[id]});
+            }
+            std::sort(places.begin(), places.end(),
+                      [](const PlaceTmp& a, const PlaceTmp& b) {
+                          return a.hops != b.hops ? a.hops < b.hops
+                                                  : a.id < b.id;
+                      });
+            for (const PlaceTmp& p : places) {
+                if (n_dests >= static_cast<int>(_countof(dests)))
+                    break;
+                bool dup = false;
+                for (int k = 0; k < n_dests && !dup; ++k)
+                    dup = wcsncmp(dests[k].name, g_places[p.id],
+                                  wcslen(g_places[p.id])) == 0 &&
+                          dests[k].name[wcslen(g_places[p.id])] == L',';
+                if (dup)
+                    continue;   // nearest same-caption field already listed
+                NavDest& d = dests[n_dests++];
+                _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
+                             L"%ls, %d %ls", g_places[p.id],
+                             static_cast<int>(p.hops),
+                             p.hops == 1 ? L"screen" : L"screens");
+                d.line_x1 = d.line_y1 = d.line_x2 = d.line_y2 = 0;
+                d.line_z1 = d.line_z2 = 0;
+                d.model_slot = -1;
+                d.target_tri = -1;
+                d.place_field = p.id;
+            }
+        }
+
         if (selection >= n_dests)
             selection = (n_dests > 0) ? n_dests - 1 : 0;
 
@@ -10731,6 +11089,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // of the list actually built for the new category.
         if (announce_cat) {
             speak_category();
+            if (journey_cancelled)
+                // Second utterance of one action QUEUES (v2.30.51 rule).
+                TTS::Speak(L"Journey ended.", /*interrupt=*/false);
             continue;
         }
         if (act_prev_dest || act_next_dest) {
@@ -10754,7 +11115,55 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             TTS::Speak(L"No destinations.", /*interrupt=*/true);
             continue;
         }
-        const NavDest& d = dests[selection];
+
+        // v2.30.65: on a Places selection, \ STARTS (or retargets) a
+        // journey and the thing to route to is the FIRST LEG's exit on
+        // this field, not the place itself (which is screens away). The
+        // leg NavDest then flows through the unchanged directions code
+        // below â€” turn-by-turn, journeys-within-field, body cautions and
+        // all â€” exactly as if the player had selected that exit by hand.
+        NavDest journey_leg;
+        if (category == CAT_PLACES) {
+            const int16_t target = dests[selection].place_field;
+            std::vector<int16_t> jdist, jprev;
+            FieldGraphBFS(field_id, jdist, jprev);
+            const int nxt = FieldGraphNextHop(field_id, target, jprev, jdist);
+            if (nxt < 0) {
+                // Should not happen (the list only offers reachable
+                // places) â€” but the field can change under a queued press.
+                TTS::Speak(L"No known route from here.", /*interrupt=*/true);
+                continue;
+            }
+            if (!BuildJourneyLegDest(field_id, nxt, hdr, journey_leg)) {
+                TTS::Speak(L"The way there is not available here yet.",
+                           /*interrupt=*/true);
+                continue;
+            }
+            journey_active = true;
+            journey_target = target;
+            wcsncpy_s(journey_name, g_places[target], _TRUNCATE);
+            // Fold the journey context into the leg's spoken name so the
+            // whole thing is ONE utterance ("Journey to Sector 1 Station,
+            // 3 screens. First, To nmkin 2: up 4 seconds...").
+            wchar_t wrapped[64];
+            _snwprintf_s(wrapped, _countof(wrapped), _TRUNCATE,
+                         L"Journey to %ls, %d %ls. First, %ls",
+                         journey_name,
+                         static_cast<int>(jdist[target]),
+                         jdist[target] == 1 ? L"screen" : L"screens",
+                         journey_leg.name);
+            wcsncpy_s(journey_leg.name, wrapped, _TRUNCATE);
+            if (Config::Get().debug_log) {
+                char dbg[128];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] JOURNEY start at=%d target=%d hops=%d next=%d",
+                    static_cast<int>(field_id), static_cast<int>(target),
+                    static_cast<int>(jdist[target]), nxt);
+                Log::Write(dbg);
+            }
+        }
+        const NavDest& d = (category == CAT_PLACES) ? journey_leg
+                                                    : dests[selection];
 
         // Nearest point on the exit line segment to the player.
         const float ex = static_cast<float>(d.line_x2 - d.line_x1);

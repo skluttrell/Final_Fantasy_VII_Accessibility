@@ -5182,6 +5182,64 @@ captures at ~0.55s intervals)**:
   (text mod rewords descriptions?); Magic I-key descriptions silent
   on 7H until a sig ladder like v2.30.47's (TODO [K2DESC]).
 
+### v2.30.65 (2026-08-02): CROSS-FIELD JOURNEY GRAPH - the "Places" category
+
+**The GPS feature the construction investigation was for**: pick a place
+you have visited, get guided there screen by screen.
+
+**Interaction (key parity - ZERO new bindings)**: a 7th browser category
+"Places" (Shift+J/L). J/L cycles VISITED places (the v2.25 caption
+cache = parity with a sighted player's memory), nearest-first as
+"Sector 1 Station, 3 screens"; several fields sharing one caption list
+only the nearest. K announces. **\ or P starts the journey**: speaks
+"Journey to X, N screens. First, To <next screen>: <turn-by-turn>" -
+the first leg is fed through the UNCHANGED directions tail, so
+turn-by-turn, within-field journeys, and body cautions all apply.
+On every arrival (the v2.30.64 transition tracking edge) the journey
+recomputes FROM THE ACTUAL FIELD and queues "X: N screens left. Next,
+To Y, up and left, 4 seconds" behind the screen announce - wrong turns
+and detours self-heal because the next leg is always the shortest path
+from wherever the player really is. Arrival at the target: "Arrived: X.
+Journey complete." Shift+K cancels ("Journey ended.").
+
+**Graph** (nodes = maplist field ids, directed edges = ways out):
+- NEW generated header ff7_field_graph.h (ff7_field_graph_catalog.py):
+  1036 gateway edges {src, dst, slot} game-wide - only identity stored,
+  geometry re-read LIVE from the trigger header at guidance time (the
+  Exits category's own source, so guidance can never disagree with the
+  engine).
+- Script exits from ff7_line_trigger_catalog.h (EXIT/EXIT_OK rows with
+  real dests), same live-lookup-by-entity as the Triggers category.
+- ⚠ DRY-RUN FINDING (offline BFS over the shipped headers, before
+  deploy): the reactor's halves were DISCONNECTED at elevtr1 - the
+  lift is a conditional multi-destination exit, which the v2.30.23
+  catalog honestly records as dest=-1. Elevators are exactly the
+  connectors journeys need ⇒ the line-catalog generator now ALSO emits
+  **kCondExits** (158 edges): one edge per CANDIDATE destination of
+  each multi-dest exit, with the engine's MAPJUMP 0x313->0x159 remap
+  applied. Wrong-floor outcomes self-heal via the arrival recompute.
+  Post-fix dry run: md1stin->nmkin_4 = 8 hops matching the play-test's
+  ARRIVE sequence field-for-field, both directions; md1stin->mds7
+  correctly NO PATH (train story transition, not walkable).
+- World-map nodes excluded (journeys are field-only; future campaign).
+- BFS is full-graph per query (788 nodes / 1521 edges - microseconds),
+  hop counts spoken as "screens" (the player-meaningful unit).
+
+**Honesty limits (documented, accepted v1)**: story locks are invisible
+to the graph - a locked door routes normally and the leg keeps naming
+that exit ("the next exit is not available here yet" when nothing
+resolves live); conditional exits may deliver the player to the other
+candidate (self-heals); places list only offers reachable-right-now
+targets.
+
+**Build checks**: journey literals verified in the DLL (narrow + wide);
+deployed both installs hash D1D22E0F5639F726.
+
+VERIFY (play-test checklist TODO [JOURNEY]): start a journey from the
+reactor save room back to the station; wrong-turn self-heal; Shift+K
+cancel; elevator leg wording; "not available yet" on a story door;
+Places counts sane; no chatter regression on ordinary transitions.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

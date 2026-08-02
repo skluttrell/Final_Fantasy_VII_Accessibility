@@ -5,6 +5,29 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[JOURNEY] Cross-field journeys (Places category) — SHIPPED v2.30.65 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+New 7th browser category "Places": J/L cycles visited places
+nearest-first ("Sector 1 Station, 3 screens"), K announces, \ starts a
+journey (first leg spoken with full turn-by-turn), every screen change
+recomputes and queues "X: N screens left. Next, To Y, up and left, 4
+seconds", arrival says "Journey complete", Shift+K cancels. Graph =
+1036 offline gateway edges (new ff7_field_graph.h) + line-catalog
+EXIT/EXIT_OK rows + NEW kCondExits (158 candidate edges for
+conditional exits — the elevtr1 dry-run finding; elevators connect
+areas). Offline BFS reproduced the reactor run field-for-field both
+directions before deploy.
+VERIFY: (a) from the pre-boss save room, journey back to "Sector 1
+Station" — legs speak at each arrival, count decreases, completes; (b)
+take a deliberate wrong exit mid-journey — next arrival reroutes
+without fuss; (c) Shift+K speaks "Journey ended."; (d) the elevator leg
+guides onto the lift line and survives whichever floor it goes to; (e)
+a story-locked door says "not available here yet" and keeps the
+journey; (f) ordinary non-journey transitions are unchanged (no new
+chatter). RESIDUALS (accepted v1): story locks invisible to routing;
+world map excluded; places list = visited-only (offline MPNAM caption
+harvest is the upgrade path if testers want unvisited destinations).
+
 [TRANSIT] Transition tracking + arrival facing — CONFIRMED 2026-08-02 (reactor run, 2013+7H)
 JUMP mailbox live-matched the offline gateway dump; ARRIVE match=1 on
 5/7 (both misses = scripted entries, as predicted); facing calibration
