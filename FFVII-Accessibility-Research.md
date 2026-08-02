@@ -4994,6 +4994,51 @@ Deployed both installs, hash-verified (4CC6B6C320A9DF6D).
 
 ---
 
+### v2.30.62 (2026-08-02): proximity ANNOUNCE — say what you reached
+
+**Request**: announce what the player has come within interaction range
+of (a ladder, a jump, a person with dialog), on its own config toggle,
+default on.
+
+**No new detection was needed** — the v2.27 proximity chirp already
+solves the hard half (interaction range = max(talk radius, body
+contact + a step), once-per-approach arming, z-gate for other layers,
+talk-disabled and VISI-hidden skipped, silence during cutscenes and
+dialog). This adds the NAME on the same arming edge, so the two are
+exactly in step: one chirp, then one name.
+
+**Names come from the browser's own machinery**, deliberately: models
+through FieldModelLabel → ClassifyModelLabel → TranslateDevLabel (plus
+the v2.30.45 prop catalog, so a cataloged scenery model announces as
+"…, device"), and lines through the entity-name table →
+TranslateEntityName → the offline behaviour catalog's suffix. A thing
+is therefore called the SAME whether the player walked into it or
+cycled to it with J/L ("ladder up, climb", "pinball, exit to Seventh
+Heaven", "Biggs", "Chest", "Save point") — one vocabulary, not two.
+Scenery stays unspoken exactly as the browser filters it; the v2.17
+entity/slot cross-check still degrades an unmatched line to
+"Trigger N" instead of a plausible wrong name.
+
+Speech is QUEUED (interrupt=false): walking past three things reads as
+a list rather than each clipping the last, and it cannot clip dialog
+that starts in the same instant.
+
+**New setting `proximity_announce`** (default true) — cfg list +
+glossary + the F8 menu ("Say what you reached"). Kept separate from
+proximity_tone because they suit different moments: the chirp is quick
+and unobtrusive once a room is known; the name answers "what did I
+just walk up to?" on a first visit. Either may be used alone; the
+range/arming logic now runs if EITHER is enabled.
+
+VERIFY: walk to a reactor ladder → chirp + "ladder up, climb"; to
+Biggs → "Biggs"; to a chest → "Chest"; walk away and back → it speaks
+again; standing still stays quiet; turning the setting off in the F8
+menu leaves the chirp working alone.
+
+Deployed both installs, hash-verified (DBBE6868F0B7AC35).
+
+---
+
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
 
 ### Overview

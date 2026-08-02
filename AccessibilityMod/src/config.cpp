@@ -146,6 +146,7 @@ void Load()
         else if (key == "speak_enemy_hp_always") g_settings.speak_enemy_hp_always = parse_bool(value);
         else if (key == "wall_bump_tone") g_settings.wall_bump_tone = parse_bool(value);
         else if (key == "proximity_tone") g_settings.proximity_tone = parse_bool(value);
+        else if (key == "proximity_announce") g_settings.proximity_announce = parse_bool(value);
         else if (key == "dialog_wait_tone") g_settings.dialog_wait_tone = parse_bool(value);
         else if (key == "dialog_choice_tone") g_settings.dialog_choice_tone = parse_bool(value);
         else if (key == "timer_announcements") g_settings.timer_announcements = parse_bool(value);

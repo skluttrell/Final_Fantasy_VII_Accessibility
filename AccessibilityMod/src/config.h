@@ -132,6 +132,18 @@ struct Settings {
     // Default: true.
     bool proximity_tone = true;
 
+    // proximity_announce: If true, coming within interaction range also
+    // SPEAKS what you reached — "Ladder up", "Biggs", "Chest", "Save
+    // point" — not just the proximity_tone chirp (v2.30.62, user
+    // request). Separate switch because the two serve different tastes:
+    // the chirp is unobtrusive and language-free for a player who
+    // already knows the room, while the spoken name answers "what did I
+    // just walk up to?" for a first visit. Uses the SAME range test and
+    // once-per-approach arming as the chirp, so enabling both gives one
+    // chirp plus one name, never a stream.
+    // Default: true.
+    bool proximity_announce = true;
+
     // timer_announcements: If true, an active field countdown timer (timed
     // escapes — first one: the No.1 Reactor run) announces itself: start,
     // each minute boundary, the 30-second mark, and a spoken countdown over

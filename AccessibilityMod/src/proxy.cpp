@@ -9546,7 +9546,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // (uc_lock) and while a dialog is up, so it never plays over
         // conversation; the armed state still updates then, so no
         // spurious ping fires when the dialog closes.
-        if (Config::Get().proximity_tone) {
+        if (Config::Get().proximity_tone || Config::Get().proximity_announce) {
             if (field_id != prox_field) {
                 prox_field = field_id;
                 memset(prox_armed_m, 1, sizeof(prox_armed_m));
@@ -9560,12 +9560,38 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // each fire site so simultaneous entries can't double-chirp.
             const bool quiet_ok = uc_lock == 0 && !dialog_up;
             const auto try_beep = [&]() {
-                if (quiet_ok &&
+                if (Config::Get().proximity_tone && quiet_ok &&
                     GetTickCount64() - last_prox_beep >= PROX_MIN_GAP_MS) {
                     Tones::Play(PROX_BEEP_HZ, PROX_BEEP_MS);
                     last_prox_beep = GetTickCount64();
                 }
             };
+
+            // v2.30.62: speak WHAT was reached, on the same arming edge as
+            // the chirp (user request: "if Cloud comes to a ladder or jump
+            // ... same for characters with dialog"). Names come from the
+            // SAME machinery the destination browser uses, so a thing is
+            // called the same whether you walked into it or cycled to it
+            // with J/L — models through FieldModelLabel + the label
+            // classifier + TranslateDevLabel, lines through the entity
+            // name table + TranslateEntityName + the offline behaviour
+            // catalog's suffix ("ladder up", "pinball, exit to Seventh
+            // Heaven"). Queued (interrupt=false) so walking past three
+            // things in a row reads as a list instead of each cutting the
+            // last off, and so it never clips dialog that starts in the
+            // same instant.
+            const auto speak_prox = [&](const std::wstring& what) {
+                if (Config::Get().proximity_announce && quiet_ok &&
+                    !what.empty())
+                    TTS::Speak(what, /*interrupt=*/false);
+            };
+            // Field name for the model-label lookup (same source and
+            // sanitising as the browser's build pass).
+            char pfname[10] = {};
+            memcpy(pfname, reinterpret_cast<const void*>(
+                       hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
+            for (char& c : pfname)
+                if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
 
             const uint32_t n_prox = (nmod < 32u) ? nmod : 32u;
             const bool prox_ok = IsReadableSpan(
@@ -9618,6 +9644,32 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     if (prox_armed_m[m]) {
                         prox_armed_m[m] = false;
                         try_beep();
+                        // Name it. Scenery is skipped exactly as the
+                        // browser skips it (v2.30.18) — but a cataloged
+                        // DEVICE (v2.30.45 MC_PROP: buttons, levers)
+                        // announces, since that is a thing you operate.
+                        if (Config::Get().proximity_announce) {
+                            std::wstring lbl;
+                            if (FieldModelLabel(m, pfname, lbl)) {
+                                const wchar_t* friendly = nullptr;
+                                ModelClass mc = ClassifyModelLabel(lbl, &friendly);
+                                const uint8_t ent_id =
+                                    *reinterpret_cast<const uint8_t*>(
+                                        me + FF7Addr::FIELD_EVENT_ENTITY_ID);
+                                if (mc == MC_SCENERY && field_id > 0 &&
+                                    FF7PropCatalog::Find(
+                                        static_cast<uint16_t>(field_id), ent_id))
+                                    mc = MC_PROP;
+                                if (mc != MC_SCENERY) {
+                                    std::wstring name = friendly
+                                        ? std::wstring(friendly)
+                                        : TranslateDevLabel(lbl);
+                                    if (mc == MC_PROP)
+                                        name += L", device";
+                                    speak_prox(name);
+                                }
+                            }
+                        }
                     }
                 } else if (!reachable ||
                            dist > eff + PROX_REARM_SLACK) {
@@ -9642,6 +9694,62 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     if (prox_armed_l[i]) {
                         prox_armed_l[i] = false;
                         try_beep();
+                        // Ladders, jumps, exits: the entity's translated
+                        // name plus the offline catalog's behaviour word,
+                        // i.e. exactly what the Triggers category says.
+                        // The entity/slot cross-check is the v2.17 rule —
+                        // an unmatched slot falls back to "Trigger N"
+                        // rather than speaking a plausible wrong name.
+                        if (Config::Get().proximity_announce) {
+                            const uint8_t ent = le[FF7Addr::FLINE_OFF_ENTITY];
+                            const uint8_t mapped =
+                                *reinterpret_cast<const volatile uint8_t*>(
+                                    FF7Addr::FIELD_ENTITY_LINE_SLOT + ent);
+                            std::wstring name;
+                            const uint8_t* et = nullptr;
+                            uint8_t ec = 0;
+                            std::wstring ename;
+                            if (mapped == i && FieldEntityNameTable(&et, &ec) &&
+                                EntityNameFromTable(et, ec, ent, ename))
+                                name = TranslateEntityName(ename);
+                            if (name.empty()) {
+                                wchar_t fb[24];
+                                _snwprintf_s(fb, _countof(fb), _TRUNCATE,
+                                             L"Trigger %u", i + 1u);
+                                name = fb;
+                            }
+                            const FF7LineCatalog::LineInfo* li =
+                                (field_id > 0)
+                                    ? FF7LineCatalog::Find(
+                                          static_cast<uint16_t>(field_id), ent)
+                                    : nullptr;
+                            if (li) {
+                                using namespace FF7LineCatalog;
+                                switch (li->kind) {
+                                case LK_EXIT:
+                                case LK_EXIT_OK: {
+                                    std::wstring dn;
+                                    if (li->dest_field >= 0 &&
+                                        DestinationName(li->dest_field, dn)) {
+                                        name += L", exit to ";
+                                        name += dn;
+                                    } else {
+                                        name += L", exit";
+                                    }
+                                    if (li->kind == LK_EXIT_OK)
+                                        name += L", press OK";
+                                    break;
+                                }
+                                case LK_CLIMB:
+                                    if (wcsstr(name.c_str(), L"ladder") == nullptr)
+                                        name += L", climb";
+                                    break;
+                                case LK_OK:    name += L", press OK"; break;
+                                default: break;   // scene/inert: bare name
+                                }
+                            }
+                            speak_prox(name);
+                        }
                     }
                 } else if (!reachable ||
                            dist2 > (PROX_LINE_RANGE + PROX_REARM_SLACK) *

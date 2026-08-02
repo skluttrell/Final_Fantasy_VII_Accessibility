@@ -5,6 +5,21 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[PROXSAY] Proximity announce — SHIPPED v2.30.62 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+User request: speak what you reach (ladder, jump, person), separate
+toggle, on by default. Reuses the v2.27 chirp's range/arming exactly —
+only the naming is new, and it reuses the BROWSER's naming so walking
+into a thing and cycling to it with J/L say the same words. New
+setting proximity_announce (cfg list + glossary + F8 "Say what you
+reached"). Queued speech so consecutive things list instead of
+clipping. VERIFY: ladder says "ladder up, climb"; people by name;
+chests/save points; re-announces after walking away; off in F8 leaves
+the chirp alone. RESIDUAL: announces one thing per arming edge — in a
+crowded room several names can queue up; if testers find that chatty,
+add a "nearest only" rule rather than a cooldown (a cooldown would
+drop the thing they actually walked to).
+
 [LEVELUP] Level-up announcements — SHIPPED v2.30.61 (2026-08-02), awaiting play-test
 ------------------------------------------------------------------------
 The v2.35 watcher existed but sat inside the results-window branch,
