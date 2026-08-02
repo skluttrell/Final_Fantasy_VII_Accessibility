@@ -5284,6 +5284,20 @@ places - said in the ReadMe wording instead.
 Deployed both installs, hash-verified (F25491E59C85EEA2). VERIFY:
 TODO [JOURNEY2].
 
+### v2.30.67 (2026-08-02): ladders named "ladder 1/2/3" (user request)
+
+"ladder up"/"ladder down" as NAMES collided with the push-direction
+wording - "take ladder up, down 3 seconds" reads as two conflicting
+instructions. All ladder dev-name stems (ladd/ladu/lad/ldu/ldd) now
+translate to plain **"ladder"**; the Triggers category's existing
+duplicate-ordinal rule numbers them ("ladder 1", "ladder 2") and
+TriggerLineSpokenName (the journeys + proximity naming path) gained the
+SAME ordinal computation over the live line array - one vocabulary, all
+voices agree on which rung is which. Journey wording becomes "First
+take ladder 1, down 3 seconds" + on mount "push up". DLL literal check:
+"ladder up" ABSENT (wide scan). Deployed both installs
+(EAE560BAF15CC595). VERIFY with [JOURNEY2]'s ladder item.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

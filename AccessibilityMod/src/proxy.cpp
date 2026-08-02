@@ -8414,7 +8414,14 @@ static const DevWord kDevWords[] = {
     { L"innman", L"innkeeper" }, { L"peo", L"person" },
     { L"sinrah", L"Shinra" }, { L"niku", L"meat" },
     // -- trigger/object words (mostly seen as entity names on lines) --
-    { L"ladd", L"ladder down" }, { L"ladu", L"ladder up" },
+    // v2.30.67 (user request): ALL ladder stems translate to plain
+    // "ladder" -- the old "ladder up"/"ladder down" outputs collided
+    // with the push-direction wording ("take ladder up, down 3
+    // seconds" reads as two conflicting instructions). Duplicate
+    // ladders are numbered by the Triggers ordinal rule ("ladder 1",
+    // "ladder 2") and TriggerLineSpokenName mirrors it for
+    // journeys/proximity, so every voice says the same thing.
+    { L"ladd", L"ladder" }, { L"ladu", L"ladder" },
     { L"lad", L"ladder" },
     { L"slip", L"slide" }, { L"slp", L"slide" },
     { L"tobira", L"door" },
@@ -8456,7 +8463,8 @@ static const DevWord kDevWords[] = {
     // ldu/ldd = ladu/ladd contractions (colne_b1: 'ldu0 ldd0 ldu2 ldd2',
     // the Corel-reactor ladder lines); esc = esca contraction (blin68_1
     // and blin69_1 list 'esc0' beside 'esca'/'esca2').
-    { L"ldu", L"ladder up" }, { L"ldd", L"ladder down" },
+    { L"ldu", L"ladder" }, { L"ldd", L"ladder" },   // v2.30.67: plain
+                                                    // "ladder" (see above)
     { L"esc", L"escalator" },
     // Shinra-HQ elevator family: eleu/eled = up/down call lines (blin1),
     // elel/eler = left/right car (blin69_1), *dr = the car doors
@@ -8991,7 +8999,11 @@ static int WalkmeshComponents(const std::vector<WalkTri>& m,
 
 // Spoken name for a LINE trigger â€” the same naming rules as the Triggers
 // category (owning entity's dev name, translated; stale-guarded by the
-// entityâ†’slot map; "Trigger N" fallback).
+// entityâ†’slot map; "Trigger N" fallback), INCLUDING the duplicate
+// ordinal since v2.30.67: with all ladder stems now translating to plain
+// "ladder", a two-ladder field must say "ladder 1"/"ladder 2" here too
+// (journeys, proximity announce) or the browser and the journey would
+// name the same rung differently â€” the one-vocabulary rule (v2.30.62).
 static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
                                   std::wstring& out)
 {
@@ -9003,6 +9015,36 @@ static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
     if (FieldEntityNameTable(&tbl, &n) && mapped == line_idx &&
         EntityNameFromTable(tbl, n, ent, ename)) {
         out = TranslateEntityName(ename);
+        // Ordinal among ENABLED same-named lines in live-array slot
+        // order â€” the exact rule the Triggers category applies to its
+        // gathered list, so both paths produce identical numbers.
+        const uint16_t n_lines =
+            *reinterpret_cast<const volatile uint16_t*>(
+                FF7Addr::FIELD_LINE_COUNT);
+        int ordinal = 1, total = 0;
+        for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
+            const uint8_t* le = reinterpret_cast<const uint8_t*>(
+                FF7Addr::FIELD_LINE_ARRAY + i * FF7Addr::FLINE_STRIDE);
+            if (le[FF7Addr::FLINE_OFF_ENABLED] == 0)
+                continue;
+            const uint8_t oent = le[FF7Addr::FLINE_OFF_ENTITY];
+            const uint8_t omap = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::FIELD_ENTITY_LINE_SLOT + oent);
+            std::wstring oname;
+            if (omap != i || !EntityNameFromTable(tbl, n, oent, oname))
+                continue;   // unnamed lines fall back to "Trigger N" in
+                            // the browser -- never a duplicate of a name
+            if (TranslateEntityName(oname) == out) {
+                ++total;
+                if (i < line_idx)
+                    ++ordinal;
+            }
+        }
+        if (total > 1) {
+            wchar_t obuf[8];
+            _snwprintf_s(obuf, _countof(obuf), _TRUNCATE, L" %d", ordinal);
+            out += obuf;
+        }
         return;
     }
     wchar_t buf[24];

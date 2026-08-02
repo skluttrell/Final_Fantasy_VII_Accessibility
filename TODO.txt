@@ -19,7 +19,9 @@ VERIFY: (a) repeat run 1's elevator moment — the arrival line should
 name the switch and \ should route to it; (b) Places from the station
 lists "Mako Reactor 1, save point, N screens" and the journey ends AT
 the save room; (c) ladders say only "push up"/"push down"; (d) long
-journey names speak in full.
+journey names speak in full; (e) v2.30.67: ladders LIST as "ladder 1"/
+"ladder 2" (browser, journey wording, and walk-into announce all use
+the same number for the same rung).
 
 [STORYNAV] Story-direction marker in Places — GROUNDWORK v2.30.66 (user request)
 ------------------------------------------------------------------------
