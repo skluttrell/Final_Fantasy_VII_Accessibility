@@ -5,7 +5,23 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[JOURNEY2] Journey play-fixes — SHIPPED v2.30.66 (2026-08-02), awaiting play-test
+[JOURNEY3] Third-run fixes — SHIPPED v2.30.68 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+Six fixes from the third run: (1) facing deferred under entry
+cutscenes (spoken fresh at control-return); (2) \ continues an active
+journey after screen changes (Shift+K still cancels); (3) elevator
+switch point moved to the right wall (player-corrected); (4) ladder
+push decided by HEIGHT (down = descending; dz in LADDER log); (5) save
+pads no longer say "climb"; (6) menu-open announce waits ~100ms for
+the cursor byte to settle (no more Item-then-Quit after battles).
+VERIFY: (a) new game: facing spoken AFTER the train scene ends, and it
+matches; (b) mid-journey, press \ right after a screen change — it
+speaks the journey leg, not a random destination; (c) elevator leg
+says "right 1 second"-ish and OK at that spot works; (d) descending
+ladders all say "push down"; (e) save pad announce has no "climb";
+(f) menu after a battle speaks only the real row, once.
+
+[JOURNEY2] Journey play-fixes — SHIPPED v2.30.66 (2026-08-02), play-tested third run (fixes rolled into [JOURNEY3])
 ------------------------------------------------------------------------
 From the two v2.30.65 runs: (1) elevator legs now guide to the SWITCH
 ("elevator switch, press OK, toward Mako Reactor 1") instead of the

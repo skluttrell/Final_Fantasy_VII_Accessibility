@@ -5298,6 +5298,45 @@ take ladder 1, down 3 seconds" + on mount "push up". DLL literal check:
 "ladder up" ABSENT (wide scan). Deployed both installs
 (EAE560BAF15CC595). VERIFY with [JOURNEY2]'s ladder item.
 
+### v2.30.68 (2026-08-02): six third-run fixes
+
+Third journey run (new game -> reactor, log 15:47-16:08) reported six
+issues; all fixed, each from log evidence:
+
+1. **"Facing down" after the train cutscene**: the arrival announce
+   fires while the entry script still holds the UC lock and turns the
+   player. Facing clause now DEFERRED under UC lock: spoken as a fresh
+   "Facing X." (byte read at that instant) the moment the lock
+   releases; new "FACING deferred release" log line.
+2. **\ after a screen change routed to the wrong thing**: field change
+   resets category/selection (v2.14), so mid-journey \ pointed at
+   "All" slot 0. An ACTIVE journey now owns the directions key: \ in
+   any non-Places category speaks the current leg ("Journey to X, N
+   screens. Next, ..."); a Places selection retargets; Shift+K remains
+   the way off.
+3. **Elevator point wrong**: log showed the leg at (-140,40) speaking
+   "up/left" while the player reports the button on the FAR RIGHT wall
+   ("right 1 second" works). Hotspot play-corrected to (60,0) - curated
+   evidence, not derivation.
+4. **Second ladder said push up, correct was down**: nmkin_3's
+   near-flat pipe ladder (z 864->849) descends toward +Y = screen-UP,
+   so the v2.30.66 screen-vertical rule inverted. HEIGHT now decides
+   (climb target lower = push down; |dz|<3 falls back to bearing) -
+   the game's own semantic (its ladder tutorial says "move Up or
+   Down"). LADDER log line carries dz.
+5. **Save pad said "climb"**: field 124's save line classifies CLIMB in
+   the catalog (its script chain reaches a LADER - pads on pipe
+   platforms). Climb suffix suppressed when the name contains "save"
+   (both suffix sites: browser + proximity).
+6. **Wrong menu selections after a victory screen**: log 16:08:36
+   "cursor=0 (Item)" then "cursor=10 (Quit)" 0.8s apart on ONE open -
+   the menu module writes row 0 during init before restoring the
+   remembered row. Open announce now waits for the byte to hold still
+   2 consecutive polls (~100ms settle gate); navigation announces
+   unchanged.
+
+Deployed both installs (B46D107D07108C35). VERIFY: TODO [JOURNEY3].
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

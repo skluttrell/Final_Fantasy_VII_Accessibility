@@ -759,6 +759,15 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
     // announcing "Item" (MENU_CURSOR BSS default = 0) before the player has
     // done anything.
     uint8_t menu_open_streak = 0;
+    // v2.30.68: menu-OPEN cursor settle gate. The menu module briefly
+    // writes row 0 during init before restoring the remembered row --
+    // the 2026-08-02 log shows "cursor=0 (Item)" then "cursor=10 (Quit)"
+    // 0.8s apart on one open with no input (player report: wrong
+    // selections spoken after a battle). The open announce now waits for
+    // the byte to hold still for 2 consecutive polls (~100ms, inaudible)
+    // before speaking; navigation announces afterwards are unchanged.
+    uint8_t menu_open_settle = 0;    // >0 = settling; counts down on match
+    uint8_t menu_settle_prev = 0xFF;
 
     for (;;) {
         if (WaitForSingleObject(g_cursor_stop_event, 150) == WAIT_OBJECT_0)
@@ -854,12 +863,17 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         menu_open_streak++;
         if (menu_open_streak < 2) continue;
 
-        // On the 0â†’1 transition of MENU_OPEN, force last_cursor to 0xFF so
-        // the current position is announced immediately on re-open.
+        // On the 0â†’1 transition of MENU_OPEN, arm the settle gate
+        // (v2.30.68) instead of the old immediate last_cursor=0xFF: the
+        // open announce fires once the cursor byte has held still for 2
+        // consecutive polls, so the module's transient init row (0) can
+        // never speak ahead of the remembered row.
         // This fires on the 2nd consecutive poll of MENU_OPEN=1, when
         // last_menu_open is still 0 from the previous menu-close reset.
         if (last_menu_open == 0) {
-            last_cursor = 0xFF;
+            menu_open_settle = 1;
+            menu_settle_prev = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::MENU_CURSOR);
         }
         last_menu_open = menu_open;
 
@@ -936,6 +950,22 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         // â”€â”€ Main menu cursor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const uint8_t curr =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_CURSOR);
+
+        // v2.30.68 settle gate: silent until the byte repeats across two
+        // polls, then release with last_cursor=0xFF so the stable row
+        // announces exactly once (the normal open announce, just ~100ms
+        // later than before).
+        if (menu_open_settle > 0) {
+            if (curr == menu_settle_prev) {
+                if (--menu_open_settle == 0)
+                    last_cursor = 0xFF;
+            } else {
+                menu_settle_prev = curr;
+                menu_open_settle = 1;
+            }
+            if (menu_open_settle > 0)
+                continue;
+        }
 
         if (curr == last_cursor) continue;
 
@@ -9418,11 +9448,15 @@ struct StoryHotspot {
     const wchar_t* name;
 };
 static const StoryHotspot kStoryHotspots[] = {
-    // elevtr1 (121): the No.1 reactor elevator switch. Spot chosen between
-    // the panel wall and Jessie's scripted position (-96,72) so it lies
-    // inside her talk radius (80): OK there runs her switch script
-    // ("Switch On.").
-    { 121, -140, 40, 5, L"elevator switch, press OK" },
+    // elevtr1 (121): the No.1 reactor elevator switch. PLAY-CORRECTED
+    // 2026-08-02 (third run): the original point (-140,40) sat by
+    // Jessie's scripted spot and spoke "up 1 second" from the car door;
+    // the player reports the BUTTON is on the FAR RIGHT wall and "right
+    // 1 second" is what works. Arrival is at (-112,-8), ctrl=128 makes
+    // screen-right = +X, so the curated point moves to the right wall.
+    // If OK there ever fails to fire, the next report refines it again
+    // -- this entry is played evidence, not a derivation.
+    { 121, 60, 0, 5, L"elevator switch, press OK" },
 };
 
 struct FieldGraphEdge {
@@ -9679,6 +9713,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // every poll so the announcement fires the moment control returns on
     // the new screen. 0 = nothing announced yet this session.
     int16_t announced_field_id = 0;
+    // v2.30.68: when the arrival announce fires during a scripted entry
+    // (UC lock held -- the new-game train scene is the reported case:
+    // "facing down" spoken mid-cutscene, wrong by the time control
+    // returns), the facing clause is DEFERRED: this flag speaks a fresh
+    // "Facing X." the moment the lock releases, reading the byte at that
+    // instant so scripted turns are already reflected.
+    bool facing_pending = false;
 
     // Transition tracker (v2.30.64) â€” watches the engine's field-jump
     // mailbox (FIELD_JUMP_* in ff7_addresses.h). jump_armed_logged is the
@@ -9877,39 +9918,46 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const float dx = static_cast<float>((tgt[0] >> 12) - px);
                 const float dy = static_cast<float>((tgt[1] >> 12) - py);
                 if (fabsf(dx) > 0.5f || fabsf(dy) > 0.5f) {
-                    const float world_deg =
-                        atan2f(dx, dy) * (180.0f / 3.14159265f);
-                    // v2.30.66 (user report): a ladder has exactly TWO
-                    // control paths -- up and down. The 8-sector wording
-                    // spoke impossible pushes ("push left", "push down
-                    // and right" in the run-1 log: dir=6, dir=3) whenever
-                    // the ladder is drawn diagonally. Collapse to the
-                    // VERTICAL component of the screen bearing: cos > 0
-                    // means the target is in the upper half-plane ->
-                    // "push up", else "push down". A near-horizontal
-                    // bearing (visually flat ladder) falls back to the
-                    // climb target's HEIGHT (bigger z = higher -- the
-                    // nmkin_2 ladder pair's z values prove the sign).
-                    const float in_rad = (world_deg + control_deg - 180.0f)
-                                         * (3.14159265f / 180.0f);
-                    const float vert = cosf(in_rad);
-                    if (fabsf(vert) > 0.05f) {
-                        dir_sector = (vert > 0.0f) ? 0 : 4;   // up : down
+                    // v2.30.68 (third-run report): HEIGHT decides, screen
+                    // bearing is only the tiebreak. The v2.30.66 vertical-
+                    // component rule failed on nmkin_3's near-flat pipe
+                    // ladder (line z 864 -> 849): the descent runs +Y =
+                    // screen-UP there, so the mod said "push up" while the
+                    // game wanted down. The game's own semantic is height
+                    // -- its ladder tutorial says "move Up or Down", and
+                    // climbing DOWN always means descending -- so: climb
+                    // target LOWER than the player = push down, HIGHER =
+                    // push up; only a genuinely level target (|dz| < 3,
+                    // rare rope/beam crossings) falls back to the screen
+                    // bearing's vertical sign.
+                    const int32_t dz = (tgt[2] >> 12) - pz;
+                    if (dz >= 3 || dz <= -3) {
+                        dir_sector = (dz > 0) ? 0 : 4;        // up : down
                     } else {
-                        const int32_t dz = (tgt[2] >> 12) - pz;
-                        dir_sector = (dz >= 0) ? 0 : 4;
+                        const float world_deg =
+                            atan2f(dx, dy) * (180.0f / 3.14159265f);
+                        const float in_rad =
+                            (world_deg + control_deg - 180.0f)
+                            * (3.14159265f / 180.0f);
+                        dir_sector = (cosf(in_rad) >= 0.0f) ? 0 : 4;
                     }
                 }
             }
             if (climbing != ladder_was_on ||
                 (climbing && dir_sector >= 0 && dir_sector != ladder_last_dir)) {
                 if (Config::Get().debug_log) {
+                    // dz in the line since v2.30.68 -- it is now the
+                    // primary push-direction signal, so every future
+                    // wrong-push report carries its own diagnosis.
+                    const int32_t* ltgt = reinterpret_cast<const int32_t*>(
+                        elem + FF7Addr::FIELD_EVENT_MOVE_TARGET);
                     char dbg[128];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] LADDER %s mtype=%u dir=%d phase=%u",
+                        "[FF7Access] LADDER %s mtype=%u dir=%d phase=%u dz=%d",
                         climbing ? "on" : "off", mtype, dir_sector,
                         *reinterpret_cast<const volatile uint16_t*>(
-                            elem + FF7Addr::FIELD_EVENT_MOVE_PHASE));
+                            elem + FF7Addr::FIELD_EVENT_MOVE_PHASE),
+                        climbing ? static_cast<int>((ltgt[2] >> 12) - pz) : 0);
                     Log::Write(dbg);
                 }
                 if (Config::Get().pathfinder_keys) {
@@ -9942,6 +9990,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // the field now" orientation cue.
         if (field_id != announced_field_id) {
             announced_field_id = field_id;
+            facing_pending = false;   // a new arrival supersedes any
+                                      // deferred facing from the last one
 
             // ---- arrival facing (v2.30.64) ----------------------------
             // The arrival routine wrote the jump mailbox's direction into
@@ -10026,8 +10076,20 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     // camera cut's orientation cue. Same d-pad vocabulary
                     // as routes/ladders so "facing up" and "push up" mean
                     // the same thing to the player's hands.
-                    msg += L", facing ";
-                    msg += kDpadSectors[facing_sector];
+                    // v2.30.68: NOT while a scripted entry holds the UC
+                    // lock â€” the scene is still turning the player and
+                    // the byte read now is stale by control-return (the
+                    // new-game "facing down" report). Deferred instead:
+                    // facing_pending speaks it fresh at lock release.
+                    const uint8_t uc_now =
+                        *reinterpret_cast<const volatile uint8_t*>(
+                            FF7Addr::FIELD_UC_LOCK);
+                    if (uc_now == 0) {
+                        msg += L", facing ";
+                        msg += kDpadSectors[facing_sector];
+                    } else {
+                        facing_pending = true;
+                    }
                     TTS::Speak(msg, /*interrupt=*/false);
                 }
             }
@@ -10113,6 +10175,31 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                             static_cast<int>(journey_target), nxt);
                         Log::Write(dbg);
                     }
+                }
+            }
+        }
+
+        // ---- deferred facing release (v2.30.68, every poll) ---------------
+        // The arrival announce skipped its facing clause because a scripted
+        // entry held the UC lock; speak it now that control is real, from
+        // the byte AS IT IS (any scripted turn already applied).
+        if (facing_pending) {
+            const uint8_t uc_now = *reinterpret_cast<const volatile uint8_t*>(
+                FF7Addr::FIELD_UC_LOCK);
+            if (uc_now == 0) {
+                facing_pending = false;
+                const uint8_t fb = elem[FF7Addr::FIELD_EVENT_FACING];
+                const int fs = DpadSectorIndex(
+                    fb * (360.0f / 256.0f) + control_deg - 180.0f);
+                std::wstring fmsg = L"Facing ";
+                fmsg += kDpadSectors[fs];
+                TTS::Speak(fmsg, /*interrupt=*/false);
+                if (Config::Get().debug_log) {
+                    char dbg[96];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] FACING deferred release byte=%u sector=%d",
+                        fb, fs);
+                    Log::Write(dbg);
                 }
             }
         }
@@ -10384,7 +10471,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                     break;
                                 }
                                 case LK_CLIMB:
-                                    if (wcsstr(name.c_str(), L"ladder") == nullptr)
+                                    // v2.30.68: save-pad lines classify
+                                    // CLIMB (their script chains reach a
+                                    // LADER -- pads on pipe platforms),
+                                    // but "save point, climb" misleads;
+                                    // the name is the truth (3rd-run
+                                    // report, field 124 ent 6).
+                                    if (wcsstr(name.c_str(), L"ladder") == nullptr &&
+                                        wcsstr(name.c_str(), L"save") == nullptr)
                                         name += L", climb";
                                     break;
                                 case LK_OK:    name += L", press OK"; break;
@@ -11061,10 +11155,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         break;
                     }
                     case LK_CLIMB:
-                        // Ladder names already say "ladder up/down"
-                        // (v2.20 translation) â€” only unnamed/odd climbs
-                        // need the word.
-                        if (wcsstr(d.name, L"ladder") == nullptr)
+                        // Ladder names already say "ladder N" (v2.30.67)
+                        // â€” only unnamed/odd climbs need the word.
+                        // v2.30.68: save-pad lines also classify CLIMB
+                        // (script chains reach a LADER) but must not say
+                        // it â€” the name is the truth (3rd-run report).
+                        if (wcsstr(d.name, L"ladder") == nullptr &&
+                            wcsstr(d.name, L"save") == nullptr)
                             sfx = L", climb";
                         break;
                     case LK_OK:
@@ -11239,7 +11336,44 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         // ---- directions to the selected destination (\ or P) -------------
-        if (n_dests == 0) {
+        // v2.30.68: an ACTIVE journey owns the directions key. The field
+        // change resets category/selection (v2.14 behavior), so after a
+        // transition \ used to route to whatever sat first in "All" --
+        // the third run's report ("the wrong thing selected"). While a
+        // journey is live, \ in any NON-Places category speaks the
+        // current leg; picking a different Places entry retargets; and
+        // Shift+K remains the one way OFF the journey (it also restores
+        // \ to plain selection directions).
+        NavDest journey_leg;
+        bool leg_ready = false;
+        if (journey_active && category != CAT_PLACES) {
+            std::vector<int16_t> jdist, jprev;
+            FieldGraphBFS(field_id, jdist, jprev);
+            const int nxt = FieldGraphNextHop(field_id, journey_target,
+                                              jprev, jdist);
+            if (nxt < 0) {
+                TTS::Speak(L"No known route from here. Journey ended.",
+                           /*interrupt=*/true);
+                journey_active = false;
+                continue;
+            }
+            if (!BuildJourneyLegDest(field_id, nxt, hdr, journey_leg)) {
+                TTS::Speak(L"The way there is not available here yet.",
+                           /*interrupt=*/true);
+                continue;
+            }
+            wchar_t wrapped[96];
+            _snwprintf_s(wrapped, _countof(wrapped), _TRUNCATE,
+                         L"Journey to %ls, %d %ls. Next, %ls",
+                         journey_name,
+                         static_cast<int>(jdist[journey_target]),
+                         jdist[journey_target] == 1 ? L"screen" : L"screens",
+                         journey_leg.name);
+            wcsncpy_s(journey_leg.name, wrapped, _TRUNCATE);
+            leg_ready = true;
+        }
+
+        if (!leg_ready && n_dests == 0) {
             TTS::Speak(L"No destinations.", /*interrupt=*/true);
             continue;
         }
@@ -11250,8 +11384,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // leg NavDest then flows through the unchanged directions code
         // below â€” turn-by-turn, journeys-within-field, body cautions and
         // all â€” exactly as if the player had selected that exit by hand.
-        NavDest journey_leg;
-        if (category == CAT_PLACES) {
+        if (!leg_ready && category == CAT_PLACES) {
             const int16_t target = dests[selection].place_field;
             std::vector<int16_t> jdist, jprev;
             FieldGraphBFS(field_id, jdist, jprev);
@@ -11289,9 +11422,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     static_cast<int>(jdist[target]), nxt);
                 Log::Write(dbg);
             }
+            leg_ready = true;
         }
-        const NavDest& d = (category == CAT_PLACES) ? journey_leg
-                                                    : dests[selection];
+        const NavDest& d = leg_ready ? journey_leg : dests[selection];
 
         // Nearest point on the exit line segment to the player.
         const float ex = static_cast<float>(d.line_x2 - d.line_x1);
