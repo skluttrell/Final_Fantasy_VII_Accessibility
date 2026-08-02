@@ -2148,12 +2148,13 @@ constexpr uint32_t FIELD_EVENT_MOVE_TARGET = 0x7C;  // 3 x s32, <<12
 //
 // UNITS: a 0..255 wheel, degrees = byte * 360/256 — the same encoding as
 // the trigger header's control_direction (v2.14 calibration: byte 124 =
-// 174.4°). ⚠ The WORLD-vs-SCREEN composition for FACING is PROVISIONAL
-// until one live log: motion bearings proved screen = world + control
-// − 180 (v2.14), and facing is assumed to sit on the same wheel with 0 =
-// +Y. The v2.30.64 ARRIVE debug line prints the raw byte alongside the
-// spoken sector so a single play-test log confirms or flips the mapping
-// (the v2.14 direction-calibration playbook, applied to facing).
+// 174.4°). The WORLD-vs-SCREEN composition (screen = world + control
+// − 180, same as motion) was CONFIRMED 2026-08-02: ARRIVE match=1 on
+// every untouched gateway arrival across three play runs, and the spoken
+// sector was checked against the user's auto screen captures (the
+// nrthmk bridge arrival spoke "left" with the party visibly crossing
+// left — decisive). No offset, no mirror. The ARRIVE debug line keeps
+// printing the raw byte for any future recalibration need.
 constexpr uint32_t FIELD_EVENT_FACING = 0x38;  // u8, 0..255 wheel
 
 // Entity id → model slot map (bonus find from the same disasm): u8 per
