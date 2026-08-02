@@ -4949,6 +4949,51 @@ Deployed both installs, hash-verified (7F4ABF0CBA439A66).
 
 ---
 
+### v2.30.61 (2026-08-02): level-ups announced — the watcher freed from the results window
+
+**Request**: announce when a character levels up on the victory screens.
+
+**It was already written (v2.35) and structurally unable to fire
+reliably.** The watcher lived INSIDE the detected results window, so it
+inherited two gates that can each miss:
+1. `MENU_OPEN != 1` → `continue`, above the watcher, and
+2. the window itself is recognised by a 4-second battle-recency
+   heuristic (`g_last_battle_tick`, stamped only while GAME_MODE==2 by
+   BattleActionThread) — if that stamp is stale when the results
+   MENU_OPEN rises, `in_results` never becomes true and the level watch
+   never runs at all.
+No log in hand showed a victory window, so rather than tune a
+heuristic I removed the dependency: **a level-up is worth announcing
+whenever it happens**, and the savemap level byte is authoritative
+without any results-screen context.
+
+**Now**: the watch runs every poll (150ms), before both gates.
+False-positive guards, since a level byte changes for non-level-up
+reasons too:
+- keyed by CHARACTER ID per party slot — a PHS/story swap puts a
+  different person in the slot, which re-baselines instead of
+  announcing;
+- the first observation after start (or after speak_battle is
+  re-enabled) baselines SILENTLY;
+- a jump of more than 3 levels reads as a save load or a scripted join
+  (Cait Sith arrives around level 20) → silent re-baseline, logged when
+  debug_log is on. Real level-ups step one at a time through a 150ms
+  poll even on a huge EXP haul.
+Speech stays interrupt=false so it queues behind the victory line
+(v2.30.51 rule).
+
+Because it no longer depends on the results window, level-ups from
+story events or item use announce too — strictly more than asked, and
+the guards keep it from narrating save loads.
+
+VERIFY: win a battle that levels someone → "Cloud grew to level 8!"
+after the victory line; load a save with different levels → silence
+(log shows "re-baselined, not announced"); PHS swaps → silence.
+
+Deployed both installs, hash-verified (4CC6B6C320A9DF6D).
+
+---
+
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
 
 ### Overview

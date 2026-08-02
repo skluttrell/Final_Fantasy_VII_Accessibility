@@ -4991,8 +4991,12 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
     uint16_t last_mode   = 0xFFFF;
     bool     in_results  = false;
     uint32_t cap_exp = 0, cap_ap = 0, cap_gil = 0;   // pools captured at entry
-    uint8_t  base_levels[3] = {};                    // level bytes at entry
     bool     spoke_gil   = false;
+    // v2.30.61 level watcher state — see the LEVEL WATCH block below for
+    // why this is per-slot AND keyed by character id.
+    uint8_t  seen_char[3]  = { 0xFF, 0xFF, 0xFF };
+    uint8_t  seen_level[3] = {};
+    bool     levels_valid  = false;
 
     const auto slot_level = [](uint8_t slot) -> uint8_t {
         const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
@@ -5015,7 +5019,81 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             in_results = false;
             g_victory_active = 0;
             last_mode = 0xFFFF;
+            levels_valid = false;   // re-baseline silently when re-enabled
             continue;
+        }
+
+        // ---- LEVEL WATCH (v2.30.61) ---------------------------------------
+        // Tester request: announce level-ups on the victory screens. The
+        // watcher shipped in v2.35 only ran INSIDE the detected results
+        // window, so it inherited two gates that can each miss: the
+        // window is recognised by a 4-second battle-recency heuristic, and
+        // the MENU_OPEN!=1 check `continue`s above it. A level-up is worth
+        // announcing whenever it happens, so this now runs EVERY poll,
+        // independent of both — the savemap level byte is the authority
+        // and needs no results-screen context.
+        //
+        // FALSE-POSITIVE GUARDS (a level byte can change for reasons that
+        // are not a level-up):
+        //   * keyed by CHARACTER ID per slot — a party change (PHS, story
+        //     swaps) puts a different person in the slot, which is a
+        //     re-baseline, not a level-up;
+        //   * first observation after start/re-enable baselines SILENTLY;
+        //   * a jump of more than 3 levels is treated as a save load or a
+        //     scripted join (Cait Sith arrives mid-game at level ~20) and
+        //     re-baselines silently — real battle level-ups are +1, and
+        //     even a huge EXP haul steps one level at a time through this
+        //     150ms poll.
+        // interrupt=false so a level-up queues behind the victory line
+        // instead of clobbering it (the v2.30.51 rule).
+        {
+            for (uint8_t s = 0; s <= 2; ++s) {
+                const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
+                    FF7Addr::SAVEMAP_PARTY_IDS + s);
+                uint8_t rec = char_id;
+                if (char_id == 9)  rec = 6;
+                if (char_id == 10) rec = 7;
+                if (char_id == 0xFF || rec > 8) {
+                    seen_char[s] = 0xFF;
+                    continue;
+                }
+                const uint8_t lv = *reinterpret_cast<const volatile uint8_t*>(
+                    FF7Addr::SAVEMAP_CHAR_RECORDS +
+                    rec * FF7Addr::SAVEMAP_CHAR_REC_SIZE +
+                    FF7Addr::SAVEMAP_CHAR_LEVEL_OFF);
+                if (lv == 0 || lv > 99) {           // savemap mid-write
+                    continue;
+                }
+                const bool same_person = (seen_char[s] == char_id);
+                const bool announce = levels_valid && same_person &&
+                                      lv > seen_level[s] &&
+                                      (lv - seen_level[s]) <= 3;
+                if (announce) {
+                    wchar_t label[64];
+                    PartySlotLabel(s, label, _countof(label));
+                    wchar_t msg[96];
+                    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                                 L"%ls grew to level %u!", label,
+                                 static_cast<unsigned>(lv));
+                    char dbg[112];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] LEVEL UP slot=%u char=%u %u -> %u",
+                        s, char_id, seen_level[s], lv);
+                    Log::Write(dbg);
+                    TTS::Speak(msg, /*interrupt=*/false);
+                } else if (levels_valid && same_person && lv != seen_level[s] &&
+                           Config::Get().debug_log) {
+                    char dbg[128];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] LEVEL change slot=%u char=%u %u -> %u "
+                        "(re-baselined, not announced)",
+                        s, char_id, seen_level[s], lv);
+                    Log::Write(dbg);
+                }
+                seen_char[s]  = char_id;
+                seen_level[s] = lv;
+            }
+            levels_valid = true;
         }
 
         // The results screens run under the menu module with MENU_OPEN=1
@@ -5058,8 +5136,6 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                 FF7Addr::BATTLE_GAINED_AP);
             cap_gil = *reinterpret_cast<const volatile uint32_t*>(
                 FF7Addr::BATTLE_GAINED_GIL);
-            for (uint8_t s = 0; s <= 2; ++s)
-                base_levels[s] = slot_level(s);
             char dbg[128];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] VICTORY window open: mode=%u exp=%lu ap=%lu gil=%lu",
@@ -5140,27 +5216,10 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             }
         }
 
-        // Level-up watcher: active through the whole results window.
-        if (in_results) {
-            for (uint8_t s = 0; s <= 2; ++s) {
-                const uint8_t lv = slot_level(s);
-                if (lv > base_levels[s] && base_levels[s] != 0) {
-                    base_levels[s] = lv;
-                    wchar_t label[64];
-                    PartySlotLabel(s, label, _countof(label));
-                    wchar_t msg[96];
-                    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                        L"%ls grew to level %u!", label,
-                        static_cast<unsigned>(lv));
-                    char dbg[96];
-                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                        "[FF7Access] VICTORY level up slot=%u -> %u", s, lv);
-                    Log::Write(dbg);
-                    // Queue behind the victory line, never clobber it.
-                    TTS::Speak(msg, /*interrupt=*/false);
-                }
-            }
-        }
+        // (v2.30.61: the level-up watcher used to live here, inside the
+        // results window. It now runs every poll near the top of the loop
+        // — see the LEVEL WATCH block — so a missed window detection can
+        // no longer swallow a level-up.)
     }
 
     return 0;

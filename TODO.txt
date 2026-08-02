@@ -5,6 +5,19 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[LEVELUP] Level-up announcements — SHIPPED v2.30.61 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+The v2.35 watcher existed but sat inside the results-window branch,
+behind MENU_OPEN!=1 and a 4s battle-recency heuristic — either miss
+swallowed it. Now runs every poll, independent of both (research §8
+v2.30.61). Guards: keyed by char id per slot (party swaps re-baseline),
+silent first observation, >3-level jump = save load/scripted join =>
+silent re-baseline (logged). VERIFY: battle level-up speaks after the
+victory line; save loads and PHS swaps stay silent. RESIDUAL: only the
+new LEVEL is spoken — FF7's level-up screen also shows stat increases;
+add those if a tester asks (savemap record stat bytes +0x02..+0x07,
+already mapped for the status screen).
+
 [LADDER] Ladder state + push direction — SHIPPED v2.30.60 (2026-08-02), awaiting play-test
 ------------------------------------------------------------------------
 Tester report: can't tell on/off a ladder or which way to push. Both
