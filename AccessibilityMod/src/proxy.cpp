@@ -96,6 +96,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shlobj.h>   // SHGetFolderPathA - the 2013 Steam save location
+                       // lives under (possibly OneDrive-redirected) Documents
 
 // ---------------------------------------------------------------------------
 // Complete export list for version.dll.
@@ -1302,21 +1304,127 @@ static void SaveDecodeText(const uint8_t* src, size_t max_bytes,
 // Returns false if the file is absent or malformed; out[] is then all
 // unused, which speaks as an empty file â€” exactly what the sighted menu
 // shows for a file that was never saved to.
+// ---------------------------------------------------------------------------
+// WHERE THE SAVE FILES LIVE (v2.30.63).
+//
+// The original reader assumed ONE layout: a save\ folder next to the DLL.
+// Right for the 1998 release and the 2026 re-release
+// (ff7/workingdir/save/), WRONG for the 2013 Steam release, which keeps
+// saves under the user's Documents:
+//
+//   <Documents>\Square Enix\FINAL FANTASY VII Steam\user_<steamid>\saveNN.ff7
+//
+// Tester report (2013 + 7th Heaven): every slot read "empty". Reproduced
+// locally - that install's game-dir save\ folder EXISTS but is empty,
+// while the Documents copy holds the real save00.ff7. The file FORMAT is
+// identical (65,109 bytes; parsing that very file with the research-doc
+// layout gives "Cloud, level 7, Mako Reactor 1, 376 gil, 25 minutes"),
+// so only the path was wrong - no preview re-derivation needed, and 7th
+// Heaven turns out not to redirect saves at all.
+//
+// Documents must come from the SHELL, not %USERPROFILE%\Documents: this
+// machine has OneDrive folder redirection, so the literal path does not
+// exist. SHGetFolderPath returns the redirected location.
+//
+// A directory only qualifies if it actually CONTAINS a saveNN.ff7 - that
+// is what lets the 2013 install's empty game-dir save\ fall through to
+// Documents instead of shadowing it. The winner is cached; if the cached
+// directory later has no files (profile switch), it re-resolves.
+// ---------------------------------------------------------------------------
+static char g_save_dir[MAX_PATH] = {};   // trailing backslash when set
+
+static bool SaveDirHasFiles(const char* dir)
+{
+    char pat[MAX_PATH];
+    _snprintf_s(pat, sizeof(pat), _TRUNCATE, "%ssave*.ff7", dir);
+    WIN32_FIND_DATAA fd = {};
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    FindClose(h);
+    return true;
+}
+
+static bool ResolveSaveDir()
+{
+    if (g_save_dir[0] && SaveDirHasFiles(g_save_dir))
+        return true;
+    g_save_dir[0] = '\0';
+
+    // 1. save\ beside the DLL - 1998 / 2026 layouts.
+    HMODULE hSelf = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&ResolveSaveDir), &hSelf);
+    char base[MAX_PATH] = {};
+    GetModuleFileNameA(hSelf, base, MAX_PATH);
+    char* sep = strrchr(base, '\\');
+    if (sep) *(sep + 1) = '\0';
+    char cand[MAX_PATH];
+    _snprintf_s(cand, sizeof(cand), _TRUNCATE, "%ssave\\", base);
+    if (SaveDirHasFiles(cand)) {
+        strcpy_s(g_save_dir, cand);
+        Log::Write("[FF7Access] SAVE dir: game folder save\\");
+        return true;
+    }
+
+    // 2. 2013 Steam profile under (possibly redirected) Documents.
+    char docs[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PERSONAL, nullptr,
+                                   SHGFP_TYPE_CURRENT, docs))) {
+        char pat[MAX_PATH];
+        _snprintf_s(pat, sizeof(pat), _TRUNCATE,
+                    "%s\\Square Enix\\FINAL FANTASY VII Steam\\user_*", docs);
+        WIN32_FIND_DATAA fd = {};
+        HANDLE h = FindFirstFileA(pat, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            FILETIME best = {};
+            char best_dir[MAX_PATH] = {};
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                    continue;
+                char dir[MAX_PATH];
+                _snprintf_s(dir, sizeof(dir), _TRUNCATE,
+                            "%s\\Square Enix\\FINAL FANTASY VII Steam\\%s\\",
+                            docs, fd.cFileName);
+                if (!SaveDirHasFiles(dir))
+                    continue;
+                // Multiple Steam accounts each get a user_ folder; take
+                // the most recently written - the profile in use.
+                if (best_dir[0] == '\0' ||
+                    CompareFileTime(&fd.ftLastWriteTime, &best) > 0) {
+                    best = fd.ftLastWriteTime;
+                    strcpy_s(best_dir, dir);
+                }
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+            if (best_dir[0]) {
+                strcpy_s(g_save_dir, best_dir);
+                char dbg[MAX_PATH + 64];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] SAVE dir: 2013 Steam profile '%s'",
+                    g_save_dir);
+                Log::Write(dbg);
+                return true;
+            }
+        }
+    }
+    Log::Write("[FF7Access] SAVE dir: none found (slots will read empty)");
+    return false;
+}
+
 static bool ReadSaveFilePreviews(int file_idx, SaveSlotPreview out[/*15*/])
 {
     memset(out, 0, sizeof(SaveSlotPreview) * kSaveSlotCount);
 
-    HMODULE hSelf = NULL;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCSTR>(&ReadSaveFilePreviews), &hSelf);
-    char path[MAX_PATH] = {};
-    GetModuleFileNameA(hSelf, path, MAX_PATH);
-    char* sep = strrchr(path, '\\');
-    if (sep) *(sep + 1) = '\0';
+    // v2.30.63: the directory is resolved (and cached) by ResolveSaveDir
+    // above - the 2013 Steam release keeps saves in Documents, not in a
+    // save\ folder beside the DLL.
+    if (!ResolveSaveDir())
+        return false;
     char full[MAX_PATH];
-    _snprintf_s(full, sizeof(full), _TRUNCATE, "%ssave\\save%02d.ff7",
-                path, file_idx);
+    _snprintf_s(full, sizeof(full), _TRUNCATE, "%ssave%02d.ff7",
+                g_save_dir, file_idx);
 
     std::ifstream f(full, std::ios::binary);
     if (!f.is_open())

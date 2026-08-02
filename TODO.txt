@@ -5,6 +5,22 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[SAVEDIR] 2013 saves read "empty" — SHIPPED v2.30.63 (2026-08-02), awaiting tester
+------------------------------------------------------------------------
+Cause was the FOLDER, not 7th Heaven and not the format: the 2013 Steam
+release stores saves in Documents\Square Enix\FINAL FANTASY VII Steam\
+user_<steamid>\, while the reader only looked in <game dir>\save\ (which
+exists-but-empty on 2013, silently shadowing the real location). New
+ResolveSaveDir tries game dir then the Documents profile (most recent
+user_* wins), requiring the folder to actually contain a saveNN.ff7.
+⚠ Documents via SHGetFolderPath — OneDrive redirection makes
+%USERPROFILE%\Documents wrong (proven on this machine); shell32 linked.
+Offline dry-run passed against both installs before deploy.
+VERIFY (2013+7H): slots speak real data; 2026 unchanged; log shows
+"SAVE dir: ...". RESIDUAL: 1998-disc installs untested (should hit the
+game-dir branch); if a tester's saves live elsewhere again, the log line
+names what was chosen, so one line of report pins it.
+
 [PROXSAY] Proximity announce — SHIPPED v2.30.62 (2026-08-02), awaiting play-test
 ------------------------------------------------------------------------
 User request: speak what you reach (ladder, jump, person), separate

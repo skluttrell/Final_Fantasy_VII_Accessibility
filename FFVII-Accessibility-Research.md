@@ -5039,6 +5039,53 @@ Deployed both installs, hash-verified (DBBE6868F0B7AC35).
 
 ---
 
+### v2.30.63 (2026-08-02): save slots read "empty" on the 2013 release — wrong FOLDER, right format
+
+**Report**: on 2013 + 7th Heaven the save menu reports every slot empty.
+
+**Cause: one hard-coded save location.** The v2.29 reader looked only in
+`<dll dir>\save\` — correct for the 1998 release and for 2026
+(`ff7/workingdir/save/`), but the **2013 Steam release keeps saves in
+the user's Documents**:
+`…\Square Enix\FINAL FANTASY VII Steam\user_<steamid>\saveNN.ff7`.
+Reproduced locally: the 2013 install's game-dir `save\` folder EXISTS
+but is empty (so it isn't even a missing-folder error — it silently
+shadowed the real location), while the Documents copy holds the real
+file.
+
+**The format was never the problem.** Parsing that very file with the
+§5 preview layout gives "Cloud, level 7, Mako Reactor 1, 376 gil,
+25 minutes" — so no re-derivation was needed, and 7th Heaven turns out
+not to redirect saves at all (a checked assumption: the report named
+7H, but the 2013-vs-2026 split is the real variable).
+
+**Fix — ResolveSaveDir()**: try `save\` beside the DLL, then
+`Documents\Square Enix\FINAL FANTASY VII Steam\user_*\`, choosing the
+most recently written profile when several Steam accounts exist. A
+directory only qualifies if it CONTAINS a `saveNN.ff7`, which is
+exactly what lets the empty 2013 folder fall through instead of
+shadowing. Result cached; re-resolves if the cached folder loses its
+files. One log line names the chosen directory.
+
+⚠ **Documents must come from the shell.** This machine has OneDrive
+folder redirection — `%USERPROFILE%\Documents` does not exist, the real
+path is `…\OneDrive\Documents`. SHGetFolderPath (CSIDL_PERSONAL) returns
+the redirected location; shell32 added to the link line for it.
+
+**Offline dry-run before deploy** (the same resolver compiled
+standalone, run against BOTH real installs): 2013 → falls through the
+empty folder to the OneDrive profile, finds save00.ff7 (65,109 bytes);
+2026 → unchanged, uses the game folder. Absent files still read as
+empty slots, which is what the sighted menu shows.
+
+VERIFY (2013 + 7H): the save/continue menu speaks the real slot data
+("Cloud, level 7, Mako Reactor 1…"); 2026 unaffected; log line names
+the resolved directory.
+
+Deployed both installs, hash-verified (636AB4A95FBCCBB2).
+
+---
+
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
 
 ### Overview

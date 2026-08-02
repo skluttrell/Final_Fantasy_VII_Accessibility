@@ -137,6 +137,9 @@ target_compile_options(ff7access PRIVATE
 target_link_libraries(ff7access PRIVATE
     kernel32
     user32       # GetSystemDirectoryA, OutputDebugStringA
+    shell32      # SHGetFolderPathA (v2.30.63): the 2013 Steam release
+                 # stores saves under Documents, which may be redirected
+                 # to OneDrive — only the shell API returns the real path
 )
 
 # Emit a linker map (build/dist/Release/version.map). FFNx's crash handler
