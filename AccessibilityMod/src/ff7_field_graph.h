@@ -1071,4 +1071,31 @@ inline constexpr GatewayEdge kGatewayEdges[] = {
 inline constexpr size_t kGatewayEdgeCount =
     sizeof(kGatewayEdges) / sizeof(kGatewayEdges[0]);
 
+// Fields containing a save-point model ('fieldbg saveicn' -- the
+// unique save label game-wide, v2.18 catalog). The Places category
+// lists these as distinct journey targets ('..., save point')
+// because captions alone collapse whole areas into one entry
+// (2026-08-02 run-2 report: the pre-boss save room was
+// untargetable -- every reactor screen shares one caption).
+// Sorted ascending for binary search.
+inline constexpr uint16_t kSavePointFields[] = {
+    88, 110, 124, 128, 131, 144, 149, 156, 169, 173, 187, 195, 227, 247, 256, 257, 264, 317, 355, 376, 386, 394, 397, 408, 422, 436, 462, 473, 496, 529, 573, 579, 633, 646, 687, 693, 699, 703, 705, 732, 733, 736, 739, 747, 748, 749, 750, 751, 752, 753, 754, 755, 756, 757, 758, 759, 760, 761, 762, 764
+};
+
+inline constexpr size_t kSavePointFieldCount =
+    sizeof(kSavePointFields) / sizeof(kSavePointFields[0]);
+
+inline bool HasSavePoint(uint16_t field_id)
+{
+    size_t lo = 0, hi = kSavePointFieldCount;
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (kSavePointFields[mid] < field_id)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < kSavePointFieldCount && kSavePointFields[lo] == field_id;
+}
+
 } // namespace FF7FieldGraph

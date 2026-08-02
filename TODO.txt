@@ -5,7 +5,34 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[JOURNEY] Cross-field journeys (Places category) — SHIPPED v2.30.65 (2026-08-02), awaiting play-test
+[JOURNEY2] Journey play-fixes — SHIPPED v2.30.66 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+From the two v2.30.65 runs: (1) elevator legs now guide to the SWITCH
+("elevator switch, press OK, toward Mako Reactor 1") instead of the
+lift line the player waited 2m40s on; (2) save-point fields list
+separately in Places ("Mako Reactor 1, save point, N screens" — the
+pre-boss save room, field 124, is in the offline table); (3) ladder
+pushes speak ONLY up/down (vertical component; height fallback); (4)
+leg names no longer truncate ("Sector 1,Statio"). ARRIVE lines now log
+ppv= (story progress) — groundwork for [STORYNAV].
+VERIFY: (a) repeat run 1's elevator moment — the arrival line should
+name the switch and \ should route to it; (b) Places from the station
+lists "Mako Reactor 1, save point, N screens" and the journey ends AT
+the save room; (c) ladders say only "push up"/"push down"; (d) long
+journey names speak in full.
+
+[STORYNAV] Story-direction marker in Places — GROUNDWORK v2.30.66 (user request)
+------------------------------------------------------------------------
+User wants Places to say which location progresses the story. Needs a
+curated PPV → next-objective table (STORY_PROGRESS 0xDC08DC, now logged
+as ppv= on every ARRIVE). Build it from play logs under the
+played-evidence rule: each session contributes (ppv value, field where
+it changed); when a Places entry's field matches the current ppv's
+known next objective, append ", story" (or similar). Do NOT guess
+values from walkthroughs — logs only. "Where they've been" needs no
+marker: Places is visited-only by definition (ReadMe wording covers it).
+
+[JOURNEY] Cross-field journeys (Places category) — SHIPPED v2.30.65 (2026-08-02), play-tested same day (see [JOURNEY2] for the fixes)
 ------------------------------------------------------------------------
 New 7th browser category "Places": J/L cycles visited places
 nearest-first ("Sector 1 Station, 3 screens"), K announces, \ starts a

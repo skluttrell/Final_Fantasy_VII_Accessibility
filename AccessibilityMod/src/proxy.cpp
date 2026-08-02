@@ -7301,11 +7301,14 @@ static const wchar_t* DpadSectorName(float deg)
 // LINE trigger zone (v2.17 â€” script-created lines: ladders, elevators,
 // touch/cross zones â€” a real segment, exactly like an exit).
 struct NavDest {
-    wchar_t name[64];      // spoken name, e.g. "To Platform" / "shinra
+    wchar_t name[96];      // spoken name, e.g. "To Platform" / "shinra
                            // guard 3, talk disabled" (widened 32â†’48 in
                            // v2.26 for the talk suffix on long labels;
                            // 48â†’64 in v2.30.23 for trigger-behavior
-                           // suffixes like ", exit to Seventh Heaven")
+                           // suffixes like ", exit to Seventh Heaven";
+                           // 64â†’96 in v2.30.66: journey-wrapped leg names
+                           // truncated LIVE in both run-1/run-2 logs --
+                           // "Journey to Sector 1,Statio")
     int16_t line_x1, line_y1, line_x2, line_y2;   // exit line (walkmesh)
     int16_t line_z1, line_z2;   // line endpoint HEIGHTS (v2.23) â€” lets the
                                 // route builder locate the target on the
@@ -9358,10 +9361,36 @@ static bool DestinationName(int dest_id, std::wstring& out)
 //
 // THREADING: FieldNavThread only, like the places cache above.
 // ---------------------------------------------------------------------------
+// v2.30.46 STORY HOTSPOTS, hoisted to file scope in v2.30.66: interaction
+// spots the engine exposes NOTHING for (no LINE, no prop model -- the whole
+// interaction is an NPC's script reacting to the player). Curated from
+// played evidence ONLY. Consumed by (a) the browser's hotspot destinations
+// (original v2.30.46 use) and (b) journey legs: when a leg rides a
+// CONDITIONAL exit on a hotspot field, the actuator -- not the exit line --
+// is what the player must reach ("elevator switch, press OK"). The run-1
+// play report proved the cost of not doing this: 2m40s stood in the
+// elevator car waiting for a line that only fires after the switch.
+struct StoryHotspot {
+    uint16_t field_id;
+    int16_t  x, y, z;
+    const wchar_t* name;
+};
+static const StoryHotspot kStoryHotspots[] = {
+    // elevtr1 (121): the No.1 reactor elevator switch. Spot chosen between
+    // the panel wall and Jessie's scripted position (-96,72) so it lies
+    // inside her talk radius (80): OK there runs her switch script
+    // ("Switch On.").
+    { 121, -140, 40, 5, L"elevator switch, press OK" },
+};
+
 struct FieldGraphEdge {
     uint16_t dst;    // destination field id
-    uint8_t  kind;   // 0 = gateway, 1 = line EXIT, 2 = line EXIT_OK
-    uint8_t  key;    // gateway slot (kind 0) or owning entity id (1/2)
+    uint8_t  kind;   // 0 = gateway, 1 = line EXIT, 2 = line EXIT_OK,
+                     // 3/4 = same but CONDITIONAL (from kCondExits -- the
+                     // destination depends on game state, so the exit is
+                     // usually actuated by something else: a switch, a
+                     // story beat; v2.30.66 pairs these with hotspots)
+    uint8_t  key;    // gateway slot (kind 0) or owning entity id (1-4)
 };
 
 // Adjacency lists, built once on first use (~1,500 edges total; index =
@@ -9387,7 +9416,8 @@ static const std::vector<std::vector<FieldGraphEdge>>& FieldGraphAdjacency()
             continue;
         adj[e.src].push_back({e.dst, 0, e.slot});
     }
-    const auto add_line_edge = [&](const FF7LineCatalog::LineInfo& l) {
+    const auto add_line_edge = [&](const FF7LineCatalog::LineInfo& l,
+                                   bool conditional) {
         if (l.kind != FF7LineCatalog::LK_EXIT &&
             l.kind != FF7LineCatalog::LK_EXIT_OK)
             return;
@@ -9398,21 +9428,23 @@ static const std::vector<std::vector<FieldGraphEdge>>& FieldGraphAdjacency()
             return;
         if (l.field_id == l.dest_field)
             return;
+        uint8_t kind =
+            static_cast<uint8_t>(l.kind == FF7LineCatalog::LK_EXIT ? 1 : 2);
+        if (conditional)
+            kind += 2;   // 3/4: same lookup, but actuated elsewhere
         adj[l.field_id].push_back({
-            static_cast<uint16_t>(l.dest_field),
-            static_cast<uint8_t>(l.kind == FF7LineCatalog::LK_EXIT ? 1 : 2),
-            l.entity_id});
+            static_cast<uint16_t>(l.dest_field), kind, l.entity_id});
     };
     // Unconditional script exits (kLines rows with a real dest)...
     for (const FF7LineCatalog::LineInfo& l : FF7LineCatalog::kLines)
-        add_line_edge(l);
+        add_line_edge(l, /*conditional=*/false);
     // ...plus every CANDIDATE of the conditional multi-destination exits
     // (kCondExits -- elevators, story doors). Without these the reactor's
     // halves are disconnected at elevtr1 (the 2026-08-02 dry-run finding);
     // with them, "take the lift" is a routable edge to each floor and the
     // arrival recompute self-heals if the lift went to the other one.
     for (size_t i = 0; i < FF7LineCatalog::kCondExitCount; ++i)
-        add_line_edge(FF7LineCatalog::kCondExits[i]);
+        add_line_edge(FF7LineCatalog::kCondExits[i], /*conditional=*/true);
     return adj;
 }
 
@@ -9507,6 +9539,28 @@ static bool BuildJourneyLegDest(int field_id, int next_field, uint32_t hdr,
             out.place_field = static_cast<int16_t>(next_field);
             return true;
         }
+        // CONDITIONAL exits on a hotspot field (v2.30.66): the exit line
+        // only fires after its actuator runs -- guide to the ACTUATOR.
+        // The run-1 elevator report is the defining case: the journey
+        // pointed at the lift's exit line and the player stood 2m40s
+        // waiting; the thing to reach was the switch. Curated hotspots
+        // only (played-evidence rule) -- conditional legs on fields
+        // without one keep the line target below.
+        if (e.kind >= 3) {
+            for (const StoryHotspot& h : kStoryHotspots) {
+                if (h.field_id != static_cast<uint16_t>(field_id))
+                    continue;
+                _snwprintf_s(out.name, _countof(out.name), _TRUNCATE,
+                             L"%ls, toward %ls", h.name, dn.c_str());
+                out.line_x1 = out.line_x2 = h.x;
+                out.line_y1 = out.line_y2 = h.y;
+                out.line_z1 = out.line_z2 = h.z;
+                out.model_slot = -1;
+                out.target_tri = -1;
+                out.place_field = static_cast<int16_t>(next_field);
+                return true;
+            }
+        }
         // Script line: find the ENABLED live line owned by that entity
         // (same identity the Triggers category uses; SLINE moves and
         // LINON disables are honored by construction because the live
@@ -9522,7 +9576,8 @@ static bool BuildJourneyLegDest(int field_id, int next_field, uint32_t hdr,
                 continue;
             const int16_t* v = reinterpret_cast<const int16_t*>(le);
             _snwprintf_s(out.name, _countof(out.name), _TRUNCATE,
-                         e.kind == 2 ? L"To %ls, press OK" : L"To %ls",
+                         (e.kind == 2 || e.kind == 4)
+                             ? L"To %ls, press OK" : L"To %ls",
                          dn.c_str());
             out.line_x1 = v[0]; out.line_y1 = v[1]; out.line_z1 = v[2];
             out.line_x2 = v[3]; out.line_y2 = v[4]; out.line_z2 = v[5];
@@ -9782,7 +9837,26 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 if (fabsf(dx) > 0.5f || fabsf(dy) > 0.5f) {
                     const float world_deg =
                         atan2f(dx, dy) * (180.0f / 3.14159265f);
-                    dir_sector = DpadSectorIndex(world_deg + control_deg - 180.0f);
+                    // v2.30.66 (user report): a ladder has exactly TWO
+                    // control paths -- up and down. The 8-sector wording
+                    // spoke impossible pushes ("push left", "push down
+                    // and right" in the run-1 log: dir=6, dir=3) whenever
+                    // the ladder is drawn diagonally. Collapse to the
+                    // VERTICAL component of the screen bearing: cos > 0
+                    // means the target is in the upper half-plane ->
+                    // "push up", else "push down". A near-horizontal
+                    // bearing (visually flat ladder) falls back to the
+                    // climb target's HEIGHT (bigger z = higher -- the
+                    // nmkin_2 ladder pair's z values prove the sign).
+                    const float in_rad = (world_deg + control_deg - 180.0f)
+                                         * (3.14159265f / 180.0f);
+                    const float vert = cosf(in_rad);
+                    if (fabsf(vert) > 0.05f) {
+                        dir_sector = (vert > 0.0f) ? 0 : 4;   // up : down
+                    } else {
+                        const int32_t dz = (tgt[2] >> 12) - pz;
+                        dir_sector = (dz >= 0) ? 0 : 4;
+                    }
                 }
             }
             if (climbing != ladder_was_on ||
@@ -9855,7 +9929,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                     "[FF7Access] ARRIVE field=%d via=%s facing38=%u "
                     "destdir=%u match=%d ctrl=%.0f sector=%d destfld=%d "
-                    "mpjpo=%u",
+                    "mpjpo=%u ppv=%d",
                     static_cast<int>(field_id),
                     arrived_via_jump ? "jump" : "direct",
                     facing_byte, dest_dir,
@@ -9865,7 +9939,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         *reinterpret_cast<const volatile int16_t*>(
                             FF7Addr::FIELD_JUMP_DEST_FIELD)),
                     *reinterpret_cast<const volatile uint8_t*>(
-                        FF7Addr::FIELD_MAPJUMP_DISABLED));
+                        FF7Addr::FIELD_MAPJUMP_DISABLED),
+                    // v2.30.66: story-progress (PPV) per arrival -- the
+                    // evidence base for a future "this way continues the
+                    // story" marker in Places (user request 2026-08-02).
+                    // Every played session now maps PPV values to the
+                    // fields where they changed; once enough of the route
+                    // is logged, a curated PPV->next-objective table can
+                    // speak the marker under the played-evidence rule.
+                    static_cast<int>(
+                        *reinterpret_cast<const volatile int16_t*>(
+                            FF7Addr::STORY_PROGRESS)));
                 Log::Write(dbg);
             }
             arrived_via_jump = false;
@@ -10978,18 +11062,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // the v2.30.18 non-fieldbg scenery list. Listed always
             // (story-gating a curated spot would need the story var,
             // which is exactly the guessing this list refuses to do).
-            struct StoryHotspot {
-                uint16_t field_id;
-                int16_t  x, y, z;
-                const wchar_t* name;
-            };
-            static const StoryHotspot kStoryHotspots[] = {
-                // elevtr1 (121): the No.1 reactor elevator switch. Spot
-                // chosen between the panel wall and Jessie's scripted
-                // position (-96,72) so it lies inside her talk radius
-                // (80): OK there runs her switch script ("Switch On.").
-                { 121, -140, 40, 5, L"elevator switch, press OK" },
-            };
+            // Table hoisted to file scope in v2.30.66 so journey legs can
+            // consult it too (declaration above BuildJourneyLegDest).
             for (const StoryHotspot& h : kStoryHotspots) {
                 if (h.field_id != static_cast<uint16_t>(field_id))
                     continue;
@@ -11031,19 +11105,31 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                           return a.hops != b.hops ? a.hops < b.hops
                                                   : a.id < b.id;
                       });
+            // v2.30.66: save-point fields (offline saveicn table) list as
+            // their own entries ("Mako Reactor 1, save point, 7 screens")
+            // and dedupe separately from the plain caption -- the run-2
+            // report: every reactor screen shares one caption, so the
+            // pre-boss save room was untargetable. The spoken BASE
+            // (caption + optional ", save point") is the dedupe identity;
+            // nearest of each base wins (the list is sorted nearest-first).
+            std::vector<std::wstring> used_bases;
             for (const PlaceTmp& p : places) {
                 if (n_dests >= static_cast<int>(_countof(dests)))
                     break;
+                std::wstring base = g_places[p.id];
+                const bool is_save = FF7FieldGraph::HasSavePoint(
+                    static_cast<uint16_t>(p.id));
+                if (is_save)
+                    base += L", save point";
                 bool dup = false;
-                for (int k = 0; k < n_dests && !dup; ++k)
-                    dup = wcsncmp(dests[k].name, g_places[p.id],
-                                  wcslen(g_places[p.id])) == 0 &&
-                          dests[k].name[wcslen(g_places[p.id])] == L',';
+                for (const std::wstring& u : used_bases)
+                    if (u == base) { dup = true; break; }
                 if (dup)
-                    continue;   // nearest same-caption field already listed
+                    continue;   // nearest same-name field already listed
+                used_bases.push_back(base);
                 NavDest& d = dests[n_dests++];
                 _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                             L"%ls, %d %ls", g_places[p.id],
+                             L"%ls, %d %ls", base.c_str(),
                              static_cast<int>(p.hops),
                              p.hops == 1 ? L"screen" : L"screens");
                 d.line_x1 = d.line_y1 = d.line_x2 = d.line_y2 = 0;
@@ -11070,7 +11156,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 TTS::Speak(L"No destinations.", /*interrupt=*/true);
                 return;
             }
-            wchar_t msg[96];   // name is up to 63 chars since v2.30.23
+            wchar_t msg[128];  // name is up to 95 chars since v2.30.66
             if (with_position)
                 _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d of %d.",
                              dests[selection].name, selection + 1, n_dests);
@@ -11145,7 +11231,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // Fold the journey context into the leg's spoken name so the
             // whole thing is ONE utterance ("Journey to Sector 1 Station,
             // 3 screens. First, To nmkin 2: up 4 seconds...").
-            wchar_t wrapped[64];
+            wchar_t wrapped[96];
             _snwprintf_s(wrapped, _countof(wrapped), _TRUNCATE,
                          L"Journey to %ls, %d %ls. First, %ls",
                          journey_name,

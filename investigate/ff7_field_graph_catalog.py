@@ -126,6 +126,55 @@ edges = []          # (src, dst, slot)
 raw_used = 0
 self_loops = 0
 degenerate = 0
+save_fields = set() # field ids containing a save-point model (v2.30.66)
+
+def field_has_save_model(dec, field_name):
+    """Walk the model-loader section (index 2, the exact v2.16 format the
+    mod's FieldModelLabel mirrors) and report whether any label contains
+    'save'. Game-wide evidence (v2.18 catalog): 'fieldbg saveicn' is the
+    ONLY save label across all 720 fields, so the substring is exact.
+    Why here: the Places category needs save-point fields listable as
+    distinct journey targets ('Mako Reactor 1, save point') -- captions
+    alone collapse whole areas into one entry (the 2026-08-02 run-2
+    report: no way to target the pre-boss save room)."""
+    offs = struct.unpack_from('<9I', dec, 6)
+    sec_off = offs[2]
+    end = sec_off + 4 + struct.unpack_from('<I', dec, sec_off)[0]
+    if end > len(dec):
+        return False
+    p = sec_off + 4
+    n_models = struct.unpack_from('<H', dec, p + 2)[0]
+    if n_models > 64:
+        return False
+    p += 6
+    for _ in range(n_models):
+        if p + 2 > end:
+            return False
+        nlen = struct.unpack_from('<H', dec, p)[0]; p += 2
+        if nlen == 0 or nlen > 64 or p + nlen > end:
+            return False
+        if b'save' in dec[p:p + nlen].lower():
+            return True
+        p += nlen
+        p += 2                       # unknown u16
+        if p + 8 > end:
+            return False
+        p += 8                       # HRC name
+        p += 4                       # ASCII scale
+        if p + 2 > end:
+            return False
+        nanim = struct.unpack_from('<H', dec, p)[0]; p += 2
+        if nanim > 64:
+            return False
+        p += 30                      # light block
+        for _ in range(nanim):
+            if p + 2 > end:
+                return False
+            alen = struct.unpack_from('<H', dec, p)[0]; p += 2
+            if alen > 64 or p + alen + 2 > end:
+                return False
+            p += alen + 2
+    return False
 
 for fname, entry_off in toc:
     if fname not in name_to_id:
@@ -145,6 +194,8 @@ for fname, entry_off in toc:
     tg = sec_offs[7] + 4
     if tg + 0x2E4 > len(dec):
         continue
+    if field_has_save_model(dec, fname):
+        save_fields.add(src_id)
     hdr = dec[tg:tg + 0x2E4]
     for g in range(12):
         r = hdr[0x38 + g * 24: 0x38 + (g + 1) * 24]
@@ -165,6 +216,9 @@ edges.sort()
 print(f"raw used gateways: {raw_used} (dump cross-check expects 1036)")
 print(f"dropped: {self_loops} self-loops, {degenerate} degenerate lines")
 print(f"emitted edges: {len(edges)}")
+print(f"save-point fields: {len(save_fields)} "
+      f"(v2.18 catalog cross-check expects ~57 saveicn occurrences; "
+      f"multi-id fields can differ slightly)")
 if raw_used != 1036:
     print("*** WARNING: raw count differs from the 2026-08-02 dump -- "
           "game data changed? Investigate before shipping. ***")
@@ -210,6 +264,31 @@ with open(out_path, 'w', encoding='ascii') as f:
         "};\n\n"
         "inline constexpr size_t kGatewayEdgeCount =\n"
         "    sizeof(kGatewayEdges) / sizeof(kGatewayEdges[0]);\n\n"
+        "// Fields containing a save-point model ('fieldbg saveicn' -- the\n"
+        "// unique save label game-wide, v2.18 catalog). The Places category\n"
+        "// lists these as distinct journey targets ('..., save point')\n"
+        "// because captions alone collapse whole areas into one entry\n"
+        "// (2026-08-02 run-2 report: the pre-boss save room was\n"
+        "// untargetable -- every reactor screen shares one caption).\n"
+        "// Sorted ascending for binary search.\n"
+        "inline constexpr uint16_t kSavePointFields[] = {\n    ")
+    f.write(", ".join(str(i) for i in sorted(save_fields)))
+    f.write(
+        "\n};\n\n"
+        "inline constexpr size_t kSavePointFieldCount =\n"
+        "    sizeof(kSavePointFields) / sizeof(kSavePointFields[0]);\n\n"
+        "inline bool HasSavePoint(uint16_t field_id)\n"
+        "{\n"
+        "    size_t lo = 0, hi = kSavePointFieldCount;\n"
+        "    while (lo < hi) {\n"
+        "        const size_t mid = (lo + hi) / 2;\n"
+        "        if (kSavePointFields[mid] < field_id)\n"
+        "            lo = mid + 1;\n"
+        "        else\n"
+        "            hi = mid;\n"
+        "    }\n"
+        "    return lo < kSavePointFieldCount && kSavePointFields[lo] == field_id;\n"
+        "}\n\n"
         "} // namespace FF7FieldGraph\n")
 print(f"\nWrote {out_path}")
 print(f"Log saved to: {_log_path}")

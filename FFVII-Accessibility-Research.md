@@ -5240,6 +5240,50 @@ reactor save room back to the station; wrong-turn self-heal; Shift+K
 cancel; elevator leg wording; "not available yet" on a story door;
 Places counts sane; no chatter regression on ordinary transitions.
 
+### v2.30.66 (2026-08-02): journey play-fixes - elevator actuators, save-point places, ladder up/down
+
+**Two same-day journey runs** (2013+7H; run 1 = pre-boss save back to
+Sector 1, run 2 = new game toward the boss) proved v2.30.65 works
+end-to-end - legs spoke at every arrival, wrong-turn recompute fired,
+match=1 on all tracked jumps - and surfaced four fixes:
+
+1. **Elevator stall (run 1's big finding)**: ARRIVE at elevtr1 then a
+   2m40s gap - the journey pointed at the lift's exit LINE, but the
+   line only fires after the SWITCH runs. Fix: conditional-exit edges
+   (kCondExits) now carry kinds 3/4, and when such a leg lands on a
+   field with a curated story hotspot, the leg targets the ACTUATOR:
+   "elevator switch, press OK, toward Mako Reactor 1". kStoryHotspots
+   hoisted to file scope for it (still played-evidence-only; one entry).
+2. **Save room untargetable (run 2)**: fields 119-124 ALL carry caption
+   "Mako Reactor 1" - dedupe collapsed the whole reactor to its nearest
+   screen. Fix: NEW kSavePointFields in ff7_field_graph.h (60 ids,
+   offline model-loader walk for the game-wide-unique 'saveicn' label;
+   124 = the pre-boss save room confirmed in-table); save fields list
+   as their own Places entries ("Mako Reactor 1, save point, 7
+   screens") with the spoken base as the dedupe identity. Boss rooms
+   stay unlistable (no engine signal) - the pre-boss save IS the
+   destination that matters.
+3. **Ladder pushes (user report)**: 8-sector wording spoke impossible
+   directions on diagonal ladders (run-1 log: dir=6 "left", dir=3
+   "down and right" - a ladder has exactly TWO control paths). Fix:
+   collapse to the screen bearing's VERTICAL component (cos > 0 = push
+   up, else down; near-horizontal falls back to climb-target height,
+   sign proven by the nmkin_2 ladder pair's z values).
+4. **NavDest name 64->96**: journey-wrapped leg names truncated LIVE in
+   both logs ("Journey to Sector 1,Statio"). Dependent buffers widened.
+
+**Story-direction groundwork (user request)**: ARRIVE lines now log
+**ppv=** (STORY_PROGRESS 0xDC08DC - first consumer of that address).
+A spoken "this way continues the story" Places marker needs a curated
+PPV -> next-objective table; every played session now contributes the
+mapping (PPV value at every screen change), so the table grows from
+real play under the played-evidence rule (TODO [STORYNAV]). "Where
+they've already been" needs no marker: Places is DEFINED as visited
+places - said in the ReadMe wording instead.
+
+Deployed both installs, hash-verified (F25491E59C85EEA2). VERIFY:
+TODO [JOURNEY2].
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
