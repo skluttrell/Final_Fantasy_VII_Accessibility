@@ -5298,6 +5298,20 @@ take ladder 1, down 3 seconds" + on mount "push up". DLL literal check:
 "ladder up" ABSENT (wide scan). Deployed both installs
 (EAE560BAF15CC595). VERIFY with [JOURNEY2]'s ladder item.
 
+### Release v2.30.68 published 2026-08-02 (test build)
+
+User decision: "ship something to the testers, fix things later."
+Rolls up v2.30.60-.68 (ladders, level-ups, proximity announce, 2013
+save-dir fix, transition tracking + arrival facing, JOURNEYS/Places,
+and all three same-day play-fix rounds). Release id 363892810, tag
+v2.30.68, zip digest sha256 e9ebbab030aea368139bc7d9663954824e45c5c2
+fc44a806a46b4648c90cbaa3 = local hash (426,781 bytes),
+/releases/latest confirms public. ReadMe per the template rule: TEST
+BUILD notice leads "New in this version"; Known Issues gained the two
+journey honesty limits (story locks invisible, no world map); Keys
+gained the Places/journey usage lines and Shift+K's journey-cancel
+role. Point testers at v2.30.68.
+
 ### v2.30.68 (2026-08-02): six third-run fixes
 
 Third journey run (new game -> reactor, log 15:47-16:08) reported six
