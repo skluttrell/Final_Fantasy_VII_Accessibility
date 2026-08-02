@@ -5,6 +5,29 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[TRANSIT] Transition tracking + arrival facing — SHIPPED v2.30.64 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+First build on the screen-construction investigation (research §4
+FIELD_JUMP_INTERFACE row): the engine has ONE transition mailbox
+(0xCC0D8A dest field, 0xCC0DAC arrival direction, 0xCC0DAE phase=2 =
+screen constructed) written by every entry path, and facing is
+field_event_data +0x38. Shipped: screen announce now ends ", facing X"
+(same d-pad words as routes; rides announce_map_change, no new cfg
+key); "[FF7Access] JUMP armed ..." debug line once per jump;
+"[FF7Access] ARRIVE ... facing38= destdir= match= sector=" live-confirm
+line every arrival; MPJPO confirmed (0xCC0DBE nonzero = gateways dead)
+and logged in both lines, not yet spoken.
+VERIFY: (a) ", facing X" matches the room on ordinary transitions — if
+consistently rotated/opposite, the facing wheel needs an offset and the
+ARRIVE line's raw byte derives it (v2.14 calibration playbook); (b)
+JUMP armed lines fire for walk-across exits AND save loads; (c) ARRIVE
+match=1 on gateway walks (match=0 with via=jump = an entry cutscene
+turned the player first — fine if the spoken facing still matches);
+(d) note any mpjpo!=0 sighting + what the scene was.
+NEXT after confirm: cross-field journey graph (gateway table + line
+catalog + MPNAM caption harvest); "exit currently disabled" from
+0xCC0DBE; show_arrow story-lock check.
+
 [SAVEDIR] 2013 saves read "empty" — SHIPPED v2.30.63 (2026-08-02), awaiting tester
 ------------------------------------------------------------------------
 Cause was the FOLDER, not 7th Heaven and not the format: the 2013 Steam

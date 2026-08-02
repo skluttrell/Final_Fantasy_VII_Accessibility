@@ -9365,6 +9365,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // the new screen. 0 = nothing announced yet this session.
     int16_t announced_field_id = 0;
 
+    // Transition tracker (v2.30.64) â€” watches the engine's field-jump
+    // mailbox (FIELD_JUMP_* in ff7_addresses.h). jump_armed_logged is the
+    // once-per-jump edge for the JUMP debug line (GAME_MODE holds 1 for
+    // the whole load, far longer than one 50ms poll, so the arm is
+    // reliably observed; it re-arms when GAME_MODE returns to field play).
+    // arrived_via_jump tells the arrival announce whether this screen was
+    // entered through a tracked jump (gateway/MAPJUMP/save-load/world) or
+    // seen "cold" (mod attached mid-field) â€” context for the ARRIVE
+    // facing-confirmation debug line.
+    bool    jump_armed_logged = false;
+    int16_t jump_dest_field   = 0;
+    bool    arrived_via_jump  = false;
+
     // Visited-places cache (v2.25): previous sessions' learned captions.
     // Loaded here because this thread is the cache's only reader/writer.
     PlacesLoad();
@@ -9422,6 +9435,49 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             FF7Addr::GAME_MODE);
         const uint8_t menu_open = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::MENU_OPEN);
+        // ---- transition watcher (v2.30.64) ----------------------------
+        // MUST run BEFORE the field gates below: a pending field jump
+        // holds GAME_MODE at 1 (GAME_MODE_FIELD_JUMP), which the gate
+        // discards â€” the v2.30.59 lesson (check a new branch's ORDER
+        // against existing early-continues) applied preemptively. Log-only
+        // this version: one line per armed jump with the full mailbox
+        // snapshot, so the first play-test log verifies every entry path
+        // (gateway walk, MAPJUMP, save load) hits the interface as the
+        // static proof says. Announcing happens at ARRIVAL (below), where
+        // the facing byte is readable and speech won't fight the load.
+        if (game_mode == FF7Addr::GAME_MODE_FIELD_JUMP) {
+            const int16_t dest = *reinterpret_cast<const volatile int16_t*>(
+                FF7Addr::FIELD_JUMP_DEST_FIELD);
+            if (!jump_armed_logged || dest != jump_dest_field) {
+                jump_armed_logged = true;
+                jump_dest_field   = dest;
+                arrived_via_jump  = true;
+                if (Config::Get().debug_log) {
+                    char dbg[192];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] JUMP armed dest=%d x=%d y=%d tri=%d "
+                        "dir=%u phase=%u mpjpo=%u from=%d",
+                        dest,
+                        *reinterpret_cast<const volatile int16_t*>(
+                            FF7Addr::FIELD_JUMP_DEST_X),
+                        *reinterpret_cast<const volatile int16_t*>(
+                            FF7Addr::FIELD_JUMP_DEST_Y),
+                        *reinterpret_cast<const volatile int16_t*>(
+                            FF7Addr::FIELD_JUMP_DEST_TRI),
+                        *reinterpret_cast<const volatile uint8_t*>(
+                            FF7Addr::FIELD_JUMP_DEST_DIR),
+                        *reinterpret_cast<const volatile uint16_t*>(
+                            FF7Addr::FIELD_JUMP_PHASE),
+                        *reinterpret_cast<const volatile uint8_t*>(
+                            FF7Addr::FIELD_MAPJUMP_DISABLED),
+                        static_cast<int>(field_id));
+                    Log::Write(dbg);
+                }
+            }
+        } else if (game_mode == FF7Addr::GAME_MODE_FIELD) {
+            jump_armed_logged = false;   // edge re-arms for the next jump
+        }
+
         // v2.30.37: GameOverTitleContext â€” the GAME OVER film reel passes
         // every byte gate above (frozen field, stale FIELD_ID): without the
         // latch, J/L/K would still browse and route the DEAD field's
@@ -9552,6 +9608,50 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // the field now" orientation cue.
         if (field_id != announced_field_id) {
             announced_field_id = field_id;
+
+            // ---- arrival facing (v2.30.64) ----------------------------
+            // The arrival routine wrote the jump mailbox's direction into
+            // the player's facing byte (+0x38) at 0x63C094; we read the
+            // byte itself (not the mailbox) so the announcement is honest
+            // even when an entry cutscene has already turned the player.
+            // Wheel-to-screen composition is the motion formula (screen =
+            // world + control âˆ’ 180) and is PROVISIONAL for facing until
+            // one log confirms it â€” hence the ARRIVE line below, which
+            // prints every input of the computation (the v2.14
+            // direction-calibration playbook applied to facing).
+            const uint8_t facing_byte = elem[FF7Addr::FIELD_EVENT_FACING];
+            const float   facing_world = facing_byte * (360.0f / 256.0f);
+            const int     facing_sector =
+                DpadSectorIndex(facing_world + control_deg - 180.0f);
+
+            // Live-confirm line, independent of the announce setting: one
+            // line per arrival ties +0x38 to the mailbox direction. match=1
+            // is the +0x38 static proof confirmed live; match=0 with
+            // via=jump usually means an entry script turned the player
+            // (log the walkabout: does the spoken sector fit the room?).
+            if (Config::Get().debug_log) {
+                const uint8_t dest_dir =
+                    *reinterpret_cast<const volatile uint8_t*>(
+                        FF7Addr::FIELD_JUMP_DEST_DIR);
+                char dbg[192];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] ARRIVE field=%d via=%s facing38=%u "
+                    "destdir=%u match=%d ctrl=%.0f sector=%d destfld=%d "
+                    "mpjpo=%u",
+                    static_cast<int>(field_id),
+                    arrived_via_jump ? "jump" : "direct",
+                    facing_byte, dest_dir,
+                    facing_byte == dest_dir ? 1 : 0,
+                    control_deg, facing_sector,
+                    static_cast<int>(
+                        *reinterpret_cast<const volatile int16_t*>(
+                            FF7Addr::FIELD_JUMP_DEST_FIELD)),
+                    *reinterpret_cast<const volatile uint8_t*>(
+                        FF7Addr::FIELD_MAPJUMP_DISABLED));
+                Log::Write(dbg);
+            }
+            arrived_via_jump = false;
+
             if (Config::Get().announce_map_change) {
                 // v2.24: prefer the game's own menu caption ("Sector 1
                 // Station") from the MPNAM buffer â€” the friendly name a
@@ -9577,8 +9677,15 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         have_name = have_name || c != '_';
                     }
                 }
-                if (have_name)
+                if (have_name) {
+                    // v2.30.64: ", facing up" â€” the audio version of the
+                    // camera cut's orientation cue. Same d-pad vocabulary
+                    // as routes/ladders so "facing up" and "push up" mean
+                    // the same thing to the player's hands.
+                    msg += L", facing ";
+                    msg += kDpadSectors[facing_sector];
                     TTS::Speak(msg, /*interrupt=*/false);
+                }
             }
         }
 

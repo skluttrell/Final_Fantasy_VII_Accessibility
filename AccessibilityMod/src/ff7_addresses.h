@@ -1978,6 +1978,58 @@ constexpr uint32_t FIELD_UC_LOCK        = 0x00CC0DBA; // modules_global_object +
 constexpr uint32_t FIELD_BGMOVIE_FLAG   = 0x00CC0DC2; // modules_global_object + 0x3A
 constexpr uint32_t FIELD_MOVIE_PLAYING  = 0x00CC1638; // word_CC1638 (FFNx name)
 
+// ---------------------------------------------------------------------------
+// FIELD JUMP INTERFACE (v2.30.64) — the engine's ONE transition-request
+// mailbox, a cluster of modules_global_object fields. Static disasm
+// 2026-08-02 (ff7_screen_construction_static.py + ff7_gateway_cross_disasm
+// + ff7_gateway_hit_disasm.py; research doc §4 FIELD_JUMP_INTERFACE row):
+//
+//   EVERY way of entering a field writes these same globals —
+//     - MAPJUMP opcode handler 0x6131C4 (script jumps; args field,x,y,
+//       tri,dir; quirk: field 0x313 is remapped to 0x159 in-handler),
+//     - the gateway crossing-hit path 0x636233 (walk-across exits; copies
+//       the 24-byte gateway record's +0x12/+0x0C/+0x0E/+0x10/+0x14),
+//     - the save-load entry 0x63CCBA (savemap continue block
+//       0xDC08CE..0xDC08DA),
+//     - the world-map exit 0x76713B/163/172,
+//     - the new-game/init region 0x60B48C..
+//
+//   GAME_MODE (+0x01) is held at 1 while a field jump is pending, and the
+//   PHASE word is the completion signal: the field ARRIVAL routine
+//   (0x63BF60..0x63C17E, ends right before field_loop 0x63C17F) places the
+//   player, applies the arrival direction to facing (+0x38), initializes
+//   the walkmesh pointers and door triggers, and then writes PHASE = 2
+//   (0x63C148/0x63C232) — which is exactly what MAPJUMP's second entry
+//   polls for before advancing the script. So:
+//
+//     DEST_FIELD_ID changing + GAME_MODE==1  =  "transition started, to X"
+//     PHASE == 2 (after an armed jump)       =  "new screen fully built"
+//
+//   No hook needed — the mod polls these like every other module global.
+//   ⚠ These bytes are STALE after arrival (nothing clears them until the
+//   next jump arms) — always pair reads with an edge/latch, never treat a
+//   bare value as "a jump is happening" (same stale-leftover class as the
+//   countdown timer, v2.30.8).
+constexpr uint32_t FIELD_JUMP_DEST_FIELD  = 0x00CC0D8A; // s16, modules + 0x02
+constexpr uint32_t FIELD_JUMP_DEST_X      = 0x00CC0D8C; // s16, modules + 0x04
+constexpr uint32_t FIELD_JUMP_DEST_Y      = 0x00CC0D8E; // s16, modules + 0x06
+constexpr uint32_t FIELD_JUMP_DEST_TRI    = 0x00CC0DAA; // s16, modules + 0x22
+constexpr uint32_t FIELD_JUMP_DEST_DIR    = 0x00CC0DAC; // u8,  modules + 0x24
+constexpr uint32_t FIELD_JUMP_PHASE       = 0x00CC0DAE; // u16, modules + 0x26
+constexpr uint16_t FIELD_JUMP_PHASE_READY = 2;          // field constructed
+constexpr uint8_t  GAME_MODE_FIELD_JUMP   = 1;          // jump pending
+
+// MPJPO — "map jump port on/off" (v2.30.64, ff7_mpjpo_static.py
+// 2026-08-02): the MPJPO opcode (0xD2, handler 0x61A4D4) writes its 1-byte
+// script arg RAW to [modules_global_object]+0x36 — the byte the PSX decomp
+// names "map jump disabled". Scripts set it during scenes so walking across
+// a gateway line does nothing. Nonzero = gateways currently DEAD; the
+// pathfinder should not promise a gateway exit while it is set. ⚠ The
+// live VALUE convention (1=disabled per the PSX label) rides the v2.30.64
+// ARRIVE/JUMP debug lines for one-log confirmation before any spoken
+// feature depends on it.
+constexpr uint32_t FIELD_MAPJUMP_DISABLED = 0x00CC0DBE; // u8, modules + 0x36
+
 // field_event_data struct layout (FFNx ff7.h). Offsets below are computed
 // from the struct's field order; the layout is anchored by movement_speed
 // at +0x76, which v2.6 verified LIVE (displacement = movement_speed × 32
@@ -2078,6 +2130,31 @@ constexpr uint8_t  MOVE_TYPE_LADDER_A      = 4;
 constexpr uint8_t  MOVE_TYPE_LADDER_B      = 5;
 constexpr uint32_t FIELD_EVENT_MOVE_PHASE  = 0x70;  // u16 0/1/2
 constexpr uint32_t FIELD_EVENT_MOVE_TARGET = 0x7C;  // 3 x s32, <<12
+
+// ---------------------------------------------------------------------------
+// MODEL FACING (v2.30.64, static disasm 2026-08-02,
+// ff7_screen_construction_static.py — the screen-construction investigation).
+//
+// +0x38 (FFNx: rotation_curr_value) is THE authoritative facing byte,
+// proven from three independent directions in one session:
+//   - the DIR opcode (0xB3, handler 0x618062) writes its direction arg
+//     straight to +0x38 (0x6180A8), plus turn-step bookkeeping to
+//     +0x3A/+0x3B;
+//   - GETDIR (0xB7) reads +0x38 back into the script variable (0x6184F1);
+//   - the field ARRIVAL routine applies the pending transition's arrival
+//     direction (FIELD_JUMP_DEST_DIRECTION below) to the PLAYER's +0x38 at
+//     0x63C094 (via absolute 0xCC16A8 = static event-data array 0xCC1670
+//     + 0x38 — the [ptr]+offset==static cross-proof pattern again).
+//
+// UNITS: a 0..255 wheel, degrees = byte * 360/256 — the same encoding as
+// the trigger header's control_direction (v2.14 calibration: byte 124 =
+// 174.4°). ⚠ The WORLD-vs-SCREEN composition for FACING is PROVISIONAL
+// until one live log: motion bearings proved screen = world + control
+// − 180 (v2.14), and facing is assumed to sit on the same wheel with 0 =
+// +Y. The v2.30.64 ARRIVE debug line prints the raw byte alongside the
+// spoken sector so a single play-test log confirms or flips the mapping
+// (the v2.14 direction-calibration playbook, applied to facing).
+constexpr uint32_t FIELD_EVENT_FACING = 0x38;  // u8, 0..255 wheel
 
 // Entity id → model slot map (bonus find from the same disasm): u8 per
 // entity, 0xFF = the entity has no model. The TLKON handler resolves its

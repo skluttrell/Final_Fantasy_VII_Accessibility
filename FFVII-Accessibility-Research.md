@@ -277,6 +277,13 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | *(game's parsed access-pool ptr)* | `0x00CFF748` | u32 â†’ the engine's own parsed copy of the walkmesh ACCESS pool (stride 3Ã—u16 per triangle, neighbor ids), read by the same movement code above. The mod parses the raw file section instead (equivalent data); recorded as the live-side anchor if a future feature needs the engine's copy |
 | *(walkmesh section)* | â€” | Raw field file (behind FIELD_FILE_BUFFER 0xCFF594) **section index 4** (offset table entry buf+6+4Ã—4 = the `level_data+0x16` FFNx's renderer reads): u32 size prefix, u32 nTriangles, triangle pool (24B each: 3 Ã— s16 x,y,z,res â€” same coord space as model_pos>>12), then ACCESS pool (3 Ã— u16 per triangle = neighbor across each edge, 0xFFFF = wall). Triangle layout FFNx-production-confirmed; access pool **CONFIRMED GAME-WIDE OFFLINE 2026-07-16** (ff7_walkmesh_route_dryrun.py: 720/720 fields, 184,358 links, 100% id-valid + geometrically adjacent, 100.00% reciprocal) **and LIVE 2026-07-16** (nmkin_2 parsed in-game with the exact dry-run triangle count, turn-by-turn routes play-confirmed). Source of v2.22 turn-by-turn + v2.23 journeys; constants at ff7_addresses.h SECTION 1h; format detail Â§5 |
 | *(player/model walkmesh triangle)* | â€” | field_event_data **+0x78 s16 field_triangle_id** (see offsets row above): the model's live walkmesh triangle â€” v2.22 uses it as the exact A*/journey endpoint (player and model targets), immune to stacked-layer ambiguity; <0 = off-mesh (the v2.15 People filter) |
+| *(model FACING +0x36..+0x3B)* | - | field_event_data rotation cluster (FFNx names): +0x36 rotation_value, **+0x38 rotation_curr_value = THE authoritative facing byte** (0-255, x360/256 deg, same atan2(dx,dy) convention as control_direction). STATIC-PROVEN 2026-08-02 from three sides (ff7_screen_construction_static.py): DIR handler 0x618062 writes +0x38 directly (also +0x3A step idx, +0x3B steps type), GETDIR reads +0x38 back at 0x6184F1, DIRA path writes the same trio via 0x616BA8; and the field-ARRIVAL code applies DEST_DIRECTION to the player's +0x38 at 0x63C094 (absolute 0xCC16A8 = static event-data array 0xCC1670 + 0x38). Live-confirm pending (one log line comparing +0x38 to a known facing) |
+| `FIELD_JUMP_INTERFACE` | `0xCC0D8A..0xCC0DAE` | **The engine's ONE transition-request interface** (modules_global_object fields; STATIC 2026-08-02, ff7_screen_construction_static.py + ff7_gateway_cross_disasm.py + ff7_gateway_hit_disasm.py): +0x02 `0xCC0D8A` dest field id (s16), +0x04/+0x06 `0xCC0D8C/8E` dest X/Y, +0x22 `0xCC0DAA` dest walkmesh triangle, **+0x24 `0xCC0DAC` dest arrival DIRECTION** (byte), +0x26 `0xCC0DAE` jump phase (armed 0, **2 = new field constructed**, written at 0x63C148/0x63C232 - the construction-complete signal), GAME_MODE (+0x01) held =1 while a field jump is pending. ALL entry paths write it: MAPJUMP handler 0x6131C4 (args field,x,y,tri,dir; quirk: field 0x313 remapped to 0x159), gateway-hit 0x636233 (from the gateway record), save-load 0x63CCBA (from savemap continue block), world-map exit 0x76713B/163/172, field-init/new-game region 0x60B48C.. Watching 0xCC0D8A+0xCC0DAE gives dest-field + screen-ready edges with no hook |
+| *(gateway record layout - COMPLETE)* | - | 24B record (triggers hdr +0x38, 12 slots): +0x00/+0x06 exit-line vertices (2x s16 x,y,z), +0x0C/+0x0E dest X/Y, **+0x10 dest TRIANGLE id** (not a Z coord - validated game-wide offline 2026-08-02: 978/978 resolvable gateways < destination walkmesh nTriangles, ff7_gateway_flevel_dump.py), +0x12 dest field id (0x7FFF = unused), **+0x14 ARRIVAL DIRECTION byte, +0x15..+0x17 = three exact copies** (distributions identical across all 1036 used gateways; no hidden flags - the story-lock hunt moves to show_arrow_flag[12] at hdr+0x218). Crossing-hit consumer 0x636233 reads +0x12/+0x0C/+0x0E/+0x10/+0x14 into FIELD_JUMP_INTERFACE in that order |
+| `WALKMESH_PTR` / `TRIANGLE_POOL_PTR` | `0xCFF434` / `0xCFF744` | The engine's parsed-walkmesh globals (STATIC 2026-08-02, arrival-init disasm 0x63C116..0x63C142): [0xCFF434] -> u16 nTriangles, +4 = triangle pool; 0xCFF744 = that pool ptr; ACCESS_POOL_PTR 0xCFF748 = base + 4 + nTri*0x18. Complements the raw-file section-4 parse the mod already does (walkmesh row above) - live-side anchors if we ever want the engine's copy |
+| `SAVEMAP_CONTINUE_POS` | `0xDC08CE..0xDC08DA` | Save-file re-entry block (STATIC 2026-08-02, save-load path 0x63CCBA disasm): 0xDC08CE saved field id -> 0xCC0DEC module copy, 0xDC08D2/D4 X/Y -> DEST_X/Y, 0xDC08D6 triangle -> DEST_TRIANGLE, **0xDC08D8 direction -> DEST_DIRECTION**, 0xDC08D9/DA -> 0xCC165C/0xCC1660 (unnamed). The loader first rep-movsd's 0x43D dwords (=4340B, the whole savemap) from a staging buffer to 0xDBFD38 - loading a save enters the field through the SAME jump interface as MAPJUMP/gateways |
+| `FIELD_MAPJUMP_DISABLED` | `0xCC0DBE` | modules+0x36, u8: MPJPO opcode (0xD2, handler 0x61A4D4) stores its arg raw; nonzero = gateway walk-across jumps disabled (how scenes deaden exits). PSX label confirmed by handler disasm (ff7_mpjpo_static.py 2026-08-02); the pathfinder should consult it before promising a gateway exit. Value convention live-confirm pending (v2.30.64 debug lines carry it) |
+| *(world-module leads, FFNx-sourced)* | - | For a future world-nav campaign (2026-08-02, FFNx name-embedded addresses - NOT our derivation): `world_player_pos` 0xE04918 (vector4<int>), `world_map_type` 0xE045E8, `world_event_current_entity_ptr` 0xE39AD8 -> world_event_data struct (position vec4, facing s16, walkmap_type u16, direction s16, model_id - ff7.h:2333), world_update_player 0x74EA48, world_mode_loop 0x74DB8C, world_loop 0x74BE49, walkmap-type/region getters via grc(0x74EA48,0x7DF)/grc(0x767641,0x2B). Our own find: world-to-field exit writes FIELD_JUMP_INTERFACE at 0x76713B/163/172 (same globals as MAPJUMP) |
 
 ---
 
@@ -5084,6 +5091,63 @@ the resolved directory.
 
 Deployed both installs, hash-verified (636AB4A95FBCCBB2).
 
+### v2.30.64 (2026-08-02): TRANSITION TRACKING - arrival facing + jump-mailbox watcher
+
+**Origin**: the screen-construction investigation (same day - see the §4
+FIELD_JUMP_INTERFACE / model-FACING rows and §14 code landmarks for the
+full static derivations). User picked transition tracking as the first
+build on those findings; the journey graph waits until this is
+play-confirmed.
+
+**What ships**:
+1. **Arrival facing in the screen announce**: "Screen: Sector 1 Station,
+   facing up." The facing byte is field_event_data +0x38 (proven three
+   ways: DIR writes it, GETDIR reads it, the arrival routine copies the
+   jump mailbox's direction into it at 0x63C094). Read from the byte
+   itself, not the mailbox, so a scripted entry that turns the player
+   still announces the truth. Same d-pad vocabulary as routes/ladders.
+   Rides the existing announce_map_change setting - NO new cfg key, no
+   embed regeneration.
+2. **Jump-mailbox watcher** (log-only this version): placed BEFORE the
+   FieldNavThread field gates (a pending jump holds GAME_MODE=1, which
+   the gates discard - the v2.30.59 gate-ORDER lesson applied
+   preemptively). One "[FF7Access] JUMP armed dest= x= y= tri= dir=
+   phase= mpjpo= from=" line per armed jump - covers gateway walks,
+   MAPJUMPs, save loads, and world-map exits, per the static proof that
+   all entry paths share the mailbox.
+3. **ARRIVE live-confirm line** (debug, independent of the announce
+   setting): "[FF7Access] ARRIVE field= via=jump|direct facing38=
+   destdir= match= ctrl= sector= destfld= mpjpo=". match=1 = the +0x38
+   static proof confirmed live; the raw byte + spoken sector pair is the
+   v2.14 calibration playbook applied to facing (the wheel-to-screen
+   composition `screen = world + control - 180` is PROVISIONAL for
+   facing until one log agrees).
+4. **MPJPO folded in** (ff7_mpjpo_static.py): opcode 0xD2 handler
+   0x61A4D4 writes its byte arg to [modules]+0x36 = **0xCC0DBE
+   FIELD_MAPJUMP_DISABLED** - the PSX "map jump disabled" label
+   CONFIRMED. Read into both debug lines; no spoken behavior yet (value
+   convention 1=disabled awaits one log sighting during a scene).
+
+**Address block added** (ff7_addresses.h): FIELD_JUMP_DEST_FIELD/X/Y/TRI/
+DIR 0xCC0D8A/8C/8E/AA/AC, FIELD_JUMP_PHASE 0xCC0DAE (READY=2),
+GAME_MODE_FIELD_JUMP=1, FIELD_MAPJUMP_DISABLED 0xCC0DBE,
+FIELD_EVENT_FACING +0x38. ⚠ Mailbox bytes are STALE after arrival -
+consumers must pair them with an edge/latch (the countdown-timer lesson,
+v2.30.8, same class).
+
+**Build checks**: all three new literals grep'd in the built DLL (JUMP/
+ARRIVE narrow, ", facing " wide - the v2.30.59 dead-code check; note
+wide literals need a UTF-16 search).
+
+VERIFY (play-test): (a) every screen change speaks ", facing X" and X
+matches the room (if consistently opposite/rotated, the facing wheel
+needs an offset - the ARRIVE line has the raw byte to derive it from);
+(b) JUMP armed lines appear for walk-across exits AND for a save load;
+(c) ARRIVE match=1 on ordinary gateway walks; (d) an MPJPO sighting:
+mpjpo nonzero during some scripted scene. Full checklist TODO [TRANSIT].
+
+Deployed both installs, hash-verified (A53BE6061DAA2192).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -5442,6 +5506,15 @@ Proven payoffs of cluster reasoning so far:
 | `0x70212A` | limit menu sub (table[7]) | draw switch 0x70313A on LIMITMENU_MODE 0x9204D8; resolves char via SAVEMAP_PARTY_IDS + the idâ†’record table 0x919928 (0x70216A..0x702186); learned-mask bit test (imul 3/shl) at 0x702190 (v2.30.35) |
 | `0x710DFA` | MAGIC menu sub (table[2]) | slotÂ·0x440+0xDBA5A0 spell-list resolve at 0x710F89 (= BATTLE_CHAR_BLOCK+0x108 â€” battle's list, stride 8 re-confirmed); 3-col index math + draw loop 0x711726..0x7117FB; usable classifier = u8[0x714440]â†’jump 0x714430 (color 7 white / 0 gray); kernel text via the 0x41963C getter; widget 0xDD1708, window struct 0xDD1690; pane cmp sites 0x710E0E/0x710FBA on 0x921100 (ff7_magic_menu_static.py, v2.30.48) |
 | `0x75EE86` / `0x75EEBB` | world MESSAGE / ASK | world module is adjacent code (0x75xxxx) |
+| `0x6131C4` | opcode MAPJUMP handler (table[0x60]) | two-phase: first entry arms FIELD_JUMP_INTERFACE (Â§4) + GAME_MODE=1, later entries wait for phase 0xCC0DAE==2 then advance the script PC by 10. Field id 0x313 remapped to 0x159 in-handler (ff7_screen_construction_static.py 2026-08-02) |
+| `0x618062` | opcode DIR handler (table[0xB3]) | writes facing +0x38 / step-idx +0x3A / steps-type +0x3B via the standard entity->model chain; GETDIR reads +0x38 at 0x6184F1; arg fetch = bank helper 0x60F750 (2026-08-02) |
+| `0x636233` | ArmGatewayJump(record*) | the gateway-crossing HIT path: GAME_MODE=1 then record +0x12/+0x0C/+0x0E/+0x10/+0x14 -> DEST field/X/Y/triangle/DIRECTION. Caller = crossing test in the movement module (0x636284.. reads player pos >>12) (ff7_gateway_hit_disasm.py 2026-08-02) |
+| `0x63BF60`..`0x63C17E` | field ARRIVAL/init routine (ends right before field_loop 0x63C17F) | copies modules+0x2A -> PLAYER_MODEL_ID (0x63C073), applies DEST_DIRECTION -> player event_data +0x38 (0x63C094), reads hdr control fields, inits walkmesh ptrs 0xCFF434/0xCFF744/0xCFF748 (0x63C116..42), hands hdr+0x158 (door triggers[12]) to 0x638420 (0x63C0EC), clears FIELD_LINE_ARRAY via 0x637E88 (0x63C156), then **phase 0xCC0DAE=2** (0x63C148) = construction complete (2026-08-02) |
+| `0x63CCBA` | save-load field entry | rep-movsd 0x43D dwords staging->savemap 0xDBFD38, then savemap continue block 0xDC08CE..DA -> FIELD_JUMP_INTERFACE (same arrival path as MAPJUMP) (2026-08-02) |
+| `0x6211DA` / `0x6307E5` | the SINGLE writers of FIELD_TRIGGERS_HEADER_PTR / FIELD_FILE_BUFFER | one construction path each - the static proof that exactly ONE field is in memory at a time; parse helper writing gateway records (stride 0x18) at 0x623487.. (2026-08-02) |
+| `0x64DAC8`.. | gateway ARROW renderer | reads show_arrow_flag hdr+0x218 and arrows[12] hdr+0x224/+0x228/+0x22C/+0x230 (x/y/z/type) - confirms the FFNx header-tail layout (2026-08-02) |
+| `0x76713B` | world-map -> field exit | writes DEST field/triangle/direction (0x76713B/0x767163/0x767172) - the world module uses the same FIELD_JUMP_INTERFACE (2026-08-02) |
+| `0x61A4D4` | opcode MPJPO handler (table[0xD2]) | one-arg store to [MODULES_PTR]+0x36 (0x61A4F7) = static 0xCC0DBE MAPJUMP_DISABLED, PC += 2 - the gateway on/off switch scripts flip during scenes (ff7_mpjpo_static.py 2026-08-02, v2.30.64) |
 
 Pattern: field module code sits in 0x60xxxxâ€“0x6Exxxx, world map in 0x75xxxx,
 battle UI text in 0x42xxxx, shared low-level services in 0x40â€“0x41xxxx.
@@ -5539,17 +5612,18 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | Offset | Address | Field | Confirmed? |
 |--------|---------|-------|------------|
 | +0x01 | `0xCC0D89` | game_mode: 0=field, 2=battle, 6=name entry, 9=menu, 26=game-over handoff (transient ~60ms; reel+post-GO title read 0 with stale FIELD_ID â€” v2.30.37) | âœ“ live |
-| +0x02 | `0xCC0D8A` | battle_id | FFNx label only |
-| +0x04/06 | `0xCC0D8C/8E` | field_model_pos_x/y (u16) | FFNx label only |
-| +0x22 | `0xCC0DAA` | field_model_triangle_id | FFNx label only |
-| +0x26 | `0xCC0DAE` | previous_game_mode / PSX "movieState" | labels disagree |
+| +0x02 | `0xCC0D8A` | next-module parameter: DEST FIELD ID on a field jump (MAPJUMP 0x613220, gateway-hit 0x636244, world exit 0x76713B all store it; field_loop dispatch 0x63C1DF pushes it into menu-module calls); FFNx's "battle_id" label = the same slot carrying the formation id when the next module is battle | âœ“ static disasm 2026-08-02 (Â§4 FIELD_JUMP_INTERFACE) |
+| +0x04/06 | `0xCC0D8C/8E` | DEST X/Y for the pending field jump (arrival placement consumes) | âœ“ static disasm 2026-08-02 |
+| +0x22 | `0xCC0DAA` | DEST walkmesh TRIANGLE id (gateway record +0x10 / MAPJUMP arg / savemap 0xDC08D6) | âœ“ static disasm 2026-08-02 |
+| +0x24 | `0xCC0DAC` | **DEST arrival DIRECTION** (byte 0-255) - applied to player field_event_data +0x38 at 0x63C094 on arrival | âœ“ static disasm 2026-08-02 |
+| +0x26 | `0xCC0DAE` | jump/module-switch PHASE: **2 = new field constructed** (written 0x63C148/0x63C232; MAPJUMP's second entry waits for ==2 then advances the script PC) - supersedes the old "previous_game_mode/movieState" label guesses | âœ“ static disasm 2026-08-02 |
 | +0x28 | `0xCC0DB0` | num_models | PSX+FFNx agree |
-| +0x2A | `0xCC0DB2` | field_model_id ("pc model id") | PSX+FFNx agree |
+| +0x2A | `0xCC0DB2` | field_model_id ("pc model id") - the INCOMING field's player model slot; arrival init copies it to PLAYER_MODEL_ID 0xCC162C at 0x63C073 | PSX+FFNx agree + âœ“ disasm 2026-08-02 |
 | +0x2C/2E/30 | `0xCC0DB4â€¦` | PSX: idle/walk/run animation ids | PSX only |
 | +0x32 | `0xCC0DBA` | UC player-control lock | âœ“ live (v2.6 gate works) |
 | +0x33 | `0xCC0DBB` | PSX: "suspend walk animation" | PSX only |
 | +0x34 | `0xCC0DBC` | PSX: "menus disabled" (MENU opcode?) | PSX only â€” candidate for menu-availability TTS |
-| +0x36 | `0xCC0DBE` | PSX: "map jump disabled" | PSX only |
+| +0x36 | `0xCC0DBE` | **MAPJUMP_DISABLED** - the MPJPO opcode (0xD2, handler 0x61A4D4) writes its 1-byte script arg here raw; nonzero = gateway crossings dead (scenes). PSX "map jump disabled" label CONFIRMED (ff7_mpjpo_static.py 2026-08-02); value convention (1=disabled) awaits one live sighting - rides the v2.30.64 debug lines | âœ“ static disasm 2026-08-02 |
 | +0x37â€“0x3B | `0xCC0DBFâ€“C3` | SCRLO / MPDSP / MVCAM / BGMOVIE / BTLON flags | PSX+FFNx agree |
 | +0x3C | `0xCC0DC4` | PSX: "encounter table id" | PSX only |
 | +0x44 | `0xCC0DCC` | midi_id | FFNx label only |
@@ -5565,12 +5639,14 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 |---------|--------|-------|
 | `0xCFF3D8` | field_camera_rotation_matrix | FFNx name embeds the address; used as a chain cross-check in v2.14. The rotation matrix itself is NOT yet used by the mod (control_direction supersedes it for input-relative directions) |
 | `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
+| `0xCFF434` | WALKMESH_PTR | engine's parsed walkmesh: [ptr] = u16 nTriangles, +4 = triangle pool (arrival-init disasm 0x63C116, 2026-08-02; Â§4 row) |
 | `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | â†’ field_trigger_header (field name, control_direction, gateways[12]) â€” the v2.14 pathfinder source; see Â§4. control_direction = world bearing of screen-DOWN (live-calibrated 2026-07-13); screen angle = world + ctrl âˆ’ 180 |
 | `0xCFF5D2â€“0xCFF74F` | ASK per-window struct array | 8 windows Ã— stride 0x30 (v2.30.12 disasm consolidation): byte 0xCFF5D2+nÂ·0x30 input-armed flag, u16 0xCFF5DC+nÂ·0x30 = 5 while choosing, **u16 0xCFF5DE+nÂ·0x30 = ASK_CURSOR_PIXEL_Y (highlight pixel Y = lineÂ·16+6 â€” the mod's cursor source)**, u16 0xCFF5E4+nÂ·0x30 = 7 on confirm, u16 0xCFF5E6+nÂ·0x30 state-flag word (bit 0 gates input). Sits between the triggers-header ptr 0xCFF454 and the field model globals 0xCFF73x â€” same field-module BSS cluster |
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file â€” dialog text (Â§5), model labels (v2.16), and since v2.22 the WALKMESH (section index 4: triangles + adjacency, the turn-by-turn/journey data source; Â§4 *(walkmesh section)* row) |
 | `0xCFF738` | FIELD_ANIM_DATA_PTR | â†’ field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |
-| `0xCFF748` | game's parsed ACCESS-pool ptr | u32 â†’ the engine's own parsed walkmesh adjacency (3Ã—u16 neighbor ids per triangle), read by the movement edge-crossing code (0x6369E8â€¦) alongside TRIANGLE_LOCK_BITS. Same data the mod re-parses from the raw section; recorded 2026-07-23 (IDLCK investigation bonus) |
+| `0xCFF744` | TRIANGLE_POOL_PTR | u32 -> walkmesh triangle pool (= [0xCFF434]+4), set by the arrival init at 0x63C12C (2026-08-02) |
+| `0xCFF748` | game's parsed ACCESS-pool ptr | u32 â†’ the engine's own parsed walkmesh adjacency (3Ã—u16 neighbor ids per triangle), read by the movement edge-crossing code (0x6369E8â€¦) alongside TRIANGLE_LOCK_BITS. Same data the mod re-parses from the raw section; recorded 2026-07-23 (IDLCK investigation bonus). Derivation seen 2026-08-02: = walkmesh base + 4 + nTri*0x18 (0x63C142) |
 
 ### Shared char-data block: 0xDBA498 â€“ â‰ˆ0xDBB158 (3 Ã— 0x440)
 
