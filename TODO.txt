@@ -5,7 +5,25 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[TRANSIT] Transition tracking + arrival facing — SHIPPED v2.30.64 (2026-08-02), awaiting play-test
+[TRANSIT] Transition tracking + arrival facing — CONFIRMED 2026-08-02 (reactor run, 2013+7H)
+JUMP mailbox live-matched the offline gateway dump; ARRIVE match=1 on
+5/7 (both misses = scripted entries, as predicted); facing calibration
+CONFIRMED via the user's auto screen captures (bridge "left" decisive) —
+no offset needed. RESIDUALS: arm edge is best-effort (one fast load
+missed — arrival is authoritative); 117→118 used a scripted MAPJUMP
+(dir 128) not the gateway record (132) ⇒ journey graph must prefer the
+line catalog on script-gated doors; mpjpo sighting still pending.
+READY FOR NEXT: cross-field journey graph.
+
+[K2DESC] Magic descriptions unfound under 7H — NEW 2026-08-02 (same log)
+------------------------------------------------------------------------
+kernel2 scan on 2013+7H: every section found on VANILLA sigs (this
+profile does not rename spells — msig='Cure|Cure2|') EXCEPT
+mg_desc=00000000 ⇒ the magic-description section ("Restores HP|" head
+sig, v2.30.57) fails — the text mod likely rewords descriptions. Magic
+I-key speaks no description in this setup. Fix = a sig ladder like
+v2.30.47's name ladder (single-entry + entry-count band relative to the
+FOUND magic-name section, or index-align from mat_desc's block).
 ------------------------------------------------------------------------
 First build on the screen-construction investigation (research §4
 FIELD_JUMP_INTERFACE row): the engine has ONE transition mailbox

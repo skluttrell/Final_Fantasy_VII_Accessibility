@@ -5148,6 +5148,40 @@ mpjpo nonzero during some scripted scene. Full checklist TODO [TRANSIT].
 
 Deployed both installs, hash-verified (A53BE6061DAA2192).
 
+**PLAY-TEST CONFIRMED same day (2013 + 7th Heaven, reactor run new game
+-> save before the boss; log 13:18-13:33 + the user's auto screen
+captures at ~0.55s intervals)**:
+- 7 JUMP armed lines, mailbox contents byte-identical to the offline
+  gateway dump where comparable (116->117 = md1stin gw0 exactly:
+  x=1049 y=400 tri=90 dir=58) - the interface is LIVE-CONFIRMED.
+- ARRIVE match=1 on 5/7 jump arrivals -> **facing +0x38 = mailbox
+  direction CONFIRMED LIVE**. The two match=0 are the predicted
+  scripted-entry class (117 = opening train cutscene, 120 = nmkin_1
+  entry scene) - and the announce stayed honest (reads the byte).
+- **Facing wheel calibration CONFIRMED by screenshots**: nrthmk bridge
+  arrival spoke "left" and the capture shows the party crossing the
+  bridge leftward (decisive); elevtr1 "right" and nmkin pipe-room
+  "up and left" consistent. No offset needed - `screen = world +
+  control - 180` holds for facing.
+- RESIDUAL 1: the arm edge is BEST-EFFORT - 117->118 arrived
+  via=direct (fast load, GAME_MODE==1 window < one 50ms poll).
+  Arrival is authoritative, as designed. RESIDUAL 2: that same
+  transition's mailbox dir was 128, but md1_1's gateway record says
+  132 -> the story-gated door used a scripted MAPJUMP, not the
+  gateway - the journey graph must prefer the line catalog for
+  script-gated doors. RESIDUAL 3: mpjpo=0 the whole run - the
+  1=disabled convention still awaits a scene sighting.
+- Same log also CONFIRMED: v2.30.63 save dir (2013+7H resolved the
+  OneDrive Documents profile, slot read "Cloud, level 7, Mako
+  Reactor 1...", save written), v2.30.60 ladders (on/off + push
+  directions through nmkin climbs), v2.30.61 level-up (Cloud 6->7
+  announced from an ordinary battle), journey planner (3-component
+  ladder route to the save point). NEW ISSUE from the same scan line:
+  **mg_desc=00000000 under this 7H profile** while spell-name sigs
+  matched vanilla - the magic-DESCRIPTION section signature fails
+  (text mod rewords descriptions?); Magic I-key descriptions silent
+  on 7H until a sig ladder like v2.30.47's (TODO [K2DESC]).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
