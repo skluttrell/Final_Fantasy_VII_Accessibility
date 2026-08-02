@@ -2049,6 +2049,36 @@ constexpr uint32_t FIELD_EVENT_TALK_OFF = 0x61;    // u8, 1 = talk disabled
 // FFNx calls this struct member field_62 (unnamed there).
 constexpr uint32_t FIELD_EVENT_VISIBLE = 0x62;
 
+// ---------------------------------------------------------------------------
+// LADDER / CLIMB state (v2.30.60, 2026-08-02 — tester report: "difficulty
+// knowing when they are on or off a ladder and what direction to push").
+// All from the LADER handler (opcode 0xC2 = 0x615EC6, ff7_ladder_static.py):
+//
+//   +0x63 MOVEMENT TYPE — the handler's four script cases (jump table
+//     0x6163D0, selected by the opcode's byte arg) write **4** (cases 0/1)
+//     or **5** (cases 2/3) here, and its own re-entry check tests
+//     `>= 4 && <= 5` for "this model is already climbing" (0x615F33).
+//     On arrival it writes 0 back (0x615F9E). A .text sweep found only
+//     two other writers of this byte (0x60C321 / 0x60D494) and both write
+//     0 — so **4 or 5 means ON A LADDER, unambiguously**, with no
+//     "is it really a ladder" heuristic needed.
+//   +0x6E  u16 orientation/animation variant the same cases pair with the
+//     type (0 or 1). ⚠ this is the byte the v2.30.24 radius hunt saw as
+//     "rc6E ≡ 0" — now explained: it is only written on a climb.
+//   +0x70  u16 movement phase: 0 armed, 1 = still moving (handler returns
+//     early), 2 = arrived (handler then clears +0x63).
+//   +0x7C/+0x80/+0x84  the climb TARGET x/y/z — script args fetched via
+//     0x60FD6C and shifted <<12 (0x616168/0x61619A), i.e. the same
+//     fixed-point scale as model_pos, so target>>12 compares directly to
+//     the player's walkmesh position. The push direction is the bearing
+//     from the player to that target, rotated by control_direction like
+//     every other spoken direction.
+constexpr uint32_t FIELD_EVENT_MOVE_TYPE   = 0x63;  // 4/5 = climbing
+constexpr uint8_t  MOVE_TYPE_LADDER_A      = 4;
+constexpr uint8_t  MOVE_TYPE_LADDER_B      = 5;
+constexpr uint32_t FIELD_EVENT_MOVE_PHASE  = 0x70;  // u16 0/1/2
+constexpr uint32_t FIELD_EVENT_MOVE_TARGET = 0x7C;  // 3 x s32, <<12
+
 // Entity id → model slot map (bonus find from the same disasm): u8 per
 // entity, 0xFF = the entity has no model. The TLKON handler resolves its
 // executing entity through this table. Not yet used by the mod.

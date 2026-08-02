@@ -5,6 +5,21 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[LADDER] Ladder state + push direction — SHIPPED v2.30.60 (2026-08-02), awaiting play-test
+------------------------------------------------------------------------
+Tester report: can't tell on/off a ladder or which way to push. Both
+answered from the LADER handler (research §8 v2.30.60): movement type
++0x63 == 4 or 5 = climbing (written ONLY by LADER; the two other
+writers of that byte write 0 => exclusive signal), and the climb target
++0x7C/+0x80 (<<12) gives the push bearing, rotated by control_direction
+and quantised with the pathfinder's own 8-way sectors. Speaks "On
+ladder, push up" / "Off ladder"; re-announces if the target flips.
+VERIFY: reactor ladders; direction actually climbs; silent during
+normal walking; correct after a screen change. RESIDUAL: 4 vs 5 (and
++0x6E 0/1) distinguish LADER's four cases — likely ladder vs
+slide/rope orientation; both currently say "ladder". If a tester meets
+a rope/slide that says "ladder", split them using the logged mtype.
+
 [MAGICTARGET] Magic target pane — CONFIRMED by user 2026-08-01 (v2.30.59)
 ------------------------------------------------------------------------
 ✓ CLOSED: "spoke characters cleanly when I selected cure". Target pane

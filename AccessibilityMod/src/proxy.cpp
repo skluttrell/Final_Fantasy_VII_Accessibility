@@ -9186,6 +9186,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
+    // v2.30.60 ladder state: was the player climbing last poll, and which
+    // d-pad sector was announced (so a target flip re-announces but a
+    // steady climb stays quiet).
+    bool    ladder_was_on  = false;
+    int     ladder_last_dir = -1;
 
     // Screen-change announcement tracker (v2.23) â€” separate from
     // nav_field_id, which only updates on the KEYPRESS path; this one runs
@@ -9300,6 +9305,72 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const uint8_t control_dir = *reinterpret_cast<const uint8_t*>(
             hdr + FF7Addr::FTRIG_OFF_CONTROL_DIR);
         const float control_deg = control_dir * (360.0f / 256.0f);
+
+        // ---- LADDER state + push direction (v2.30.60) ---------------------
+        // Tester report: "difficulty knowing when they are on or off a
+        // ladder and what direction to push." Both halves are answerable
+        // from the LADER handler's own state (provenance: the
+        // FIELD_EVENT_MOVE_* block in ff7_addresses.h):
+        //   ON/OFF  — movement type 4 or 5 means climbing, written ONLY by
+        //             LADER (the two other writers of that byte both write
+        //             0), so this needs no heuristic and cannot false-fire
+        //             on ordinary walking.
+        //   WHICH WAY — the climb target (+0x7C/+0x80, <<12 like model_pos)
+        //             is where the ladder takes you; the bearing from the
+        //             player to it, rotated by control_direction, is the
+        //             d-pad direction to hold. Same math and the same
+        //             8-way sector names as every other spoken direction,
+        //             so "up and left" means the same thing here as in a
+        //             pathfinder route.
+        // Announced on the mount edge and again if the target flips
+        // (top-of-ladder turnarounds); "Off ladder" on dismount. Speech is
+        // gated by pathfinder_keys — the same switch that owns the rest of
+        // this thread's field narration.
+        {
+            const uint8_t mtype = *reinterpret_cast<const volatile uint8_t*>(
+                elem + FF7Addr::FIELD_EVENT_MOVE_TYPE);
+            const bool climbing =
+                (mtype == FF7Addr::MOVE_TYPE_LADDER_A ||
+                 mtype == FF7Addr::MOVE_TYPE_LADDER_B);
+            int dir_sector = -1;
+            if (climbing) {
+                const int32_t* tgt = reinterpret_cast<const int32_t*>(
+                    elem + FF7Addr::FIELD_EVENT_MOVE_TARGET);
+                const float dx = static_cast<float>((tgt[0] >> 12) - px);
+                const float dy = static_cast<float>((tgt[1] >> 12) - py);
+                if (fabsf(dx) > 0.5f || fabsf(dy) > 0.5f) {
+                    const float world_deg =
+                        atan2f(dx, dy) * (180.0f / 3.14159265f);
+                    dir_sector = DpadSectorIndex(world_deg + control_deg - 180.0f);
+                }
+            }
+            if (climbing != ladder_was_on ||
+                (climbing && dir_sector >= 0 && dir_sector != ladder_last_dir)) {
+                if (Config::Get().debug_log) {
+                    char dbg[128];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] LADDER %s mtype=%u dir=%d phase=%u",
+                        climbing ? "on" : "off", mtype, dir_sector,
+                        *reinterpret_cast<const volatile uint16_t*>(
+                            elem + FF7Addr::FIELD_EVENT_MOVE_PHASE));
+                    Log::Write(dbg);
+                }
+                if (Config::Get().pathfinder_keys) {
+                    if (climbing) {
+                        std::wstring m = L"On ladder";
+                        if (dir_sector >= 0) {
+                            m += L", push ";
+                            m += kDpadSectors[dir_sector];
+                        }
+                        TTS::Speak(m.c_str(), /*interrupt=*/true);
+                    } else if (ladder_was_on) {
+                        TTS::Speak(L"Off ladder", /*interrupt=*/true);
+                    }
+                }
+                ladder_was_on  = climbing;
+                ladder_last_dir = climbing ? dir_sector : -1;
+            }
+        }
 
         // ---- screen-change announcement (v2.23) ---------------------------
         // Fires the first poll after control returns on a NEW screen. Each
