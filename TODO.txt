@@ -5,6 +5,24 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[LIMITNAME] Limit break spoke junk — PROBE SHIPPED v2.30.76 (2026-08-03), awaiting one limit break
+------------------------------------------------------------------------
+First limit ever play-tested (Braver, 2013+7H, log 15:37:03) spoke
+"% Y-c'  sSd p vge tex" instead of "Braver". Offline proof
+(investigate/ff7_kernel2_limit_names.py): vanilla kernel2 magic entry
+128 IS a clean "Braver", zero F9 tokens in the section — the data and
+decoder are fine, so either the flash idx is not the 0-based limit
+index branch 7 assumes (never live-verified), or the 7H profile's
+runtime kernel differs in the limit region. v2.30.76 logs "LIMIT name
+probe idx= entry= off= ok= raw=" on every limit resolution plus
+"BATTLE flash cmd= idx=" on every named action.
+VERIFY: trigger any limit break (same 7H setup; a second run on the
+vanilla 2026 install would separate the hypotheses in one step) and
+read the two new log lines: sane idx + non-vanilla raw bytes = modded
+kernel (fix = sig-ladder/verify entry content); strange idx = wrong
+index model (fix = derive the real mapping from the logged pair).
+Remove the probe lines once a limit speaks correctly in a clean log.
+
 [MENUGATE] Menu screen-identity refactor — SHIPPED v2.30.75 (2026-08-03), awaiting play-test
 ------------------------------------------------------------------------
 User report: "the menu still has issues after a victory screen."

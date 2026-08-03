@@ -2335,10 +2335,45 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
     }
     case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'â€¦)
         return SectionEntryText(k2_magic, idx + 72, out);
-    case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
+    case 7: { // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
         if (idx == 0x7F)   // the game's '????' sentinel for unnamed limits
             return false;
-        return SectionEntryText(k2_magic, idx + 128, out);
+        const bool ok = SectionEntryText(k2_magic, idx + 128, out);
+        // v2.30.76 PROBE: the first limit break ever play-tested spoke junk
+        // ("% Y-c'â€¦", 2013+7H log 2026-08-03 15:37:03) while vanilla
+        // kernel2 entry 128 is a clean "Braver" and the section has ZERO
+        // F9 tokens (ff7_kernel2_limit_names.py, offline). So either the
+        // flash idx is not the 0-based limit index this branch assumes
+        // (branch 7 was never in the 2026-07-11 live-verify set -- that
+        // covered Ice/Potion/Machine Gun/Tentacle only), or the 7H
+        // profile's runtime kernel differs in the limit region. Logging
+        // idx + the entry's raw head discriminates the two: a sane idx
+        // with non-vanilla bytes = modded kernel; a strange idx = wrong
+        // index model. Remove once a limit speaks correctly in a clean
+        // log (TODO [LIMITNAME]).
+        if (Config::Get().debug_log && k2_magic) {
+            uint16_t tab = 0, off = 0;
+            memcpy(&tab, k2_magic, sizeof(tab));
+            const uint32_t entry = idx + 128;
+            if ((entry + 1) * 2 <= tab)
+                memcpy(&off, k2_magic + entry * 2, sizeof(off));
+            char raw[3 * 12 + 1] = {};
+            // Same bounds discipline as SectionEntryText: only deref an
+            // offset that lands past the table and inside a sane section.
+            if (off >= tab && off <= 0x8000)
+                for (int i = 0; i < 12; ++i)
+                    _snprintf_s(raw + i * 3, 4, _TRUNCATE, "%02X ",
+                                k2_magic[off + i]);
+            char dbg[160];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] LIMIT name probe idx=%lu entry=%lu off=0x%X "
+                "ok=%d raw=%s",
+                static_cast<unsigned long>(idx),
+                static_cast<unsigned long>(entry), off, ok ? 1 : 0, raw);
+            Log::Write(dbg);
+        }
+        return ok;
+    }
     case 8: { // cmd 0x20 enemy attack: per-formation table from scene.bin
         if (idx >= 64)     // formation attack slots are small indices (0-31)
             return false;
@@ -6333,6 +6368,20 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                 std::wstring name;
                 const bool ok = ResolveActionName(flash_cmd & 0xFF,
                                                   flash_idx & 0xFFFF, name);
+                // v2.30.76: the announce line logs cmd but not idx, which
+                // left the limit-junk report (2026-08-03) without the one
+                // number that mattered. Log the raw flash pair on every
+                // named resolution -- builds a per-branch verification
+                // corpus from ordinary play.
+                if (Config::Get().debug_log) {
+                    char fdbg[96];
+                    _snprintf_s(fdbg, sizeof(fdbg), _TRUNCATE,
+                        "[FF7Access] BATTLE flash cmd=0x%02lX idx=%lu ok=%d",
+                        static_cast<unsigned long>(flash_cmd & 0xFF),
+                        static_cast<unsigned long>(flash_idx & 0xFFFF),
+                        ok ? 1 : 0);
+                    Log::Write(fdbg);
+                }
                 announce(pending_actor, pending_cmd, ok ? &name : nullptr);
                 pending = false;
             } else if (timed_out) {

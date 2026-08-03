@@ -5588,6 +5588,37 @@ after a battle now announces normally; (d) save-before-boss then win:
 no save-menu narration over the victory screens; (e) with
 speak_battle=false, victory screens still produce no menu chatter.
 
+### v2.30.76 (2026-08-03): limit-name junk -- offline exoneration + live probe
+
+User (playing 2013 via 7th Heaven, same-day log 15:37:03): first limit
+break ever play-tested spoke junk -- "BATTLE cmd=0x14 named => Cloud,
+% Y-c'  sSd p vge tex". Same battle decoded Ice/Bolt/enemy attacks
+correctly and msig='Cure|Cure2|' matched, so only the limit branch
+(ResolveActionName branch 7 = magic entries 128+, NEVER in the
+2026-07-11 live-verify set) misfired.
+
+OFFLINE (NEW investigate/ff7_kernel2_limit_names.py -- LZS-decompress
+kernel2.bin, locate magic section by sig+backwalk exactly like the mod,
+dump entries 120-149 raw + naive vs F9-aware decode): vanilla entry 128
+is a clean "Braver" (F8 02 color prefix the code already skips), all
+limit names decode perfectly with the mod's own logic, and the section
+contains ZERO 0xF9 bytes -- data and decoder both exonerated. Note for
+the record: FF7Text::Decode's F6-F9 single-byte-token rule is fine here
+precisely because kernel2 text is stored UNCOMPRESSED; the F9-compression
+concern applies to file-side scans only (v2.30.47 lesson).
+
+Remaining hypotheses (per the v2.30.52 method rule, probe > theory):
+(1) the flash idx is not the 0-based limit index the static derivation
+assumed; (2) the 7H profile's runtime kernel differs in the limit
+region. v2.30.76 ships two debug-gated lines that discriminate in one
+battle: "LIMIT name probe idx= entry= off= ok= raw=" (raw 12-byte entry
+head, SectionEntryText's own bounds discipline) and "BATTLE flash
+cmd= idx=" on every named resolution (builds a per-branch verification
+corpus from ordinary play). Deployed both installs (03FF95EBB1F913F4),
+committed locally (push held per standing instruction). VERIFY
+[LIMITNAME]: one limit break on the 7H setup (+ ideally one on vanilla
+2026) then read the probe lines.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
