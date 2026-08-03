@@ -5,6 +5,28 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[JOURNEY4] Save-point last mile — SHIPPED v2.30.69 (2026-08-03), awaiting play-test
+------------------------------------------------------------------------
+User report: the save-point journey "completed" on arriving at field
+124 — on the entry catwalk, one walkmesh level ABOVE the pad. Now a
+journey to a ", save point" place hands off at the destination field
+instead of completing: arrival speaks "Arrived: X. Save point,
+<direction>, N seconds", \ gives the full in-field route to the pad
+("on another level, first take ladder 1..."), and "Save point reached.
+Journey complete." fires only inside the pad's reach on its level.
+VERIFY: (a) rerun the reactor save-point journey — arrival at the save
+room says "Save point, ..., 3 seconds" instead of "Journey complete";
+(b) \ there routes down the ladder to the pad; (c) "Save point
+reached. Journey complete." speaks AT the pad (log: JOURNEY complete
+lastmile dist= dz=), and the Save menu item is enabled there;
+(d) Shift+K mid-last-mile still says "Journey ended."; (e) a journey
+to a PLAIN caption place still ends with "Journey complete." on field
+arrival as before. RESIDUAL (accepted): the arrival hint is
+straight-line — it may point across a level gap; \ is the honest
+router (established journey model). CLASS NOTE: any future
+point-inside-a-field journey target ([STORYNAV] objectives, story
+hotspots) needs this same handoff — reuse the slot/reach pattern.
+
 [JOURNEY3] Third-run fixes — SHIPPED v2.30.68 (2026-08-02), awaiting play-test
 ------------------------------------------------------------------------
 Six fixes from the third run: (1) facing deferred under entry

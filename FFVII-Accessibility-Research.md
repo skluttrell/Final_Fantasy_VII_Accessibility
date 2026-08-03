@@ -5351,6 +5351,57 @@ issues; all fixed, each from log evidence:
 
 Deployed both installs (B46D107D07108C35). VERIFY: TODO [JOURNEY3].
 
+### v2.30.69 (2026-08-03): journey last-mile handoff to the save pad
+
+User report on the third run's save-point journey: it "stops one level
+above the actual save location." The 16:42 log block is the whole
+diagnosis: `JOURNEY at=123 target=124 next=124`, `ARRIVE field=124` -
+correct route, correct target - then "Arrived: Mako Reactor 1. Journey
+complete." spoken from the ENTRY CATWALK (z~640) while the pad sits
+down a ladder at z~-185. Journeys are field-granular; "complete" meant
+"entered the destination field," not "reached the thing." The player
+then had to browse to the save point by hand, and the in-field router
+did the rest ("Save point: on another level. First take ladder 1, ..."
+-> dist 33 at 16:45). NOT a graph/BFS bug - purely the terminal
+condition.
+
+Fix - wire the two proven systems together at the boundary:
+
+1. **Arrival at a `HasSavePoint` target field no longer completes.**
+   The journey-progress block finds the live save icon (model scan,
+   `ClassifyModelLabel == MC_SAVE`, VISI-visible) and speaks the same
+   sector-plus-seconds hint every leg arrival gets: "Arrived: Mako
+   Reactor 1. Save point, down and right, 3 seconds." New state
+   `journey_save_slot`/`journey_save_reach` (slot cleared on every
+   screen change - can never go stale across fields). No live icon =
+   old field-arrival completion (best effort, never a stuck journey).
+2. **\ during the last mile routes to the pad**: builds a point NavDest
+   from the slot (degenerate line, live tri) and flows it through the
+   unchanged turn-by-turn code, so it speaks exactly what the
+   Save-points browser entry would - one vocabulary. Name reads
+   "Journey to Mako Reactor 1. Save point: on another level. ...".
+3. **Completion = the pad's reach bubble on its LEVEL** (per-poll):
+   2D distance <= the route builder's talk/contact reach (v2.30.25/.26
+   rule, so "complete" and "the walk stops here" agree) AND |dz| < 150
+   - the z gate is exactly what field arrival lacked; standing on the
+   catwalk directly above the pad cannot false-complete (dz ~825).
+   Speaks "Save point reached. Journey complete." (queued behind the
+   v2.30.62 walk-into announce). Shift+K / Places retarget clear the
+   slot.
+
+Log lines: `JOURNEY lastmile slot= reach= dist=` on handoff,
+`JOURNEY complete lastmile dist= dz=` on completion. Offline dry-run
+against the run's own values: entry (-233,1907) -> hint "3 seconds";
+at-pad (67,1559) dist 27 <= reach 80 completes; catwalk (271,1545)
+dist 219 > 80 and z-gated. DLL literal check: all 6 new strings
+present. CLASS NOTE: this recurs for ANY journey target that is a
+point inside a field (all 60 save fields; future [STORYNAV]
+objectives, story hotspots) - the fix is the generic pattern (carry an
+in-field target, hand off to the in-field router on final-field
+arrival); extend the same slot/reach handoff when those targets grow.
+
+Deployed both installs (F6F6D5B3E6F8E27D). VERIFY: TODO [JOURNEY4].
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
