@@ -5515,6 +5515,31 @@ on entering the reactor save room should say "on another level" (not a
 direction), and a \ press immediately after entering must NOT end the
 journey.
 
+### v2.30.74 (2026-08-03): journey announces speak the REAL route
+
+Play report: "when you first enter a new screen, cross-field always
+gives the direct line instruction and I always have to push the button
+again to get the real path." That was v2.30.65's deliberate tradeoff
+(straight-line hint at each arrival, full route on \, "a multi-
+sentence route every screen would drown the transition") -- disproven
+in play: the straight line is not walkable often enough, so every
+transition cost an extra keypress. NEW JourneyAutoRoute() (proxy.cpp,
+before FieldNavThread): nearest-point aim + BuildTurnByTurnRoute;
+SPOKEN_ROUTE -> "To Y: up 4 seconds, then left 2 seconds."; NO_PATH ->
+BuildJourneySpeech's connector chain ("...: on another level. First
+take ladder 1, ..."); anything else -> false and the caller keeps the
+old straight-line wording as fallback. Wired into BOTH automatic
+announce sites: leg arrivals ("X: N screens left. Next, To Y: up 4
+seconds, then...") and the save-point last-mile hint (cross-level pads
+now speak the ladder chain instead of the bare "on another level"
+fact). The body caution stays \-only (NPCs move; a caution is honest
+at ask-time). \ behavior unchanged (still re-asks with cautions).
+
+Deployed both installs (D10291536FB4295C). VERIFY: [JOURNEY4] (i):
+each mid-journey arrival speaks a turn-by-turn leg with no \ needed;
+(j) reactor save-room entry speaks "Save point: on another level.
+First take ladder 1, ..." automatically.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

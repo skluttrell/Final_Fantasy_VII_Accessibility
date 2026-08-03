@@ -9738,6 +9738,69 @@ static bool BuildJourneyLegDest(int field_id, int next_field, uint32_t hdr,
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Full route text for an AUTOMATIC journey announcement (v2.30.74).
+//
+// WHY: v2.30.65 deliberately spoke only a straight-line hint at each leg
+// arrival ("a multi-sentence route every screen would drown the
+// transition") with the real route on \. Play disproved the tradeoff --
+// the player reported ALWAYS having to press \ after every transition
+// because the straight line is not walkable often enough. Automatic
+// announcements now speak the same turn-by-turn (or level-journey) text
+// the \ key produces; straight-line remains the FALLBACK when routing is
+// unavailable, exactly like the keypress path. The body caution stays a
+// \-only feature: NPC positions move, so a caution is only honest at the
+// moment the player asks.
+//
+// Returns the full "Next" clause INCLUDING the destination name ("To
+// Mako Reactor 1: up 4 seconds, then left 2 seconds." / "Save point: on
+// another level. First take ladder 1, ..."). false = caller keeps its
+// straight-line wording.
+// ---------------------------------------------------------------------------
+static bool JourneyAutoRoute(const NavDest& d, float fpx, float fpy,
+                             float fpz, int16_t player_tri,
+                             float control_deg, float target_reach,
+                             std::wstring& out)
+{
+    if (!Config::Get().turn_by_turn)
+        return false;
+    // Nearest point on the target segment -- the same aim point the
+    // keypress path computes (degenerate lines collapse to the point).
+    const float ex = static_cast<float>(d.line_x2 - d.line_x1);
+    const float ey = static_cast<float>(d.line_y2 - d.line_y1);
+    const float wx = fpx - static_cast<float>(d.line_x1);
+    const float wy = fpy - static_cast<float>(d.line_y1);
+    const float l2 = ex * ex + ey * ey;
+    float t = (l2 > 0.0f) ? ((wx * ex + wy * ey) / l2) : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    const float ftx = d.line_x1 + t * ex;
+    const float fty = d.line_y1 + t * ey;
+    const float ftz = d.line_z1 + t * (d.line_z2 - d.line_z1);
+    std::wstring route;
+    const RouteOutcome ro = BuildTurnByTurnRoute(
+        fpx, fpy, fpz, player_tri, ftx, fty, ftz, d.target_tri,
+        control_deg, d.model_slot, target_reach, route);
+    if (ro == RouteOutcome::SPOKEN_ROUTE) {
+        out = d.name;
+        out += L": ";
+        out += route;
+        out += L'.';
+        return true;
+    }
+    if (ro == RouteOutcome::NO_PATH) {
+        // Another level -- the connector-chain planner speaks the
+        // ladders ("on another level. First take ladder 1, ...").
+        std::wstring jmsg;
+        if (BuildJourneySpeech(fpx, fpy, fpz, player_tri, ftx, fty, ftz,
+                               d.target_tri, control_deg, d.name, jmsg)) {
+            out = jmsg;
+            return true;
+        }
+    }
+    return false;
+}
+
 static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 {
     // The FF4-scheme hotkeys we poll, with per-key previous-state for edge
@@ -10247,6 +10310,40 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         // full turn-by-turn stays on the \ key, where the
                         // player asks for it; an automatic multi-sentence
                         // route every screen would drown the transition.
+                        // v2.30.74 (play report): this automatic leg
+                        // announce used to speak ONLY the straight-line
+                        // hint below, and the player ALWAYS had to press
+                        // \ for the real path -- the .65 "don't drown
+                        // the transition" tradeoff disproven in play.
+                        // Speak the real route up front; the straight-
+                        // line hint survives as the fallback when
+                        // routing is unavailable, the same ordering the
+                        // keypress path uses.
+                        bool jspoke = false;
+                        {
+                            std::wstring jauto;
+                            if (JourneyAutoRoute(leg,
+                                                 static_cast<float>(px),
+                                                 static_cast<float>(py),
+                                                 static_cast<float>(pz),
+                                                 player_tri, control_deg,
+                                                 0.0f, jauto)) {
+                                wchar_t jhead[64];
+                                _snwprintf_s(jhead, _countof(jhead),
+                                             _TRUNCATE,
+                                             L"%ls: %d %ls left. Next, ",
+                                             journey_name,
+                                             static_cast<int>(
+                                                 jdist[journey_target]),
+                                             jdist[journey_target] == 1
+                                                 ? L"screen"
+                                                 : L"screens");
+                                std::wstring jfull(jhead);
+                                jfull += jauto;
+                                TTS::Speak(jfull, /*interrupt=*/false);
+                                jspoke = true;
+                            }
+                        }
                         const float ex2 = static_cast<float>(
                             leg.line_x2 - leg.line_x1);
                         const float ey2 = static_cast<float>(
@@ -10277,7 +10374,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                          wdeg + control_deg - 180.0f)],
                                      secs,
                                      secs == 1 ? L"second" : L"seconds");
-                        TTS::Speak(jmsg, /*interrupt=*/false);
+                        if (!jspoke)
+                            TTS::Speak(jmsg, /*interrupt=*/false);
                     } else {
                         // Edges exist on the graph but nothing resolves
                         // live â€” the story-gated case. Keep the journey:
@@ -10426,32 +10524,51 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         // Already at the pad: say nothing here -- the
                         // completion below fires this same poll and is
                         // the one utterance.
-                    } else if (sdz <= -150 || sdz >= 150) {
-                        // Review: a 2D sector+seconds hint on a SPLIT
-                        // LEVEL walks the player off a catwalk edge --
-                        // the honest hint is the level fact; \ gives
-                        // the real connector route (ladders), as
-                        // established.
-                        _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
-                                     L"%ls: save point, on another "
-                                     L"level.", journey_name);
-                        TTS::Speak(lmsg, /*interrupt=*/false);
                     } else {
-                        int ssecs = static_cast<int>(
-                            sd / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
-                        if (ssecs < 1) ssecs = 1;
-                        // v2.30.70: "Arrived" is RESERVED for the
-                        // objective -- this is the ordinary leg idiom.
-                        _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
-                                     L"%ls: save point, %ls, %d %ls.",
-                                     journey_name,
-                                     kDpadSectors[DpadSectorIndex(
-                                         atan2f(sdx, sdy)
-                                             * (180.0f / 3.14159265f)
-                                         + control_deg - 180.0f)],
-                                     ssecs,
-                                     ssecs == 1 ? L"second" : L"seconds");
-                        TTS::Speak(lmsg, /*interrupt=*/false);
+                        // v2.30.74 (play report): the automatic hint
+                        // speaks the REAL route (the same text \
+                        // produces) -- straight-line/level-fact wording
+                        // below survives only as the routing-
+                        // unavailable fallback. Cross-level pads get
+                        // the connector chain ("Save point: on another
+                        // level. First take ladder 1, ...") instead of
+                        // the bare level fact.
+                        wcsncpy_s(sdest.name, L"Save point", _TRUNCATE);
+                        std::wstring srt;
+                        if (JourneyAutoRoute(sdest,
+                                             static_cast<float>(px),
+                                             static_cast<float>(py),
+                                             static_cast<float>(pz),
+                                             player_tri, control_deg,
+                                             reach, srt)) {
+                            TTS::Speak(srt, /*interrupt=*/false);
+                        } else if (sdz <= -150 || sdz >= 150) {
+                            // Review (v2.30.73): never a 2D direction
+                            // across a level gap -- the honest fallback
+                            // is the level fact.
+                            _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
+                                         L"%ls: save point, on another "
+                                         L"level.", journey_name);
+                            TTS::Speak(lmsg, /*interrupt=*/false);
+                        } else {
+                            int ssecs = static_cast<int>(
+                                sd / FF7Addr::WALKMESH_UNITS_PER_SEC
+                                + 0.5f);
+                            if (ssecs < 1) ssecs = 1;
+                            // v2.30.70: "Arrived" is RESERVED for the
+                            // objective -- ordinary leg idiom.
+                            _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
+                                         L"%ls: save point, %ls, %d %ls.",
+                                         journey_name,
+                                         kDpadSectors[DpadSectorIndex(
+                                             atan2f(sdx, sdy)
+                                                 * (180.0f / 3.14159265f)
+                                             + control_deg - 180.0f)],
+                                         ssecs,
+                                         ssecs == 1 ? L"second"
+                                                    : L"seconds");
+                            TTS::Speak(lmsg, /*interrupt=*/false);
+                        }
                     }
                 } else if (--journey_lastmile_tries == 0) {
                     // Window empty with no icon ever seen: the old

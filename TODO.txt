@@ -20,6 +20,13 @@ target says bare "very close" in both direction styles.
 EXTRA VERIFY: (g) enter the reactor save room from above — the hint
 says "on another level", and pressing \ immediately does NOT end the
 journey; (h) log shows "lastmile pending" then "lastmile slot=".
+v2.30.74 (play report: "always have to push the button again"): every
+automatic journey announce now speaks the REAL turn-by-turn route
+(straight-line only as fallback when the mesh is unreadable).
+(i) mid-journey arrivals speak "X: N screens left. Next, To Y: up 4
+seconds, then left 2 seconds." with no \ needed; (j) entering the
+reactor save room speaks "Save point: on another level. First take
+ladder 1, ..." automatically.
 ------------------------------------------------------------------------
 User report: the save-point journey "completed" on arriving at field
 124 — on the entry catwalk, one walkmesh level ABOVE the pad. Now a
