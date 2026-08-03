@@ -218,7 +218,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). âš  Useless in battle: reads menu-module scratch (0x9A13C8 via u16 table 0x9A7FC8) which is EMPTY during battle. v2.7 reads the heap text sections directly instead |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) â€” but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** â€” PSX comments identify unnamed PC fields |
-| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 1=FIELD JUMP PENDING (audit 2026-08-02: held for the whole screen load; set by MAPJUMP/gateway-hit/save-load/world-exit when arming FIELD_JUMP_INTERFACE, cleared at phase 2 - v2.30.64 watcher saw it on every transition of both runs), 2=battle, 6=name entry, 9=menu, 26=game-over handoff (TRANSIENT ~60ms â€” v2.30.37, 2026-07-27 wipe log)**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline â€” index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens**; also STATIC 2026-08-02: field_loop's own dispatch (0x63C1A0..) switches on mode - 0xF via jump table 0x63CC09, so modes **15..24 = menu-module sub-entries** invoked from the field loop (several take DEST_FIELD_ID as an argument) â€” the two live-confirmed values (6, 9) both match the decode, validating the table. âš  FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable). âš  the GAME OVER film reel + post-game-over title prompt read as mode **0** with FIELD_ID **stale** at the dead field â€” the 26 blip is the only positive game-over signal (GameOverWatchThread polls it at 30ms) |
+| `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 1=FIELD JUMP PENDING (audit 2026-08-02: held for the whole screen load; set by MAPJUMP/gateway-hit/save-load/world-exit when arming FIELD_JUMP_INTERFACE, cleared at phase 2 - v2.30.64 watcher saw it on every transition of both runs), 2=battle, 6=name entry, 9=menu, 26=game-over handoff (TRANSIENT ~60ms â€” v2.30.37, 2026-07-27 wipe log)**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline â€” index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens**; also STATIC 2026-08-02: field_loop's own dispatch (0x63C1A0..) switches on mode - 0xF via jump table 0x63CC09, so modes **15..24 = menu-module sub-entries** invoked from the field loop (several take DEST_FIELD_ID as an argument) â€” the two live-confirmed values (6, 9) both match the decode, validating the table. LIVE v2.30.75 (ff7_menu_handoff_monitor.py 2026-08-03, full battle-victory-menu run at 30ms): **the VICTORY results screens never leave mode 2** - MENU_OPEN=1 for the whole sequence (no dips between the two results screens) while the byte stays battle, so `MENU_OPEN==1 && mode==2` = the results window and `mode==9` = the real main-menu family (new constants GAME_MODE_BATTLE / GAME_MODE_MAIN_MENU); on a real menu open **mode rises to 9 ~0.5-1.2s BEFORE MENU_OPEN** and both drop together on close; every menu-family thread now gates on ==9 (replaced the v2.35.1 g_victory_active flag + 4-second battle-recency tick, whose holes are logged in proxy.cpp's v2.30.75 header comment). âš  FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable). âš  the GAME OVER film reel + post-game-over title prompt read as mode **0** with FIELD_ID **stale** at the dead field â€” the 26 blip is the only positive game-over signal (GameOverWatchThread polls it at 30ms) |
 | `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
 | `FIELD_BGMOVIE_FLAG` | `0x00CC0DC2` | +0x3A, u8. Movie is background-only (player walkable) |
 | `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
@@ -248,7 +248,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | *(target-name extras)* | `0x9AB0E0/0x9A8B39` | From the v2.10 disasm, identities RESOLVED in v2.11 via BATTLE_ACTOR_VARS below: u32[0x9AB0E0+slotÂ·0x68] = actor_vars stateFlags (+0x04), bit 0x40 â†’ game appends kernel string 0x71 (unused); u8[0x9A8B39+slotÂ·0x44] bit 0x40 = **SENSED display flag** â†’ game formats "cur/max" HP from u16[0x9A8B4C+slotÂ·0x44] (display-cached cur) + u16[0x9AB10C+slotÂ·0x68] (= actor_vars maxHP low word) via kernel strings 0x7F/0x72. 0x9A80F0 = the game's target-name scratch buffer (write-on-render only â€” do NOT poll) |
 | `BATTLE_ACTOR_VARS` | `0x009AB0DC` | FFNx battle_ai_context::actor_vars â€” per-actor battle stats, 10 slots Ã— stride 0x68 (= sizeof battle_actor_vars). Static, two agreeing derivations (ff7_sense_hp_static.py, v2.11): (1) FFNx chain battle_context = u32 operand at 0x41CCB2+0x5F = 0x9AB0A0, actor_vars = +0x3C; the operand sits in "mov edi,0x9AB0A0 / rep stosd" â€” sub_41CCB2 is the battle-init memset whose OTHER memsets clear exactly the v2.10 formation/enemy-record regions; (2) section 7's reads land on named fields with this base. Key offsets: +0x04 stateFlags, +0x24 formationID (u16, = FFNx voice enemy_id), +0x28/+0x2A cur/max MP (u16), **+0x2C/+0x30 cur/max HP (i32)** â€” read the i32s, not the game's u16 display words (>65535-HP bosses truncate) |
 | `BATTLE_SENSED_FLAG_TABLE` | `0x009A8B39` | u8 per actor slot, stride 0x44 (same display struct as the dup-letter byte); bit 0x40 = target window shows HP (set by Sense). v2.11 gates the enemy HP readout on it â€” exact info parity with the sighted window; party slots 0-2 speak HP unconditionally (party HP is always on-screen) |
-| `BATTLE_END_MODE` | `0x00DC1300` | u16 victory-screen phase = FFNx's `menu_battle_end_mode` (operand at menu_battle_end_sub_6C9543+0x2C). âš  **v2.35's static-only reading (0=won/init, 1=EXP/AP screen, 3=gil/items screen) was PLAY-CORRECTED v2.35.2**: it advances on the player's OK PRESSES, not screen appearances â€” 0=EXP/AP screen SHOWING, 1=roll-up running (chirps/levels apply), 2=gil/items screen SHOWING, 3=after its OK (gil applied). Use the v2.35.2 phase map, not the raw disasm-only one (ff7_battle_results_static.py/ff7_results_block_refs.py, v2.35, 2026-07-19; corrected 2026-07-19) |
+| `BATTLE_END_MODE` | `0x00DC1300` | u16 victory-screen phase = FFNx's `menu_battle_end_mode` (operand at menu_battle_end_sub_6C9543+0x2C). âš  **v2.35's static-only reading (0=won/init, 1=EXP/AP screen, 3=gil/items screen) was PLAY-CORRECTED v2.35.2**: it advances on the player's OK PRESSES, not screen appearances â€” 0=EXP/AP screen SHOWING, 1=roll-up running (chirps/levels apply), 2=gil/items screen SHOWING, 3=after its OK (gil applied). Use the v2.35.2 phase map, not the raw disasm-only one (ff7_battle_results_static.py/ff7_results_block_refs.py, v2.35, 2026-07-19; corrected 2026-07-19). FULL LIFECYCLE v2.30.75 (handoff monitor 2026-08-03): after 3 comes a transient 4 (~30ms) and then the byte **RESTS AT 5 until the next battle's results init writes 0** (~60ms before MENU_OPEN rises); 0 between battles only before the session's first battle. TRAP: `!=0` is NOT "results active" - as v2.35.1's victory stand-down it dead-gated the materia/equip/limit/magic threads all session after the first battle; the results-window test is `MENU_OPEN==1 && GAME_MODE==2` |
 | `BATTLE_GAINED_EXP` / `_AP` / `_GIL` | `0x0099E2C0` / `_C4` / `_C8` | u32 results pools (battle module 0x431541.. accumulates per enemy slot from actor_vars, stride 0x68). âš  **CONSUMED ON APPLY** â€” the menu does `SAVEMAP_GIL += pool; pool = 0` as mode goes to 3 (0x6C6B8F), and EXP/AP drain similarly during the mode-1 count-up: capture all three AT RESULTS ENTRY, never at screen time (v2.35) |
 | `BATTLE_DROPS_COUNT` / `BATTLE_DROPS_ARRAY` | `0x009AE12C` / `0x0099E2F0` | u32 entry count; stride-6 array, u16 item id at +0 (0-319 namespace, same as inventory), +4 word copied during list compaction (qty/taken flag, logged not spoken pending live confirmation). Battle fill loop 0x4315E9 (imul 6) is the stride proof (v2.35). Level-ups are NOT announced from these pools â€” the savemap level bytes (records +0x01) are watched during the results window instead, needing no new addresses |
 | `FIELD_TRIGGERS_HEADER_PTR` | `0x00CFF454` | Global holding field_trigger_header* (FFNx ff7.h) â€” engine's parsed TRIGGERS section (âš  naming audit 2026-08-02: RAW file section INDEX 7 per the corrected Â§5 table; FFNx's docs historically call it "section 8" by 1-based count â€” both names mean this same data). Parsed layout, tail COMPLETED 2026-08-02 (arrow renderer 0x64DAC8 disasm): +0x158 field_trigger[12] door boxes (16B: 2 corner vertices, bg_group/bg_frame/behavior/sound â€” background-flip doors, 119 used game-wide), +0x218 show_arrow_flag[12] (the story-lock parity candidate), +0x224 field_arrow[12] (16B: x/y/z i32 + type). Gateway record fully decoded â€” see the *(gateway record layout - COMPLETE)* row below. Single writer 0x6211DA (one screen in memory). Original v2.14 facts: +0x00 char[9] field name (ASCII; live-confirmed "md1stin" spoken by M), +0x09 u8 control_direction, +0x38 field_gateway[12] exits (24B: 2Ã— s16[3] exit-line vertices in walkmesh coords, s16[3] destination vertex, s16 dest field id, 0x7FFF = unused), +0x158 field_trigger[12]. Static via FFNx chain anchored at name-embedded field_sub_6388EE, 3 name-embedded cross-checks passed (0xCFFE3C/0xCFF3D8/0x623C0F) â€” ff7_field_triggers_static.py, v2.14 |
@@ -5540,6 +5540,54 @@ each mid-journey arrival speaks a turn-by-turn leg with no \ needed;
 (j) reactor save-room entry speaks "Save point: on another level.
 First take ladder 1, ..." automatically.
 
+### v2.30.75 (2026-08-03): menu screen-identity refactor -- positive signals replace every victory-handoff heuristic
+
+User: "the menu still has issues after a victory screen... re-assess the
+menu system... make sure there are clear transitions rather than relying
+on timing assumptions." Code assessment found FOUR different victory
+stand-down mechanisms across the menu threads (g_victory_active flag +
+4s battle-recency tick in MenuCursor/Item/Status; BATTLE_END_MODE != 0
+in Materia/Equip/Limit/Magic; nothing at all in Save/Order/Config), then
+ONE passive play-through (NEW investigate/ff7_menu_handoff_monitor.py --
+9 screen-identity globals, 30ms on-change sampling, self-diagnosing
+per-thread EXPOSED gate line) settled every open question:
+
+- GAME_MODE stays 2 (battle) through the ENTIRE victory sequence while
+  MENU_OPEN=1 (continuous, no dips between the two results screens);
+  the real main-menu family runs at mode 9, which rises ~0.5-1.2s
+  BEFORE MENU_OPEN and drops with it on close. Title/game-over prompts
+  raise MENU_OPEN at mode 0. So the clear transitions are:
+  MENU_OPEN==1 && GAME_MODE==2 = results window;
+  GAME_MODE==9 = main-menu family. No timing anywhere.
+- ROOT CAUSE of the report: BATTLE_END_MODE RESTS AT 5 between battles
+  (lifecycle 0 init -> 1 -> 2 -> 3 -> 4 transient ~30ms -> 5 rest; 0
+  only before the session's first battle). The v2.35.1 "battle_end !=
+  0" guards were DEAD-GATES: after any battle, the Materia/Equip/
+  Limit/Magic screens went permanently SILENT for the session.
+- The 4s tick had its own holes: stamped only while speak_battle was
+  on (speak_battle=false = zero victory defense), and a real menu
+  open within 4s of battle teardown was wrongly muted (proven in the
+  log at 12:01:00 -- open ~1.7s after teardown, announce swallowed).
+
+Shipped: all nine menu-family threads (MenuCursor, Config, Save,
+Materia, Equip, Limit, Magic, Item, Order, Status) gate on the new
+GAME_MODE_MAIN_MENU==9 constant; VictoryThread's window is now
+MENU_OPEN==1 && GAME_MODE_BATTLE==2 outright (open AND close edges);
+g_victory_active, g_last_battle_tick, the 4s window, and the
+battle_end guards are DELETED. The v2.30.68 settle gate stays (its
+0.8s row-restore anomaly did NOT reproduce -- post-battle menu opens
+reset to row 0 immediately -- so the gate is cheap insurance until a
+log shows the transient again). No new log strings, no new speech --
+pure gating change.
+
+Deployed both installs (5FB913B3C1F9DA5D). VERIFY [MENUGATE]: (a) after
+any battle, Magic/Materia/Equip/Limit menus must speak again (the
+dead-gate fix -- this was the reported bug); (b) victory screens stay
+free of stale menu-row chatter; (c) opening the menu QUICKLY (<4s)
+after a battle now announces normally; (d) save-before-boss then win:
+no save-menu narration over the victory screens; (e) with
+speak_battle=false, victory screens still produce no menu chatter.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -6121,7 +6169,7 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC11C4` | ORDERMENU_CURSOR | u8 Order-pane party cursor, scan speak-back verified (v2.32) |
 | `0xDC1259` | (unresolved) | read 9 in the Order pane, 10 with a member selected (scan latch pass); maybe a widget/cursor count â€” not consumed |
 | `0xDC1288` | CHARSEL_CHOSEN | u32 slot committed by the mode-1 pane (v2.32 disasm; not yet consumed) |
-| `0xDC1300` | BATTLE_END_MODE | u16 victory-screen phase, advancing on the player's OK PRESSES not screen appearances (v2.35.2 play-corrected): 0=EXP/AP screen showing, 1=roll-up running (chirps/levels apply), 2=gil/items screen showing, 3=after its OK (gil applied). FFNx menu_battle_end_mode |
+| `0xDC1300` | BATTLE_END_MODE | u16 victory-screen phase, advancing on the player's OK PRESSES not screen appearances (v2.35.2 play-corrected): 0=EXP/AP screen showing, 1=roll-up running (chirps/levels apply), 2=gil/items screen showing, 3=after its OK (gil applied). FULL LIFECYCLE v2.30.75 (handoff monitor 2026-08-03, two battles): results init writes 0 ~60ms before MENU_OPEN rises, then 1-2-3 on OKs, transient 4 (~30ms, teardown), then **RESTS AT 5 until the next battle's init** (0 between battles only before the session's first battle - BSS). TRAP: `!=0` is NOT a victory test - as the v2.35.1 stand-down it dead-gated materia/equip/limit/magic threads (silent all session after the first battle); only meaningful INSIDE the `MENU_OPEN==1 && GAME_MODE==2` window. FFNx menu_battle_end_mode |
 | `0xDC1320` | ORDERMENU_LATCH | u32 1 = first member selected (v2.32, scan + disasm) |
 | `0xDC1310` / `0xDC1214` / `0xDC1318` / `0xDC1314` | TUTWIN_STATE / TEXT_PTR / MODE / TIMER | the menu message/tutorial window renderer's state block (0x6C49FD; = FFNx menu_tutorial_window_state/_text_ptr). Full semantics in Â§4 (v2.30.29). Shared by tutorial slides AND save-screen info popups |
 | `0xDC1324` | MENU_FOCUS_MODE | u8 0=menu bar / 1=char-select pane (chimed) / 2=Order pane (silent â€” the player-noticed missing chime); v2.32's Order gate |

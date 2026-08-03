@@ -1334,6 +1334,18 @@ constexpr uint32_t COUNTDOWN_TIMER_MS      = SAVEMAP_BASE + 0xB88; // 0xDC08C0 u
 //   (gil achievement fires). 2 = observed in the OK-press handler as the
 //   state whose exit applies gil (see below); exact on-screen meaning
 //   logged at runtime.
+//   ⚠ FULL LIFECYCLE (v2.30.75, ff7_menu_handoff_monitor.py 2026-08-03,
+//   two battles observed live): results init writes 0 ~60ms BEFORE
+//   MENU_OPEN rises, then 1 -> 2 -> 3 on the player's OKs, a transient
+//   4 (~30ms, teardown begins), and the byte RESTS AT 5 until the next
+//   battle's results init. It is 0 between battles ONLY before the
+//   session's first battle (BSS default). ⚠ TRAP: "battle_end != 0" is
+//   therefore NOT a victory-window test -- v2.35.1 used it as the
+//   victory stand-down in the materia/equip/limit/magic menu threads,
+//   which DEAD-GATED those four screens (silent) for the rest of the
+//   session after the first battle. The victory window test is
+//   MENU_OPEN==1 && GAME_MODE==GAME_MODE_BATTLE; this byte is only
+//   meaningful INSIDE that window.
 //
 //   Results pools (battle module 0x431541.. accumulates per enemy slot
 //   from actor_vars, stride 0x68): 0x99E2C0 u32 gained EXP, 0x99E2C4 u32
@@ -1920,6 +1932,20 @@ constexpr uint32_t FIELD_N_MODELS          = 0x00CFF73E; // uint16 model count
 //     0 = field play (walking, player control)
 //     2 = battle (flipped 0->2 exactly when a live battle started)
 //     9 = menu overlay open on a field
+//   v2.30.75 (ff7_menu_handoff_monitor.py, 2026-08-03, full battle→
+//   victory→menu play-through at 30ms): two SCREEN-IDENTITY facts that
+//   killed the menu family's timing heuristics:
+//     - The victory results screens NEVER leave battle mode: GAME_MODE
+//       stays 2 for the whole sequence while MENU_OPEN=1 (and MENU_OPEN
+//       was continuous across both results screens — no dips). So
+//       MENU_OPEN==1 && GAME_MODE==2 positively identifies the results
+//       window, and MENU_OPEN==1 && GAME_MODE==9 the real main-menu
+//       family — the discriminator every menu thread now gates on.
+//     - On a real menu open, GAME_MODE rises to 9 ~0.5-1.2s BEFORE
+//       MENU_OPEN goes 1 (module init runs first); both drop to 0
+//       together on close. The title and game-over prompts raise
+//       MENU_OPEN with GAME_MODE=0 (mode 9 is field-menu only), so the
+//       ==9 gate also excludes them by construction.
 //   WARNING: FFNx's ff7_game_modes enum (FIELD=1, BATTLE=2, MENU=5, ...)
 //   does NOT describe this byte — that enum belongs to a different variable
 //   (the graphics/game-object mode). Gating on ==1 (the enum's FIELD) made
@@ -1971,6 +1997,12 @@ constexpr uint32_t FIELD_N_MODELS          = 0x00CFF73E; // uint16 model count
 constexpr uint32_t GAME_MODE            = 0x00CC0D89; // modules_global_object + 0x01
 constexpr uint8_t  GAME_MODE_FIELD      = 0;          // live-observed field-play value
                                                       // (NOT FFNx's enum; see above)
+constexpr uint8_t  GAME_MODE_BATTLE     = 2;          // live-observed; HELD through the
+                                                      // victory screens (v2.30.75)
+constexpr uint8_t  GAME_MODE_MAIN_MENU  = 9;          // the main-menu family's mode —
+                                                      // twice confirmed: static jump-
+                                                      // table decode (v2.30.28) + live
+                                                      // handoff log (v2.30.75)
 constexpr uint8_t  GAME_MODE_GAMEOVER   = 26;         // transient (~60ms) game-over
                                                       // handoff value, live-observed
                                                       // 2026-07-27 (see block above)

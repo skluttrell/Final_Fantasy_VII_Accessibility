@@ -5,6 +5,29 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MENUGATE] Menu screen-identity refactor — SHIPPED v2.30.75 (2026-08-03), awaiting play-test
+------------------------------------------------------------------------
+User report: "the menu still has issues after a victory screen."
+Root cause (proven by investigate/ff7_menu_handoff_monitor.py, one
+battle play-through): BATTLE_END_MODE rests at 5 between battles, so
+the v2.35.1 "battle_end != 0" victory guards DEAD-GATED the
+Materia/Equip/Limit/Magic threads — those four menu screens went
+silent for the rest of the session after the first battle. All menu
+threads now gate on the positive signal GAME_MODE==9 (main-menu
+family); the victory window is MENU_OPEN==1 && GAME_MODE==2; the
+g_victory_active flag, 4-second battle-recency tick, and battle_end
+guards are deleted.
+VERIFY: (a) after any battle, Magic/Materia/Equip/Limit menus speak
+again (the reported bug); (b) victory screens stay free of stale
+menu-row chatter; (c) opening the menu quickly (<4s) after a battle
+announces normally (old code muted it); (d) save before a boss, win:
+no save-menu narration over the victory screens; (e) with
+speak_battle=false, victory screens still produce no menu chatter.
+RESIDUAL: the v2.30.68 settle gate stays (its 0.8s row-restore
+anomaly did not reproduce — post-battle opens reset to row 0
+immediately); if a wrong-row open announce is ever reported again,
+get a handoff-monitor log of that open before touching the gate.
+
 [JOURNEY4] Save-point last mile — SHIPPED v2.30.69/.70/.73 (2026-08-03), awaiting play-test
 v2.30.73 (code-review sweep, 10 fixes): entering the save room on a
 DIFFERENT level now says "X: save point, on another level" (no 2D

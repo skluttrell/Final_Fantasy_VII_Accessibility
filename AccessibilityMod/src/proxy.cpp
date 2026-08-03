@@ -174,20 +174,29 @@ static HANDLE g_victory_thread    = nullptr;
 static HANDLE g_battle_thread     = nullptr;
 static HANDLE g_battlemsg_thread  = nullptr;
 
-// v2.35.1: the post-battle VICTORY screens set MENU_OPEN=1 (the v2.8.3
-// observation), which made MenuCursorThread's open-re-announce speak the
-// STALE main-menu row ("Item", "Config") over the victory announcements
-// (player report 2026-07-19). Two cross-thread signals suppress it:
-//   g_last_battle_tick  â€” GetTickCount() stamped every battle poll while
-//     GAME_MODE==2 (BattleActionThread). A "menu open" within seconds of
-//     battle mode can only be the results screens â€” the real main menu is
-//     unreachable that fast (fade + results + field control in between).
-//     Covers the race where results appear before the mode byte moves.
-//   g_victory_active    â€” set by VictoryThread while the results window
-//     is live (covers however long the player reads the screens).
-// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity).
-static volatile DWORD g_last_battle_tick = 0;
-static volatile LONG  g_victory_active   = 0;
+// v2.30.75: POSITIVE victory/menu discrimination. The post-battle VICTORY
+// screens set MENU_OPEN=1 with every main-menu byte stale (the v2.8.3
+// observation), which v2.35.1 countered with two cross-thread heuristics:
+// a g_victory_active flag set by VictoryThread, plus a g_last_battle_tick
+// 4-second battle-recency window. The 2026-08-03 menu_handoff_monitor log
+// (one full battleâ†’victoryâ†’menu play-through, 30ms sampling) replaced
+// both with the engine's own signal and proved the heuristics were holed:
+//   - GAME_MODE (0xCC0D89) stays 2 (battle) through the ENTIRE victory
+//     sequence while MENU_OPEN=1, and reads 9 for the whole real main-
+//     menu family (rising ~0.5-1.2s BEFORE MENU_OPEN, dropping together
+//     with it on close). Title and game-over prompts raise MENU_OPEN
+//     with GAME_MODE=0. So:
+//       MENU_OPEN==1 && GAME_MODE==2  =  the victory results window
+//       MENU_OPEN==1 && GAME_MODE==9  =  the real main-menu family
+//     No timing assumptions anywhere in the handoff.
+//   - The old heuristics failed three ways: the tick was stamped only
+//     while speak_battle was enabled (speak_battle=false left the menus
+//     with no victory defense at all); a real menu open within 4s of
+//     battle teardown was wrongly suppressed (log 12:01:00, open ~1.7s
+//     after teardown, open-announce swallowed); and a slow battleâ†’
+//     results transition (>4s) would have missed the whole window.
+// Every menu-family thread now gates on GAME_MODE==GAME_MODE_MAIN_MENU
+// and VictoryThread owns MENU_OPEN==1 && GAME_MODE==2 outright.
 static HANDLE g_battlemenu_thread = nullptr;
 static HANDLE g_wallbump_thread   = nullptr;
 static HANDLE g_dialogtone_thread = nullptr;
@@ -238,8 +247,7 @@ static HANDLE g_gameover_thread   = nullptr;
 // FIELD_ID changing to a DIFFERENT nonzero value also clears (a new field
 // definitely loaded; covers any path that skips the prompt).
 //
-// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity) â€” same
-// contract as g_victory_active above.
+// Plain aligned 32-bit stores/loads; benign racing (x86 atomicity).
 // ---------------------------------------------------------------------------
 static volatile LONG g_game_over_latch = 0;
 
@@ -877,15 +885,17 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
         }
         last_menu_open = menu_open;
 
-        // v2.35.1: the post-battle VICTORY screens also raise MENU_OPEN,
-        // which made the open-re-announce speak the STALE menu row over
-        // the victory announcements (player report). Stand down while the
-        // results context is live: either VictoryThread says so, or the
-        // "menu" opened within seconds of battle mode â€” the real main
-        // menu is unreachable that fast. Seed silently so nothing stale
-        // fires when the window ends.
-        if (g_victory_active != 0 ||
-            (GetTickCount() - g_last_battle_tick) < 4000) {
+        // v2.30.75: MENU_OPEN=1 alone does not mean "the main menu" â€” the
+        // victory results screens raise it while GAME_MODE stays 2, and
+        // the title/game-over prompts raise it with GAME_MODE 0 (2026-08-03
+        // handoff log). Only GAME_MODE==9 is the main-menu family; anything
+        // else with the menu byte up is a foreign overlay whose stale
+        // main-menu bytes must not narrate (this replaces the v2.35.1
+        // g_victory_active flag + 4-second battle-recency window â€” see the
+        // header comment at the old globals' site). Seed silently so
+        // nothing stale fires when the real menu opens later.
+        if (*reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE) !=
+                FF7Addr::GAME_MODE_MAIN_MENU) {
             last_cursor = *reinterpret_cast<const volatile uint8_t*>(
                 FF7Addr::MENU_CURSOR);
             last_quit_cursor = 0xFF;
@@ -1097,6 +1107,16 @@ static DWORD WINAPI ConfigMenuThread(LPVOID /*unused*/)
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
         if (menu_open == 0) continue;
+
+        // v2.30.75: the config sub-menu only exists under the main-menu
+        // module (GAME_MODE==9). The victory screens raise MENU_OPEN with
+        // MENU_CURSOR stale â€” possibly at 7 â€” while GAME_MODE stays 2;
+        // the row/value-sync invariant below happened to keep this thread
+        // quiet there, but the stand-down should be positive, not lucky
+        // (2026-08-03 handoff log).
+        if (*reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE) !=
+                FF7Addr::GAME_MODE_MAIN_MENU)
+            continue;
 
         // Proxy gate for config sub-menu: MENU_CURSOR must be 7 (Config row).
         const uint8_t menu_cursor =
@@ -1616,8 +1636,16 @@ static DWORD WINAPI SaveMenuThread(LPVOID /*unused*/)
         // player's last main-menu visit parked MENU_CURSOR on the Save row
         // (row 9 â€” exactly the 2026-07-26 shop false-"Save" signature) this
         // gate would select the WRONG menu instance for the Continue grid.
+        // v2.30.75: GAME_MODE==9 requirement â€” the victory results screens
+        // raise MENU_OPEN with MENU_CURSOR stale (a pre-boss save parks it
+        // at row 9, the common case) while GAME_MODE stays 2; this thread
+        // previously had NO victory stand-down at all (2026-08-03 handoff
+        // log). The LOAD mode below is title context (FIELD_ID==0, mode 0)
+        // and deliberately does not take this requirement.
         const bool save_mode =
             menu_open == 1 && menu_cursor == 9 && field_id != 0 &&
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE) ==
+                FF7Addr::GAME_MODE_MAIN_MENU &&
             !GameOverTitleContext();
 
         // v2.29.5: the "Are you sure you want to save?" Yes/No dialog.
@@ -3280,11 +3308,19 @@ static DWORD WINAPI MateriaMenuThread(LPVOID /*unused*/)
             FF7Addr::MENU_OPEN);
         const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MENU_DISPATCH_INDEX);
-        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
-            FF7Addr::BATTLE_END_MODE);
+        // v2.30.75: the victory-screen stand-down is GAME_MODE != 9 (the
+        // results screens keep GAME_MODE=2 with MENU_OPEN=1 â€” 2026-08-03
+        // handoff log). The old guard here was battle_end != 0, which was
+        // a DEAD GATE: BATTLE_END_MODE rests at 5 between battles (it is
+        // only 0 before the session's first battle and during the first
+        // results screen), so after any battle this thread went silent
+        // for the rest of the session â€” the "menu has issues after a
+        // victory screen" report.
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
         if (menu_open != 1 || field_id == 0 ||
             screen != FF7Addr::MATMENU_SCREEN_INDEX ||
-            battle_end != 0 /* victory screens hold MENU_OPEN, v2.35.1 */) {
+            game_mode != FF7Addr::GAME_MODE_MAIN_MENU) {
             was_open = false;
             continue;
         }
@@ -3603,9 +3639,14 @@ static DWORD WINAPI EquipMenuThread(LPVOID /*unused*/)
             FF7Addr::MENU_OPEN);
         const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MENU_DISPATCH_INDEX);
-        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
-            FF7Addr::BATTLE_END_MODE);
-        if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
+        // v2.30.75: GAME_MODE==9 replaces the battle_end != 0 victory
+        // guard â€” that byte rests at 5 between battles, which dead-gated
+        // this thread after the session's first battle (see the materia
+        // gate comment for the full derivation).
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
+        if (menu_open != 1 || field_id == 0 ||
+            game_mode != FF7Addr::GAME_MODE_MAIN_MENU ||
             (screen != FF7Addr::EQMENU_SCREEN_INDEX && screen != 15)) {
             was_open = false;
             continue;
@@ -3838,9 +3879,14 @@ static DWORD WINAPI LimitMenuThread(LPVOID /*unused*/)
             FF7Addr::MENU_OPEN);
         const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MENU_DISPATCH_INDEX);
-        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
-            FF7Addr::BATTLE_END_MODE);
-        if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
+        // v2.30.75: GAME_MODE==9 replaces the battle_end != 0 victory
+        // guard â€” that byte rests at 5 between battles, which dead-gated
+        // this thread after the session's first battle (see the materia
+        // gate comment for the full derivation).
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
+        if (menu_open != 1 || field_id == 0 ||
+            game_mode != FF7Addr::GAME_MODE_MAIN_MENU ||
             screen != FF7Addr::LIMITMENU_SCREEN_INDEX) {
             was_open = false;
             continue;
@@ -4001,11 +4047,15 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
             FF7Addr::MENU_OPEN);
         const uint32_t screen = *reinterpret_cast<const volatile uint32_t*>(
             FF7Addr::MENU_DISPATCH_INDEX);
-        const uint16_t battle_end = *reinterpret_cast<const volatile uint16_t*>(
-            FF7Addr::BATTLE_END_MODE);
+        // v2.30.75: GAME_MODE==9 replaces the battle_end != 0 victory
+        // guard â€” that byte rests at 5 between battles, which dead-gated
+        // this thread after the session's first battle (see the materia
+        // gate comment for the full derivation).
+        const uint8_t game_mode = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::GAME_MODE);
 
-
-        if (menu_open != 1 || field_id == 0 || battle_end != 0 ||
+        if (menu_open != 1 || field_id == 0 ||
+            game_mode != FF7Addr::GAME_MODE_MAIN_MENU ||
             screen != FF7Addr::MAGICMENU_SCREEN_INDEX) {
             was_open = false;
             continue;
@@ -4705,11 +4755,14 @@ static DWORD WINAPI ItemMenuThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
         if (menu_open != 1 || field_id == 0 ||
             screen != FF7Addr::ITEMMENU_SCREEN_INDEX ||
-            // v2.35.1: victory screens raise MENU_OPEN with a STALE
-            // dispatch index â€” if the last screen visited was Item, this
-            // gate would false-open over the victory announcements.
-            g_victory_active != 0 ||
-            (GetTickCount() - g_last_battle_tick) < 4000 ||
+            // v2.30.75: victory screens raise MENU_OPEN with a STALE
+            // dispatch index, but keep GAME_MODE=2 â€” the real item screen
+            // only exists under the main-menu module, GAME_MODE==9
+            // (2026-08-03 handoff log; replaces the v2.35.1 flag +
+            // 4-second battle-recency window, which also wrongly muted
+            // real menu opens within 4s of a battle).
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE) !=
+                FF7Addr::GAME_MODE_MAIN_MENU ||
             // v2.30.27: a menu TUTORIAL drives the screens itself â€”
             // stand down, the tutorial narration is the speech.
             Hooks::TutorialActive()) {
@@ -4957,7 +5010,16 @@ static DWORD WINAPI OrderMenuThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
         const uint32_t screen =
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
-        if (menu_open != 1 || field_id == 0 || screen != 0) {
+        // v2.30.75: dispatch index 0 is ALSO its normal parked value while
+        // the victory screens hold MENU_OPEN=1 (dispatch returns to 0 when
+        // the player cancels back to the main bar, and the menu can only
+        // close from there) â€” this gate previously passed on every victory
+        // screen and stayed quiet only because the stale FOCUS_MODE byte
+        // happened not to move. GAME_MODE==9 makes the stand-down positive
+        // (2026-08-03 handoff log: victory keeps GAME_MODE=2).
+        if (menu_open != 1 || field_id == 0 || screen != 0 ||
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE) !=
+                FF7Addr::GAME_MODE_MAIN_MENU) {
             last_focus = 0xFF;
             latch_armed = false;
             continue;
@@ -5157,7 +5219,6 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
 
         if (!Config::Get().speak_battle) {
             in_results = false;
-            g_victory_active = 0;
             last_mode = 0xFFFF;
             levels_valid = false;   // re-baseline silently when re-enabled
             continue;
@@ -5166,12 +5227,13 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
         // ---- LEVEL WATCH (v2.30.61) ---------------------------------------
         // Tester request: announce level-ups on the victory screens. The
         // watcher shipped in v2.35 only ran INSIDE the detected results
-        // window, so it inherited two gates that can each miss: the
-        // window is recognised by a 4-second battle-recency heuristic, and
-        // the MENU_OPEN!=1 check `continue`s above it. A level-up is worth
-        // announcing whenever it happens, so this now runs EVERY poll,
-        // independent of both — the savemap level byte is the authority
-        // and needs no results-screen context.
+        // window, so it inherited that window's gates (at the time a
+        // 4-second battle-recency heuristic — since replaced by the
+        // positive MENU_OPEN+GAME_MODE test, v2.30.75 — plus the
+        // MENU_OPEN!=1 `continue` above). A level-up is worth announcing
+        // whenever it happens, so this runs EVERY poll, independent of
+        // the window — the savemap level byte is the authority and needs
+        // no results-screen context.
         //
         // FALSE-POSITIVE GUARDS (a level byte can change for reasons that
         // are not a level-up):
@@ -5236,14 +5298,25 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             levels_valid = true;
         }
 
-        // The results screens run under the menu module with MENU_OPEN=1
-        // (the v2.8.3 observation). Outside that window the mode global is
-        // stale â€” transitions are only trusted inside it.
+        // v2.30.75: the results window is POSITIVELY identified as
+        // MENU_OPEN==1 while GAME_MODE is still 2 (battle) â€” the engine
+        // keeps the battle module active for the whole victory sequence
+        // and only the real main menu runs it at 9 (2026-08-03 handoff
+        // log; MENU_OPEN was continuous across both results screens at
+        // 30ms sampling, so a mid-window flicker close is not a real
+        // shape). This replaces the old open condition â€” MENU_OPEN rise
+        // within 4 seconds of the last observed battle poll â€” which
+        // missed the window entirely when the battleâ†’results transition
+        // outran the tick (and whose tick was only stamped while
+        // speak_battle was on). Outside the window the mode global is
+        // stale (it RESTS at 5 between battles) â€” transitions are only
+        // trusted inside it.
         const uint8_t menu_open =
             *reinterpret_cast<const volatile uint8_t*>(FF7Addr::MENU_OPEN);
-        if (menu_open != 1) {
+        const uint8_t game_mode =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+        if (menu_open != 1 || game_mode != FF7Addr::GAME_MODE_BATTLE) {
             in_results = false;
-            g_victory_active = 0;
             last_mode = 0xFFFF;
             continue;
         }
@@ -5252,22 +5325,23 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
         // flow): the mode byte advances on the player's OK presses, not
         // when screens APPEAR â€” the EXP/AP screen shows during mode 0
         // (waiting for OK), mode 1 is the roll-up itself (the chirps), the
-        // gil/items screen shows at mode 2, and 3 only lands after its OK.
+        // gil/items screen shows at mode 2, and 3 only lands after its OK
+        // (then a ~30ms transient 4 and a RESTING 5 until the next battle
+        // â€” the v2.30.75 lifecycle, see BATTLE_END_MODE in ff7_addresses.h).
         // So the victory line fires at the RESULTS WINDOW OPENING (the
-        // post-battle MENU_OPEN rise, identified by the v2.35.1 battle-
-        // recency signal), while the pools are provably intact; the
-        // gil/items line fires entering mode 2 (fallback 3, whichever is
-        // seen first â€” semantics harvested from the transition log).
+        // MENU_OPEN rise under GAME_MODE==2), while the pools are provably
+        // intact; the gil/items line fires entering mode 2 (fallback 3,
+        // whichever is seen first â€” semantics harvested from the
+        // transition log).
         const uint16_t mode =
             *reinterpret_cast<const volatile uint16_t*>(FF7Addr::BATTLE_END_MODE);
 
-        if (!in_results &&
-            (GetTickCount() - g_last_battle_tick) < 4000) {
-            // The results window just opened. Capture the pools NOW â€”
-            // the roll-up consumes them â€” and announce before the
-            // player's first OK starts the chirping count-up.
+        if (!in_results) {
+            // The results window just opened (first poll of MENU_OPEN==1
+            // under battle mode). Capture the pools NOW â€” the roll-up
+            // consumes them â€” and announce before the player's first OK
+            // starts the chirping count-up.
             in_results = true;
-            g_victory_active = 1;   // v2.35.1 suppressor, whole window
             spoke_gil = false;
             last_mode = mode;
             cap_exp = *reinterpret_cast<const volatile uint32_t*>(
@@ -5715,10 +5789,10 @@ static DWORD WINAPI StatusMenuThread(LPVOID /*unused*/)
             *reinterpret_cast<const volatile uint32_t*>(FF7Addr::MENU_DISPATCH_INDEX);
         if (menu_open != 1 || field_id == 0 ||
             screen != FF7Addr::STATUSMENU_SCREEN_INDEX ||
-            // v2.35.1: stale dispatch index during victory screens â€” see
-            // the ItemMenuThread gate.
-            g_victory_active != 0 ||
-            (GetTickCount() - g_last_battle_tick) < 4000 ||
+            // v2.30.75: stale dispatch index during victory screens â€” the
+            // positive discriminator is GAME_MODE (see ItemMenuThread).
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE) !=
+                FF7Addr::GAME_MODE_MAIN_MENU ||
             // v2.30.27: tutorials drive the screens â€” see ItemMenuThread.
             Hooks::TutorialActive()) {
             was_open = false;
@@ -6059,8 +6133,6 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         {
             const uint8_t game_mode =
                 *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
-            if (game_mode == 2)
-                g_last_battle_tick = GetTickCount();   // v2.35.1, see decl
             if (game_mode != 2) {
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
                 party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
