@@ -7907,7 +7907,10 @@ static std::wstring RouteToSpeech(float sx, float sy,
         // every spoken leg. The first-leg outputs are filled too so
         // the body-caution ray tests the word actually spoken. Only a
         // degenerate route (no displacement at all -- standing ON the
-        // target) keeps the bare phrase.
+        // target) keeps the bare phrase. v2.30.72: user-specified word
+        // order -- proximity first, then the facing: "very close to
+        // the up and left" (applies to EVERY pathfinder selection;
+        // the straight-line fallback uses the same phrasing).
         if (!corners.empty()) {
             const float tdx = corners.back().x - sx;
             const float tdy = corners.back().y - sy;
@@ -7917,8 +7920,8 @@ static std::wstring RouteToSpeech(float sx, float sy,
                     + control_deg - 180.0f);
                 if (out_first_sector) *out_first_sector = sector;
                 if (out_first_len)    *out_first_len    = total;
-                std::wstring out = kDpadSectors[sector];
-                out += L", very close";
+                std::wstring out = L"very close to the ";
+                out += kDpadSectors[sector];
                 return out;
             }
         }
@@ -11860,8 +11863,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             const int secs = static_cast<int>(
                 dist / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
             if (secs < 1)
+                // v2.30.72: same word order as the route builder --
+                // proximity first, then the facing (user-specified).
                 _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                             L"%ls%ls: %ls, very close.",
+                             L"%ls%ls: very close to the %ls.",
                              fallback_prefix, d.name, DpadSectorName(input_deg));
             else
                 _snwprintf_s(msg, _countof(msg), _TRUNCATE,

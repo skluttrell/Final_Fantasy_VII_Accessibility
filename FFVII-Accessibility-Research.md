@@ -5439,6 +5439,21 @@ Deployed both installs (CCE1ACB2DBDB1884). VERIFY: [JOURNEY4] run --
 the final approach to the pad should end "...up and left, very close"
 style, never a bare "very close".
 
+### v2.30.72 (2026-08-03): "very close to the <direction>" word order
+
+User clarification on .71: the request was GENERIC (any pathfinder
+selection -- items, people, events), and the word order should lead
+with proximity: "very close to the [direction I need to face]". The
+.71 mechanics were already generic (RouteToSpeech serves every
+selection); only the phrasing changed, in BOTH producers so the two
+styles stay one voice: route builder AND straight-line fallback now
+say "Potion: very close to the up and left" (was "up and left, very
+close"). Bare "very close" remains only for zero displacement
+(standing on the target). DLL wide-literal check: "very close to the "
+present, both old orderings absent. ⚠ WORDING RULE (user-specified):
+proximity phrase first, then the facing -- apply to any future
+near-target speech.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

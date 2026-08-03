@@ -25,8 +25,9 @@ reached. Journey complete." speaks AT the pad (log: JOURNEY complete
 lastmile dist= dz=), and the Save menu item is enabled there;
 (d) Shift+K mid-last-mile still says "Journey ended."; (e) a journey
 to a PLAIN caption place still ends with "Journey complete." on field
-arrival as before; (f) v2.30.71: near any interactable, directions end
-"<direction>, very close" — never a bare "very close". RESIDUAL (accepted): the arrival hint is
+arrival as before; (f) v2.30.71/.72: near any interactable (any category — items, people,
+save points, triggers), directions end "very close to the
+<direction>" — never a bare "very close" unless standing on it. RESIDUAL (accepted): the arrival hint is
 straight-line — it may point across a level gap; \ is the honest
 router (established journey model). CLASS NOTE: any future
 point-inside-a-field journey target ([STORYNAV] objectives, story
