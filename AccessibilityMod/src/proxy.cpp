@@ -10206,9 +10206,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                             atan2f(sdx, sdy) * (180.0f / 3.14159265f);
                         int ssecs = static_cast<int>(sd / 160.0f + 0.5f);
                         if (ssecs < 1) ssecs = 1;
+                        // v2.30.70 (play report on .69): "Arrived" is
+                        // RESERVED for the objective -- entering the
+                        // field with a ladder still to descend is not
+                        // arrival. This speaks in the ordinary leg idiom
+                        // ("X: <thing>, <dir>, N seconds"); the arrival
+                        // wording lives in the completion check.
                         _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
-                                     L"Arrived: %ls. Save point, %ls, "
-                                     L"%d %ls.",
+                                     L"%ls: save point, %ls, %d %ls.",
                                      journey_name,
                                      kDpadSectors[DpadSectorIndex(
                                          swdeg + control_deg - 180.0f)],
@@ -10349,8 +10354,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const float cd = sqrtf(cdx * cdx + cdy * cdy);
                 const int32_t cdz = (smp[2] >> 12) - pz;
                 if (cd <= journey_save_reach && cdz > -150 && cdz < 150) {
-                    TTS::Speak(L"Save point reached. Journey complete.",
-                               /*interrupt=*/false);
+                    // v2.30.70: the journey's ONE "Arrived" -- spoken at
+                    // the pad, never at the field door.
+                    wchar_t cmsg[96];
+                    _snwprintf_s(cmsg, _countof(cmsg), _TRUNCATE,
+                                 L"Arrived: %ls, save point. "
+                                 L"Journey complete.", journey_name);
+                    TTS::Speak(cmsg, /*interrupt=*/false);
                     if (Config::Get().debug_log) {
                         char dbg[96];
                         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,

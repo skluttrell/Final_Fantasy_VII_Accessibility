@@ -5,7 +5,7 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[JOURNEY4] Save-point last mile — SHIPPED v2.30.69 (2026-08-03), awaiting play-test
+[JOURNEY4] Save-point last mile — SHIPPED v2.30.69/.70 (2026-08-03), awaiting play-test
 ------------------------------------------------------------------------
 User report: the save-point journey "completed" on arriving at field
 124 — on the entry catwalk, one walkmesh level ABOVE the pad. Now a
@@ -14,8 +14,12 @@ instead of completing: arrival speaks "Arrived: X. Save point,
 <direction>, N seconds", \ gives the full in-field route to the pad
 ("on another level, first take ladder 1..."), and "Save point reached.
 Journey complete." fires only inside the pad's reach on its level.
-VERIFY: (a) rerun the reactor save-point journey — arrival at the save
-room says "Save point, ..., 3 seconds" instead of "Journey complete";
+v2.30.70 (same-day report): "Arrived" is now spoken ONLY at the pad —
+field entry says "Mako Reactor 1: save point, down and right, 3
+seconds"; the pad says "Arrived: Mako Reactor 1, save point. Journey
+complete."
+VERIFY: (a) rerun the reactor save-point journey — entering the save
+room speaks the leg-style line with NO "Arrived" in it;
 (b) \ there routes down the ladder to the pad; (c) "Save point
 reached. Journey complete." speaks AT the pad (log: JOURNEY complete
 lastmile dist= dz=), and the Save menu item is enabled there;

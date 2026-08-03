@@ -5402,6 +5402,21 @@ arrival); extend the same slot/reach handoff when those targets grow.
 
 Deployed both installs (F6F6D5B3E6F8E27D). VERIFY: TODO [JOURNEY4].
 
+### v2.30.70 (2026-08-03): "Arrived" reserved for the objective
+
+Immediate play report on .69: it "still says I have arrived when I
+still have a ladder to descend." Correct - the .69 handoff kept
+"Arrived: X" in the FIELD-entry hint. Wording principle now encoded:
+**"Arrived" is the journey's ONE terminal word, spoken only at the
+objective.** Field entry speaks the ordinary leg idiom ("Mako
+Reactor 1: save point, down and right, 3 seconds"); the pad speaks
+"Arrived: Mako Reactor 1, save point. Journey complete." (plain
+caption journeys keep "Arrived: X. Journey complete." at field entry -
+there the field IS the objective). Two strings only; DLL wide-literal
+check: new strings present, old "Arrived: %ls. Save point," absent.
+
+Deployed both installs (76237F235AD9C2B0). VERIFY: TODO [JOURNEY4].
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
