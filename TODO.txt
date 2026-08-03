@@ -5,7 +5,21 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[JOURNEY4] Save-point last mile — SHIPPED v2.30.69/.70 (2026-08-03), awaiting play-test
+[JOURNEY4] Save-point last mile — SHIPPED v2.30.69/.70/.73 (2026-08-03), awaiting play-test
+v2.30.73 (code-review sweep, 10 fixes): entering the save room on a
+DIFFERENT level now says "X: save point, on another level" (no 2D
+direction across a level gap); already-at-pad arrivals speak ONLY the
+completion; the icon scan retries ~3s (transient VISI/read misses no
+longer cause a false field-door completion); \ during the search
+window or on a bad read says "Save point not found right now. Ask
+again." and never cancels; completion re-verifies the icon is visible
+and honors talk radius up to 200; "very close to the X" now uses the
+first walkable leg (not the through-the-wall net bearing) and no
+longer triggers "is in the way" cautions; standing exactly on a
+target says bare "very close" in both direction styles.
+EXTRA VERIFY: (g) enter the reactor save room from above — the hint
+says "on another level", and pressing \ immediately does NOT end the
+journey; (h) log shows "lastmile pending" then "lastmile slot=".
 ------------------------------------------------------------------------
 User report: the save-point journey "completed" on arriving at field
 124 — on the entry catwalk, one walkmesh level ABOVE the pad. Now a

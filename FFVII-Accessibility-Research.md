@@ -5454,6 +5454,67 @@ present, both old orderings absent. ⚠ WORDING RULE (user-specified):
 proximity phrase first, then the facing -- apply to any future
 near-target speech.
 
+### v2.30.73 (2026-08-03): review sweep -- 10 fixes on the .69-.72 work
+
+/code-review (high, 28 agents, 24 verified candidates -> 10 findings)
+over the last-mile + very-close commits; all 10 addressed:
+
+1. **Level-blind handoff hint** (CONFIRMED): the arrival hint spoke a
+   2D sector+seconds on split-level fields -- exactly the catwalk-walk
+   it was built to prevent. Now: |dz| >= 150 speaks "X: save point, on
+   another level." (the \ route explains the ladders); same-level keeps
+   sector+seconds.
+2. **"Very close" spoke the net bearing** (CONFIRMED): a multi-corner
+   route exists because the straight line is blocked; the net diagonal
+   can point through the wall. Now speaks folded[0].sector (the first
+   real walkable move); net bearing only when folding consumed
+   everything.
+3. **Very-close filled the first-leg outputs** (CONFIRMED): waking the
+   body-caution ray on sub-step routes, flagging bodies BEYOND a
+   target that is reached first. Restored the documented "-1 = no leg"
+   contract -- no caution on very-close, as before .71.
+4. **Hint + completion in one poll** (CONFIRMED): entering the field
+   already inside the bubble queued a movement instruction then
+   "Journey complete". The at-pad case now skips the hint; completion
+   is the one utterance.
+5. **One-shot icon scan** (PLAUSIBLE): a transient miss on the arrival
+   edge (VISI not yet written, label buffer settling) fell straight to
+   field-door completion. The scan moved to a per-poll FIND window
+   (armed 60 polls on arrival; "JOURNEY lastmile pending"); fallback
+   completion only when the window EMPTIES ("lastmile giveup").
+6. **Journey could never complete** (PLAUSIBLE): completion reach no
+   longer clamps talk radius at 90 (that cap is the walk-stop rule;
+   completion honors the pad's own interaction radius, sanity cap
+   200). Out-of-range/unreadable latched slots re-open the FIND window
+   instead of skipping forever.
+7. **\ transient = journey cancelled** (PLAUSIBLE): the bailout ended
+   the journey on a one-poll bad read. Now clears the slot, re-arms
+   the FIND window, speaks "Save point not found right now. Ask
+   again." -- and the branch also covers the pending window (a \ press
+   before the icon latched used to fall into the next-hop branch and
+   could speak "No known route ... Journey ended" AT the target).
+8. **Completion never re-verified the slot** (PLAUSIBLE): a hidden/
+   despawned icon could complete against its stale position. The
+   completion phase now requires readable + VISI-visible; a bad slot
+   logs "lastmile rescan" and re-finds.
+9. **Straight-line fallback zero-displacement** (CONFIRMED cleanup):
+   atan2f(0,0) manufactured a sector from control_deg alone; standing
+   ON the target now speaks bare "very close" in BOTH styles.
+10. **NavDest duplication** (cleanup): NEW BuildModelPointDest() -- one
+    model-slot -> point-dest construction, used by the FIND scan (as
+    its placement validator: parked-at-origin models skipped, the
+    browser's own eligibility tell) and the \ branch. RESIDUAL
+    (accepted): the browser's pass-2 model dest build still constructs
+    inline -- switching it is a wide, play-proven-code refactor;
+    revisit if the shapes ever diverge again.
+
+DLL literal check: 3 new log lines + 2 new spoken strings present, the
+removed fatal "Journey ended" cancel string absent. Deployed both
+installs (3CB76595786A09DB). VERIFY: [JOURNEY4] unchanged, plus: hint
+on entering the reactor save room should say "on another level" (not a
+direction), and a \ press immediately after entering must NOT end the
+journey.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

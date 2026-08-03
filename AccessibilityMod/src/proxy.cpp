@@ -7381,6 +7381,45 @@ static bool IsReadableSpan(const void* p, size_t len)
 }
 
 // ---------------------------------------------------------------------------
+// Model-slot -> point NavDest (v2.30.73, from the review's duplication
+// finding): ONE construction for "route to this field model", shared by
+// the journey last-mile scan and the \-key last-mile branch so they
+// cannot drift apart (the two hand-rolled copies already had -- the scan
+// lacked the browser's placement filter). Fills the degenerate-line
+// point shape every model destination uses; the caller sets .name.
+// Returns false on any of the reasons the destination browser would not
+// list the model: slot out of range, element unreadable, or parked at
+// the origin (bound but never placed on the mesh -- pos (0,0) with
+// triangle 0 is the browser's own eligibility tell).
+// ---------------------------------------------------------------------------
+static bool BuildModelPointDest(uint32_t arr, uint16_t nmod, int slot,
+                                NavDest& out)
+{
+    if (slot < 0 || slot >= static_cast<int>(nmod) || slot > 0x20)
+        return false;
+    const uint8_t* me = reinterpret_cast<const uint8_t*>(
+        arr + slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+    if (!IsReadableSpan(me, FF7Addr::FIELD_EVENT_DATA_STRIDE))
+        return false;
+    const int32_t* mp = reinterpret_cast<const int32_t*>(
+        me + FF7Addr::FIELD_EVENT_MODEL_POS);
+    const int16_t tri = *reinterpret_cast<const int16_t*>(
+        me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
+    const int16_t mx = static_cast<int16_t>(mp[0] >> 12);
+    const int16_t my = static_cast<int16_t>(mp[1] >> 12);
+    if (mx == 0 && my == 0 && tri == 0)
+        return false;   // parked/unplaced
+    out.name[0] = L'\0';
+    out.line_x1 = out.line_x2 = mx;
+    out.line_y1 = out.line_y2 = my;
+    out.line_z1 = out.line_z2 = static_cast<int16_t>(mp[2] >> 12);
+    out.model_slot  = slot;
+    out.target_tri  = tri;
+    out.place_field = 0;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // WALKMESH pathfinding â€” turn-by-turn directions (v2.22).
 //
 // WHY: the v2.14 directions are one straight-line bearing, which happily
@@ -7902,28 +7941,34 @@ static std::wstring RouteToSpeech(float sx, float sy,
         // v2.30.71 (user request): "very close" must still say WHICH
         // WAY -- half a second of walking is a real direction, and for
         // a blind player an interactable one step the WRONG way is a
-        // missed OK press. Bearing = start -> the route's final corner
-        // (the target point), quantized to the same d-pad words as
-        // every spoken leg. The first-leg outputs are filled too so
-        // the body-caution ray tests the word actually spoken. Only a
-        // degenerate route (no displacement at all -- standing ON the
-        // target) keeps the bare phrase. v2.30.72: user-specified word
-        // order -- proximity first, then the facing: "very close to
-        // the up and left" (applies to EVERY pathfinder selection;
-        // the straight-line fallback uses the same phrasing).
-        if (!corners.empty()) {
+        // missed OK press. v2.30.72: user-specified word order --
+        // proximity first, then the facing: "very close to the up and
+        // left" (applies to EVERY pathfinder selection; the
+        // straight-line fallback uses the same phrasing). v2.30.73
+        // (review, two fixes): (1) the spoken sector is the FIRST
+        // FOLDED LEG when one exists -- a multi-corner route exists
+        // because the straight line is blocked, so the net bearing to
+        // the target can point through the very wall the route walks
+        // around; the net bearing is only the fallback when folding
+        // consumed every micro-segment. (2) The first-leg outputs stay
+        // -1/0 (the documented contract above): sub-half-second routes
+        // never fired the body caution, and a probe here would flag
+        // bodies BEYOND a target that is reached first.
+        int vc_sector = -1;
+        if (!folded.empty()) {
+            vc_sector = folded[0].sector;
+        } else if (!corners.empty()) {
             const float tdx = corners.back().x - sx;
             const float tdy = corners.back().y - sy;
-            if (tdx * tdx + tdy * tdy >= 1.0f) {
-                const int sector = DpadSectorIndex(
+            if (tdx * tdx + tdy * tdy >= 1.0f)
+                vc_sector = DpadSectorIndex(
                     atan2f(tdx, tdy) * (180.0f / 3.14159265f)
                     + control_deg - 180.0f);
-                if (out_first_sector) *out_first_sector = sector;
-                if (out_first_len)    *out_first_len    = total;
-                std::wstring out = L"very close to the ";
-                out += kDpadSectors[sector];
-                return out;
-            }
+        }
+        if (vc_sector >= 0) {
+            std::wstring out = L"very close to the ";
+            out += kDpadSectors[vc_sector];
+            return out;
         }
         return L"very close";
     }
@@ -9740,6 +9785,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // on every screen change, so it can never go stale across fields.
     int   journey_save_slot  = -1;
     float journey_save_reach = 0.0f;
+    // v2.30.73 (review): the save-icon scan is no longer a one-shot on
+    // the arrival edge -- on the first poll after a transition the field
+    // can still be settling (VISI byte not yet written by the init
+    // script, label buffer mid-load), and a single miss used to fall
+    // straight back to the field-door completion this feature exists to
+    // prevent. The arrival edge only ARMS this retry window; the
+    // per-poll last-mile block scans while it is > 0 and falls back to
+    // the old completion only when it empties (~3 s of polls). Also
+    // re-armed when a latched slot goes bad (unreadable/hidden/out of
+    // range) so a transient never strands or falsely completes a journey.
+    int   journey_lastmile_tries = 0;
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
@@ -10036,6 +10092,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             journey_save_slot = -1;   // model slots are per-field; the
                                       // last-mile block below re-finds the
                                       // save icon if THIS is the target
+            journey_lastmile_tries = 0;   // ...and the retry window is
+                                          // re-armed by the target branch
 
             // ---- arrival facing (v2.30.64) ----------------------------
             // The arrival routine wrote the jump mailbox's direction into
@@ -10150,113 +10208,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 if (field_id == journey_target) {
                     // v2.30.69: reaching the FIELD is not reaching the
                     // THING when the target was a save point (see the
-                    // journey_save_slot state comment). Find the live
-                    // save icon and hand off: speak the same
-                    // sector-plus-seconds hint every leg arrival gets,
-                    // keep the journey alive, and let the per-poll reach
-                    // check below decide "complete". A save field with
-                    // no live icon (VISI-hidden, unbound) falls back to
-                    // the old field-arrival completion -- best effort,
-                    // never a stuck journey.
-                    int save_slot = -1;
+                    // journey_save_slot state comment). v2.30.73
+                    // (review): the icon scan moved OUT of this one-shot
+                    // edge -- on the first arrival poll the field can
+                    // still be settling, and a single miss here used to
+                    // speak the field-door completion this feature
+                    // exists to prevent. The edge only arms the retry
+                    // window; the per-poll last-mile block (below the
+                    // facing release) scans, speaks the hint, completes,
+                    // or -- only when the window empties -- falls back.
                     if (FF7FieldGraph::HasSavePoint(
                             static_cast<uint16_t>(field_id))) {
-                        // Field name for the label decode (the shared
-                        // fname is built after the keypress gate, which
-                        // this arrival poll may not pass).
-                        char jfname[10] = {};
-                        memcpy(jfname, reinterpret_cast<const void*>(
-                                   hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
-                        for (char& c : jfname)
-                            if (c != '\0' && (c < 0x20 || c > 0x7E))
-                                c = '\0';
-                        const uint32_t n_walk = (nmod < 32u) ? nmod : 32u;
-                        if (IsReadableSpan(
-                                reinterpret_cast<const void*>(arr),
-                                n_walk *
-                                    FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
-                            for (uint16_t m = 0; m < n_walk; ++m) {
-                                if (m == pmid)
-                                    continue;
-                                const uint8_t* me =
-                                    reinterpret_cast<const uint8_t*>(
-                                        arr + m *
-                                        FF7Addr::FIELD_EVENT_DATA_STRIDE);
-                                if (*reinterpret_cast<const uint8_t*>(
-                                        me + FF7Addr::FIELD_EVENT_VISIBLE)
-                                    == 0)
-                                    continue;   // script hid it
-                                std::wstring lbl;
-                                if (!FieldModelLabel(m, jfname, lbl))
-                                    continue;
-                                const wchar_t* friendly = nullptr;
-                                if (ClassifyModelLabel(lbl, &friendly)
-                                    != MC_SAVE)
-                                    continue;
-                                save_slot = m;
-                                break;
-                            }
-                        }
-                    }
-                    if (save_slot >= 0) {
-                        const uint8_t* sme =
-                            reinterpret_cast<const uint8_t*>(
-                                arr + save_slot *
-                                FF7Addr::FIELD_EVENT_DATA_STRIDE);
-                        // Reach bubble = the route builder's talk/contact
-                        // rule (v2.30.25/.26), so "journey complete" and
-                        // "the walk stops here" are the same distance.
-                        int16_t tr = *reinterpret_cast<const int16_t*>(
-                            sme + FF7Addr::FIELD_EVENT_TALK_RADIUS);
-                        const int16_t mc =
-                            *reinterpret_cast<const int16_t*>(
-                                sme +
-                                FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
-                        if (tr < 20) tr = 20;
-                        if (tr > 90) tr = 90;
-                        float reach = static_cast<float>(tr);
-                        if (mc > 0 && mc <= 200) {
-                            const float contact = PlayerCollisionRadius()
-                                + static_cast<float>(mc) + 8.0f;
-                            if (contact > reach)
-                                reach = contact;
-                        }
-                        const int32_t* smp =
-                            reinterpret_cast<const int32_t*>(
-                                sme + FF7Addr::FIELD_EVENT_MODEL_POS);
-                        const float sdx =
-                            static_cast<float>((smp[0] >> 12) - px);
-                        const float sdy =
-                            static_cast<float>((smp[1] >> 12) - py);
-                        const float sd = sqrtf(sdx * sdx + sdy * sdy);
-                        const float swdeg =
-                            atan2f(sdx, sdy) * (180.0f / 3.14159265f);
-                        int ssecs = static_cast<int>(sd / 160.0f + 0.5f);
-                        if (ssecs < 1) ssecs = 1;
-                        // v2.30.70 (play report on .69): "Arrived" is
-                        // RESERVED for the objective -- entering the
-                        // field with a ladder still to descend is not
-                        // arrival. This speaks in the ordinary leg idiom
-                        // ("X: <thing>, <dir>, N seconds"); the arrival
-                        // wording lives in the completion check.
-                        _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
-                                     L"%ls: save point, %ls, %d %ls.",
-                                     journey_name,
-                                     kDpadSectors[DpadSectorIndex(
-                                         swdeg + control_deg - 180.0f)],
-                                     ssecs,
-                                     ssecs == 1 ? L"second" : L"seconds");
-                        TTS::Speak(jmsg, /*interrupt=*/false);
-                        journey_save_slot  = save_slot;
-                        journey_save_reach = reach;
-                        if (Config::Get().debug_log) {
-                            char dbg[128];
-                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                                "[FF7Access] JOURNEY lastmile slot=%d "
-                                "reach=%.0f dist=%.0f",
-                                save_slot, reach, sd);
-                            Log::Write(dbg);
-                        }
+                        journey_lastmile_tries = 60;
+                        if (Config::Get().debug_log)
+                            Log::Write(
+                                "[FF7Access] JOURNEY lastmile pending");
                     } else {
                         _snwprintf_s(jmsg, _countof(jmsg), _TRUNCATE,
                                      L"Arrived: %ls. Journey complete.",
@@ -10359,45 +10325,199 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
         }
 
-        // ---- journey last-mile completion (v2.30.69, every poll) ----------
-        // The arrival handoff pointed the journey at the save icon's model
-        // slot; complete only inside its reach bubble ON ITS LEVEL -- the
-        // z gate is exactly what field-granular arrival lacked (the pad
-        // sits a ladder below the entry catwalk on the reactor field).
-        // interrupt=false: the v2.30.62 walk-into announce ("Save point")
+        // ---- journey last mile (v2.30.69, reworked v2.30.73, every poll) --
+        // Two phases. FIND: while the arrival-armed retry window is open,
+        // scan for the live save icon each poll (a one-shot scan proved
+        // fragile against fields still settling on the arrival edge);
+        // when found, latch the slot and speak ONE hint -- unless the
+        // player is already inside the pad's bubble, in which case the
+        // completion below is the whole utterance (review: hint +
+        // completion used to queue back-to-back in one poll, speaking a
+        // movement instruction for a finished journey). COMPLETE: inside
+        // the reach bubble ON ITS LEVEL -- the z gate is exactly what
+        // field-granular arrival lacked (the pad sits a ladder below the
+        // entry catwalk on the reactor field). A latched slot that goes
+        // bad (out of range, unreadable, VISI-hidden mid-story-beat)
+        // re-arms the FIND window instead of silently wedging or falsely
+        // completing; only an EMPTY window falls back to the old
+        // field-door completion, so every journey still terminates.
+        // interrupt=false throughout: the v2.30.62 walk-into announce
         // fires on the same approach -- queue behind it, one action.
-        if (journey_active && journey_save_slot >= 0 &&
-            field_id == journey_target &&
-            journey_save_slot < static_cast<int>(nmod)) {
-            const uint8_t* sme = reinterpret_cast<const uint8_t*>(
-                arr + journey_save_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-            if (IsReadableSpan(sme, FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
-                const int32_t* smp = reinterpret_cast<const int32_t*>(
-                    sme + FF7Addr::FIELD_EVENT_MODEL_POS);
-                const float cdx =
-                    static_cast<float>((smp[0] >> 12) - px);
-                const float cdy =
-                    static_cast<float>((smp[1] >> 12) - py);
-                const float cd = sqrtf(cdx * cdx + cdy * cdy);
-                const int32_t cdz = (smp[2] >> 12) - pz;
-                if (cd <= journey_save_reach && cdz > -150 && cdz < 150) {
-                    // v2.30.70: the journey's ONE "Arrived" -- spoken at
-                    // the pad, never at the field door.
-                    wchar_t cmsg[96];
-                    _snwprintf_s(cmsg, _countof(cmsg), _TRUNCATE,
-                                 L"Arrived: %ls, save point. "
-                                 L"Journey complete.", journey_name);
-                    TTS::Speak(cmsg, /*interrupt=*/false);
+        if (journey_active && field_id == journey_target) {
+            wchar_t lmsg[160];
+            if (journey_save_slot < 0 && journey_lastmile_tries > 0) {
+                // Field name for the label decode (the shared fname is
+                // built after the keypress gate, which most polls skip).
+                char jfname[10] = {};
+                memcpy(jfname, reinterpret_cast<const void*>(
+                           hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
+                for (char& c : jfname)
+                    if (c != '\0' && (c < 0x20 || c > 0x7E))
+                        c = '\0';
+                int save_slot = -1;
+                NavDest sdest;
+                const uint32_t n_walk = (nmod < 32u) ? nmod : 32u;
+                if (IsReadableSpan(reinterpret_cast<const void*>(arr),
+                                   n_walk *
+                                       FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
+                    for (uint16_t m = 0; m < n_walk; ++m) {
+                        if (m == pmid)
+                            continue;
+                        const uint8_t* me = reinterpret_cast<const uint8_t*>(
+                            arr + m * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+                        if (*reinterpret_cast<const uint8_t*>(
+                                me + FF7Addr::FIELD_EVENT_VISIBLE) == 0)
+                            continue;   // script hid it
+                        std::wstring lbl;
+                        if (!FieldModelLabel(m, jfname, lbl))
+                            continue;
+                        const wchar_t* friendly = nullptr;
+                        if (ClassifyModelLabel(lbl, &friendly) != MC_SAVE)
+                            continue;
+                        // Shared constructor validates placement too
+                        // (parked-at-origin models are bound but not on
+                        // the mesh yet -- keep scanning next poll).
+                        if (!BuildModelPointDest(arr, nmod, m, sdest))
+                            continue;
+                        save_slot = m;
+                        break;
+                    }
+                }
+                if (save_slot >= 0) {
+                    const uint8_t* sme = reinterpret_cast<const uint8_t*>(
+                        arr + save_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+                    // Reach bubble = the route builder's talk/contact
+                    // rule (v2.30.25/.26) so "complete" and "the walk
+                    // stops here" agree -- EXCEPT the 90 cap: that clamp
+                    // exists so walks stop within a step of people, but
+                    // completion must honor the pad's own interaction
+                    // radius (review: a pad with talk > 90 could open
+                    // the save prompt outside our bubble and the journey
+                    // would never complete). 200 = sanity bound only.
+                    int16_t tr = *reinterpret_cast<const int16_t*>(
+                        sme + FF7Addr::FIELD_EVENT_TALK_RADIUS);
+                    const int16_t mc = *reinterpret_cast<const int16_t*>(
+                        sme + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+                    if (tr < 20)  tr = 20;
+                    if (tr > 200) tr = 200;
+                    float reach = static_cast<float>(tr);
+                    if (mc > 0 && mc <= 200) {
+                        const float contact = PlayerCollisionRadius()
+                            + static_cast<float>(mc) + 8.0f;
+                        if (contact > reach)
+                            reach = contact;
+                    }
+                    const float sdx = static_cast<float>(sdest.line_x1 - px);
+                    const float sdy = static_cast<float>(sdest.line_y1 - py);
+                    const float sd  = sqrtf(sdx * sdx + sdy * sdy);
+                    const int32_t sdz = sdest.line_z1 - pz;
+                    journey_save_slot     = save_slot;
+                    journey_save_reach    = reach;
+                    journey_lastmile_tries = 0;
                     if (Config::Get().debug_log) {
-                        char dbg[96];
+                        char dbg[128];
                         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                            "[FF7Access] JOURNEY complete lastmile "
-                            "dist=%.0f dz=%d", cd,
-                            static_cast<int>(cdz));
+                            "[FF7Access] JOURNEY lastmile slot=%d "
+                            "reach=%.0f dist=%.0f dz=%d",
+                            save_slot, reach, sd, static_cast<int>(sdz));
                         Log::Write(dbg);
                     }
-                    journey_active    = false;
-                    journey_save_slot = -1;
+                    if (sd <= reach && sdz > -150 && sdz < 150) {
+                        // Already at the pad: say nothing here -- the
+                        // completion below fires this same poll and is
+                        // the one utterance.
+                    } else if (sdz <= -150 || sdz >= 150) {
+                        // Review: a 2D sector+seconds hint on a SPLIT
+                        // LEVEL walks the player off a catwalk edge --
+                        // the honest hint is the level fact; \ gives
+                        // the real connector route (ladders), as
+                        // established.
+                        _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
+                                     L"%ls: save point, on another "
+                                     L"level.", journey_name);
+                        TTS::Speak(lmsg, /*interrupt=*/false);
+                    } else {
+                        int ssecs = static_cast<int>(
+                            sd / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
+                        if (ssecs < 1) ssecs = 1;
+                        // v2.30.70: "Arrived" is RESERVED for the
+                        // objective -- this is the ordinary leg idiom.
+                        _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
+                                     L"%ls: save point, %ls, %d %ls.",
+                                     journey_name,
+                                     kDpadSectors[DpadSectorIndex(
+                                         atan2f(sdx, sdy)
+                                             * (180.0f / 3.14159265f)
+                                         + control_deg - 180.0f)],
+                                     ssecs,
+                                     ssecs == 1 ? L"second" : L"seconds");
+                        TTS::Speak(lmsg, /*interrupt=*/false);
+                    }
+                } else if (--journey_lastmile_tries == 0) {
+                    // Window empty with no icon ever seen: the old
+                    // field-arrival completion -- best effort, never a
+                    // stuck journey.
+                    _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
+                                 L"Arrived: %ls. Journey complete.",
+                                 journey_name);
+                    TTS::Speak(lmsg, /*interrupt=*/false);
+                    journey_active = false;
+                    if (Config::Get().debug_log)
+                        Log::Write("[FF7Access] JOURNEY lastmile giveup");
+                }
+            }
+            if (journey_save_slot >= 0) {
+                bool slot_ok = false;
+                if (journey_save_slot < static_cast<int>(nmod)) {
+                    const uint8_t* sme = reinterpret_cast<const uint8_t*>(
+                        arr + journey_save_slot *
+                        FF7Addr::FIELD_EVENT_DATA_STRIDE);
+                    if (IsReadableSpan(sme,
+                                       FF7Addr::FIELD_EVENT_DATA_STRIDE) &&
+                        *reinterpret_cast<const uint8_t*>(
+                            sme + FF7Addr::FIELD_EVENT_VISIBLE) != 0) {
+                        slot_ok = true;
+                        const int32_t* smp =
+                            reinterpret_cast<const int32_t*>(
+                                sme + FF7Addr::FIELD_EVENT_MODEL_POS);
+                        const float cdx =
+                            static_cast<float>((smp[0] >> 12) - px);
+                        const float cdy =
+                            static_cast<float>((smp[1] >> 12) - py);
+                        const float cd = sqrtf(cdx * cdx + cdy * cdy);
+                        const int32_t cdz = (smp[2] >> 12) - pz;
+                        if (cd <= journey_save_reach &&
+                            cdz > -150 && cdz < 150) {
+                            // v2.30.70: the journey's ONE "Arrived" --
+                            // spoken at the pad, never at the field door.
+                            _snwprintf_s(lmsg, _countof(lmsg), _TRUNCATE,
+                                         L"Arrived: %ls, save point. "
+                                         L"Journey complete.",
+                                         journey_name);
+                            TTS::Speak(lmsg, /*interrupt=*/false);
+                            if (Config::Get().debug_log) {
+                                char dbg[96];
+                                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                    "[FF7Access] JOURNEY complete "
+                                    "lastmile dist=%.0f dz=%d", cd,
+                                    static_cast<int>(cdz));
+                                Log::Write(dbg);
+                            }
+                            journey_active    = false;
+                            journey_save_slot = -1;
+                        }
+                    }
+                }
+                if (journey_active && journey_save_slot >= 0 && !slot_ok) {
+                    // Latched slot went bad (review: the old check would
+                    // either skip forever on nmod drift or complete on a
+                    // hidden icon's stale position). Drop the latch and
+                    // re-open the FIND window -- it re-finds a live icon
+                    // or falls back within ~3 s.
+                    journey_save_slot      = -1;
+                    journey_lastmile_tries = 60;
+                    if (Config::Get().debug_log)
+                        Log::Write("[FF7Access] JOURNEY lastmile rescan");
                 }
             }
         }
@@ -10857,6 +10977,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             if (journey_active) {
                 journey_active = false;
                 journey_save_slot = -1;
+                journey_lastmile_tries = 0;
                 journey_cancelled = true;
             }
         }
@@ -11545,8 +11666,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // \ to plain selection directions).
         NavDest journey_leg;
         bool leg_ready = false;
-        if (journey_active && journey_save_slot >= 0 &&
-            field_id == journey_target && category != CAT_PLACES) {
+        if (journey_active && field_id == journey_target &&
+            category != CAT_PLACES) {
             // v2.30.69 last mile: the journey now points INSIDE this
             // field. Route to the live save icon through the same NavDest
             // flow every selection uses (turn-by-turn, level journeys,
@@ -11554,46 +11675,27 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // browser entry would -- one vocabulary. The third-run log is
             // the spec: "Save point: on another level. First take ladder
             // 1, ..." is what got the player to the pad by hand.
+            // v2.30.73 (review): the branch now also catches the FIND
+            // window (slot not latched yet), and a bad read is TRANSIENT
+            // -- it re-opens the scan instead of cancelling a journey the
+            // player spent screens on. Every other read guard in this
+            // thread skips the poll; \ additionally owes an answer.
             bool built = false;
-            if (journey_save_slot < static_cast<int>(nmod)) {
-                const uint8_t* sme = reinterpret_cast<const uint8_t*>(
-                    arr + journey_save_slot *
-                    FF7Addr::FIELD_EVENT_DATA_STRIDE);
-                if (IsReadableSpan(sme,
-                                   FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
-                    const int32_t* smp = reinterpret_cast<const int32_t*>(
-                        sme + FF7Addr::FIELD_EVENT_MODEL_POS);
-                    const int16_t sx =
-                        static_cast<int16_t>(smp[0] >> 12);
-                    const int16_t sy =
-                        static_cast<int16_t>(smp[1] >> 12);
-                    const int16_t sz =
-                        static_cast<int16_t>(smp[2] >> 12);
-                    _snwprintf_s(journey_leg.name,
-                                 _countof(journey_leg.name), _TRUNCATE,
-                                 L"Journey to %ls. Save point",
-                                 journey_name);
-                    // Point target, stored as a degenerate line -- the
-                    // same shape every model destination uses.
-                    journey_leg.line_x1 = journey_leg.line_x2 = sx;
-                    journey_leg.line_y1 = journey_leg.line_y2 = sy;
-                    journey_leg.line_z1 = journey_leg.line_z2 = sz;
-                    journey_leg.model_slot = journey_save_slot;
-                    journey_leg.target_tri =
-                        *reinterpret_cast<const int16_t*>(
-                            sme + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
-                    journey_leg.place_field = 0;
-                    built = true;
-                    leg_ready = true;
-                }
+            if (journey_save_slot >= 0 &&
+                BuildModelPointDest(arr, nmod, journey_save_slot,
+                                    journey_leg)) {
+                _snwprintf_s(journey_leg.name,
+                             _countof(journey_leg.name), _TRUNCATE,
+                             L"Journey to %ls. Save point",
+                             journey_name);
+                built = true;
+                leg_ready = true;
             }
             if (!built) {
-                // Slot went unreadable under us (field tearing down) --
-                // end honestly rather than route to garbage.
-                TTS::Speak(L"Save point not found here. Journey ended.",
+                journey_save_slot      = -1;
+                journey_lastmile_tries = 60;   // (re)open the find window
+                TTS::Speak(L"Save point not found right now. Ask again.",
                            /*interrupt=*/true);
-                journey_active = false;
-                journey_save_slot = -1;
                 continue;
             }
         } else if (journey_active && category != CAT_PLACES) {
@@ -11654,6 +11756,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             journey_target = target;
             journey_save_slot = -1;   // retarget: any prior last mile is
                                       // void; the new arrival re-finds it
+            journey_lastmile_tries = 0;
             wcsncpy_s(journey_name, g_places[target], _TRUNCATE);
             // Fold the journey context into the leg's spoken name so the
             // whole thing is ONE utterance ("Journey to Sector 1 Station,
@@ -11862,7 +11965,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             wchar_t msg[192];
             const int secs = static_cast<int>(
                 dist / FF7Addr::WALKMESH_UNITS_PER_SEC + 0.5f);
-            if (secs < 1)
+            if (secs < 1 && dist < 1.0f)
+                // v2.30.73 (review): standing ON the target -- with
+                // zero displacement atan2f(0,0) manufactures a sector
+                // from control_deg alone, a confident wrong direction.
+                // Same degenerate guard as the route builder's early
+                // return, so the two styles agree here too.
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                             L"%ls%ls: very close.",
+                             fallback_prefix, d.name);
+            else if (secs < 1)
                 // v2.30.72: same word order as the route builder --
                 // proximity first, then the facing (user-specified).
                 _snwprintf_s(msg, _countof(msg), _TRUNCATE,
