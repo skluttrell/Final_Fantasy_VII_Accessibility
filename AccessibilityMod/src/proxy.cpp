@@ -7898,8 +7898,32 @@ static std::wstring RouteToSpeech(float sx, float sy,
     float total = 0.0f;
     for (const Seg& s : folded)
         total += s.len;
-    if (total < FF7Addr::WALKMESH_UNITS_PER_SEC * 0.5f)
+    if (total < FF7Addr::WALKMESH_UNITS_PER_SEC * 0.5f) {
+        // v2.30.71 (user request): "very close" must still say WHICH
+        // WAY -- half a second of walking is a real direction, and for
+        // a blind player an interactable one step the WRONG way is a
+        // missed OK press. Bearing = start -> the route's final corner
+        // (the target point), quantized to the same d-pad words as
+        // every spoken leg. The first-leg outputs are filled too so
+        // the body-caution ray tests the word actually spoken. Only a
+        // degenerate route (no displacement at all -- standing ON the
+        // target) keeps the bare phrase.
+        if (!corners.empty()) {
+            const float tdx = corners.back().x - sx;
+            const float tdy = corners.back().y - sy;
+            if (tdx * tdx + tdy * tdy >= 1.0f) {
+                const int sector = DpadSectorIndex(
+                    atan2f(tdx, tdy) * (180.0f / 3.14159265f)
+                    + control_deg - 180.0f);
+                if (out_first_sector) *out_first_sector = sector;
+                if (out_first_len)    *out_first_len    = total;
+                std::wstring out = kDpadSectors[sector];
+                out += L", very close";
+                return out;
+            }
+        }
         return L"very close";
+    }
 
     if (!folded.empty()) {
         if (out_first_sector) *out_first_sector = folded[0].sector;

@@ -5417,6 +5417,28 @@ check: new strings present, old "Arrived: %ls. Save point," absent.
 
 Deployed both installs (76237F235AD9C2B0). VERIFY: TODO [JOURNEY4].
 
+### v2.30.71 (2026-08-03): "very close" carries a direction
+
+User request: "when it says 'very close' to an interactable, it needs
+to say which direction." Of the two "very close" producers, the
+straight-line fallback already spoke a sector ("X: up, very close");
+the TURN-BY-TURN builder (`RouteToSpeech`) did not -- its early return
+fires when the whole folded route is under 0.5 s of walking (~80
+units), and it returned the bare phrase. For a blind player one step
+the wrong way is a missed OK press, so the early return now speaks the
+bearing from the player to the route's final corner, quantized to the
+same d-pad words as every leg: "Save point: up and left, very close" /
+"First take ladder 2, down and right, very close." The first-leg
+outputs (`out_first_sector/len`) are filled too, so the v2.30.22 body
+caution probes the word actually spoken. Only a degenerate route (zero
+displacement -- standing ON the target) keeps the bare phrase. Both
+call sites benefit (full turn-by-turn routes AND the level-journey
+connector legs).
+
+Deployed both installs (CCE1ACB2DBDB1884). VERIFY: [JOURNEY4] run --
+the final approach to the pad should end "...up and left, very close"
+style, never a bare "very close".
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
