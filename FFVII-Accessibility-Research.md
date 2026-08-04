@@ -6137,6 +6137,19 @@ rule). Regen/poison ticks announce per tick -- parity with the visible
 green/white tick numbers; if a tester finds it chatty, rate-limit
 status-tick deltas rather than lengthening the settle window.
 
+### v2.30.85 (2026-08-04): duplicate enemies numbered, not lettered
+
+User request: same-name enemies were spoken with the screen's letter
+suffix ("MP A" / "MP B"); numbers are easier to distinguish by ear, so
+speech now uses 1-based numbers ("MP 1" / "MP 2") while the screen
+keeps its letters. One-line change in EnemySlotName (the single
+producer of enemy labels -- targeting, damage numbers, defeat/down/up
+events all call it), appending std::to_wstring(dup + 1) instead of
+L'A' + dup from the same BATTLE_DUP_LETTER_TABLE byte (0xFF = unique,
+unchanged). No new addresses, no cfg change. NOTE: earlier history
+entries quote letter-suffixed speech ("Guard Hound A, 212.") -- from
+this version on those lines speak "Guard Hound 1, 212."
+
 New config key speak_battle_damage (default true, F8 "Battle damage
 speech", cfg glossary section added; separate from speak_battle so the
 numbers can be silenced independently of action names). cfg edit

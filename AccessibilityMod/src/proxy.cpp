@@ -2465,9 +2465,9 @@ static const wchar_t* GenericActionLabel(uint8_t command_id, wchar_t* buf, size_
 // (investigate/ff7_target_name_disasm.py, 2026-07-13; details in
 // ff7_addresses.h SECTION 1c3). Chain: formation slot table (u16 record
 // index per enemy slot) -> loaded scene.bin enemy record (stride 0xB8,
-// FF7-encoded name in bytes 0-0x1F) -> duplicate-type letter suffix
-// ("MP A" / "MP B"), so two same-type enemies stay distinguishable by ear
-// exactly as they are on screen.
+// FF7-encoded name in bytes 0-0x1F) -> duplicate-type suffix, spoken as a
+// 1-based NUMBER ("MP 1" / "MP 2") where the screen shows letters
+// ("MP A" / "MP B"), so two same-type enemies stay distinguishable by ear.
 //
 // Returns false (caller keeps its generic label) when the slot is not an
 // enemy, the formation slot is empty (record -1), the record index is
@@ -2511,13 +2511,15 @@ static bool EnemySlotName(uint8_t slot, std::wstring& out)
 
     // Duplicate-type suffix, indexed by ACTOR slot as in the game's code
     // ((idx+4)*0x44). 0xFF = this enemy type is unique in the formation;
-    // the game renders base-char + index, i.e. 0='A', 1='B', ...
-    const uint8_t letter = *reinterpret_cast<const volatile uint8_t*>(
+    // the game renders base-char + index on SCREEN as letters (0='A',
+    // 1='B', ...), but we SPEAK 1-based numbers ("MP 1" / "MP 2") because
+    // digits are easier to tell apart by ear than letter names (v2.30.85).
+    const uint8_t dup = *reinterpret_cast<const volatile uint8_t*>(
         FF7Addr::BATTLE_DUP_LETTER_TABLE +
         static_cast<uint32_t>(slot) * FF7Addr::BATTLE_DUP_LETTER_STRIDE);
-    if (letter != 0xFF && letter < 26) {
+    if (dup != 0xFF && dup < 26) {
         out += L' ';
-        out += static_cast<wchar_t>(L'A' + letter);
+        out += std::to_wstring(dup + 1);
     }
     return true;
 }
