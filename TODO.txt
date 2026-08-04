@@ -5,23 +5,31 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[LIMITNAME] Limit break spoke junk — PROBE SHIPPED v2.30.76 (2026-08-03), awaiting one limit break
+[K2BODY] Kernel2 stale-copy junk — ROOT CAUSE CLOSED v2.30.77 (2026-08-04), body check live
 ------------------------------------------------------------------------
-First limit ever play-tested (Braver, 2013+7H, log 15:37:03) spoke
-"% Y-c'  sSd p vge tex" instead of "Braver". Offline proof
-(investigate/ff7_kernel2_limit_names.py): vanilla kernel2 magic entry
-128 IS a clean "Braver", zero F9 tokens in the section — the data and
-decoder are fine, so either the flash idx is not the 0-based limit
-index branch 7 assumes (never live-verified), or the 7H profile's
-runtime kernel differs in the limit region. v2.30.76 logs "LIMIT name
-probe idx= entry= off= ok= raw=" on every limit resolution plus
-"BATTLE flash cmd= idx=" on every named action.
-VERIFY: trigger any limit break (same 7H setup; a second run on the
-vanilla 2026 install would separate the hypotheses in one step) and
-read the two new log lines: sane idx + non-vanilla raw bytes = modded
-kernel (fix = sig-ladder/verify entry content); strange idx = wrong
-index model (fix = derive the real mapping from the logged pair).
-Remove the probe lines once a limit speaks correctly in a clean log.
+[LIMITNAME] RESOLVED 2026-08-04: the user ran limit breaks on BOTH
+installs with the v2.30.76 probe — every resolution correct ("Braver"
+idx=0/entry=128, "Big Shot" idx=7/entry=135, vanilla bytes on both).
+Both probe hypotheses disproven; branch 7 (limits) is now
+live-verified. The 2026-08-03 junk was a STALE SECTION COPY: both
+2026-08-04 logs caught a kernel2 section dying mid-battle ("head
+gone" at 0FD4F916 / 0BE69985 — transient low-address loading buffers
+the bottom-up first-match scan latches before the resident copy), and
+the v2.22.1 use-time re-check only validated the HEAD, so a stale
+copy with surviving head bytes and a reused body decoded junk (head
+entries Ice/Bolt fine, Braver at +0x657 garbage).
+v2.30.77: SectionBodyPlausible() — entry-offset table must be
+monotone non-decreasing, all offsets in [table_size, 0x8000] —
+enforced at use time (STALE line now says "head gone" vs "body
+implausible") AND at scan acceptance. Invariant proven offline first
+on all 12 sections × both installs' kernel2.bin
+(investigate/ff7_kernel2_offset_monotonic.py). Probe lines removed;
+"BATTLE flash cmd= idx=" kept as the permanent per-branch corpus.
+VERIFY (passive, next few logs): any "body implausible" STALE line =
+the guard catching a live stale copy (good); REPEATED body drops of
+the SAME address = a real section failing the invariant live (not
+expected; would need the offline script re-run against that install's
+actual mod kernel).
 
 [MENUGATE] Menu screen-identity refactor — SHIPPED v2.30.75 (2026-08-03), awaiting play-test
 ------------------------------------------------------------------------
@@ -37,10 +45,15 @@ g_victory_active flag, 4-second battle-recency tick, and battle_end
 guards are deleted.
 VERIFY: (a) after any battle, Magic/Materia/Equip/Limit menus speak
 again (the reported bug); (b) victory screens stay free of stale
-menu-row chatter; (c) opening the menu quickly (<4s) after a battle
-announces normally (old code muted it); (d) save before a boss, win:
-no save-menu narration over the victory screens; (e) with
-speak_battle=false, victory screens still produce no menu chatter.
+menu-row chatter — OBSERVED OK 2026-08-04 both installs (victory
+window announced under mode 2, no menu chatter until mode 9);
+(c) opening the menu quickly (<4s) after a battle announces normally
+(old code muted it) — OBSERVED OK 2026-08-04 both installs (menu
+opened ~9s post-battle, "Item"/"Quit"/quit-prompt all spoke; not the
+<4s case strictly, but the deleted 4s tick can no longer mute
+anything); (d) save before a boss, win: no save-menu narration over
+the victory screens; (e) with speak_battle=false, victory screens
+still produce no menu chatter.
 RESIDUAL: the v2.30.68 settle gate stays (its 0.8s row-restore
 anomaly did not reproduce — post-battle opens reset to row 0
 immediately); if a wrong-row open announce is ever reported again,

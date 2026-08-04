@@ -1919,6 +1919,52 @@ static size_t EncodeSignature(const char* ascii, uint8_t* out, size_t cap)
 // Defined later in this file (v2.18.2); the kernel2 validator needs it here.
 static bool IsReadableSpan(const void* p, size_t len);
 
+// v2.30.77: does this pointer's BODY still look like a kernel2 section?
+//
+// WHY: the head-signature re-check below closes the "section fully gone"
+// window but not the one that actually bit on 2026-08-03 — the scanner's
+// first-match address-space walk can latch a TRANSIENT low-address loading
+// buffer (both 2026-08-04 logs caught one dying mid-battle: weapon at
+// 0FD4F916, command at 0BE69985), and a stale copy whose first bytes
+// survive while its body is reused passes the head check and decodes
+// reused memory as a name. That is the limit-junk report exactly: Ice and
+// Bolt (entries near the head) spoke correctly while Braver at +0x657
+// spoke junk, all through one "valid" pointer.
+//
+// THE INVARIANT: a real section's u16 entry-offset table is monotonically
+// non-decreasing with every offset in [table_size, 0x8000] — the format
+// packs strings sequentially after the table, and the runtime copy is the
+// game's own sequential re-pack of the file section. Verified offline
+// against every section the mod scans for, on BOTH installs' kernel2.bin
+// (ff7_kernel2_offset_monotonic.py, 2026-08-04; zero-length dummy entries
+// make runs of EQUAL offsets, hence non-decreasing, not increasing).
+// Randomly reused memory sustaining a hundreds-long monotone in-band run
+// is astronomically unlikely, so a body that passes is a body that still
+// holds kernel2 text. Cost: one bounded u16 walk (<= 1 KB) per validated
+// use — noise next to the announce it guards.
+static bool SectionBodyPlausible(const uint8_t* base)
+{
+    if (!IsReadableSpan(base, 2))
+        return false;
+    uint16_t tab;
+    memcpy(&tab, base, sizeof(tab));
+    // Table size = entry 0's offset: even, and inside FindSectionBase's
+    // own acceptance range (2..0x800).
+    if (tab < 2 || tab > 0x800 || (tab & 1))
+        return false;
+    if (!IsReadableSpan(base, tab))
+        return false;
+    uint16_t prev = tab;   // entry 0's offset IS the table size
+    for (uint32_t i = 0; i < tab / 2u; ++i) {
+        uint16_t off;
+        memcpy(&off, base + i * 2, sizeof(off));
+        if (off < prev || off > 0x8000)   // out of order or out of band
+            return false;
+        prev = off;
+    }
+    return true;
+}
+
 // Re-verify a cached kernel2 section pointer before EVERY use (v2.22.1).
 //
 // WHY: the command-name section is a transient battle allocation (see the
@@ -1945,19 +1991,25 @@ static const uint8_t* ValidatedSectionBytes(const uint8_t** slot,
     if (!base)
         return nullptr;
 
-    bool ok = false;
+    bool head_ok = false;
     if (IsReadableSpan(base, 2)) {
         uint16_t first_off;
         memcpy(&first_off, base, sizeof(first_off));
-        ok = first_off >= 2 && first_off <= 0x800 &&  // FindSectionBase range
+        head_ok = first_off >= 2 && first_off <= 0x800 &&  // FindSectionBase range
              IsReadableSpan(base + first_off, sig_len) &&
              memcmp(base + first_off, sig, sig_len) == 0;
     }
-    if (!ok) {
+    // v2.30.77: the head alone is not enough — a stale copy whose first
+    // bytes survive while the body is reused passed this check and spoke
+    // junk (the 2026-08-03 limit-break report; see SectionBodyPlausible).
+    const char* why = !head_ok                      ? "head gone"
+                    : !SectionBodyPlausible(base)   ? "body implausible"
+                    :                                 nullptr;
+    if (why) {
         char dbg[128];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] kernel2 section STALE ('%s' head gone at %p) â€” "
-            "dropped for rescan", debug_label, base);
+            "[FF7Access] kernel2 section STALE ('%s' %s at %p) â€” "
+            "dropped for rescan", debug_label, why, base);
         Log::Write(dbg);
         *slot = nullptr;
         return nullptr;
@@ -2009,7 +2061,16 @@ static const uint8_t* FindSectionBase(const uint8_t* region, size_t size,
             uint16_t first_off;
             memcpy(&first_off, cand, sizeof(first_off));
             if (first_off == back) {
-                if (first_off >= min_fo && first_off <= max_fo)
+                // v2.30.77: also require a plausible BODY. The offline
+                // dry-run (ff7_kernel2_offset_monotonic.py) caught the
+                // failure mode this closes: an "Attack|" hit in ordinary
+                // text can backwalk to a coincidental u16-equals-distance
+                // word, whose "offset table" is just string bytes — the
+                // monotone walk rejects it and the sweep moves on to the
+                // real section. Same guard also refuses a transient copy
+                // whose body is already reused at scan time.
+                if (first_off >= min_fo && first_off <= max_fo &&
+                    SectionBodyPlausible(cand))
                     return cand;
                 break;   // self-validating base found but wrong shape:
                          // this match is some OTHER table's entry â€” move
@@ -2335,45 +2396,16 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
     }
     case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'â€¦)
         return SectionEntryText(k2_magic, idx + 72, out);
-    case 7: { // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
+    case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
+        // LIVE-VERIFIED 2026-08-04 (v2.30.76 probe, BOTH installs): the
+        // flash idx IS the 0-based limit index (idx 0 -> entry 128
+        // "Braver", idx 7 -> entry 135 "Big Shot", raw bytes vanilla on
+        // 2013+7H and 2026 alike). The 2026-08-03 junk report was a stale
+        // section copy passing the head-only re-check — closed by
+        // SectionBodyPlausible, not by any change here.
         if (idx == 0x7F)   // the game's '????' sentinel for unnamed limits
             return false;
-        const bool ok = SectionEntryText(k2_magic, idx + 128, out);
-        // v2.30.76 PROBE: the first limit break ever play-tested spoke junk
-        // ("% Y-c'â€¦", 2013+7H log 2026-08-03 15:37:03) while vanilla
-        // kernel2 entry 128 is a clean "Braver" and the section has ZERO
-        // F9 tokens (ff7_kernel2_limit_names.py, offline). So either the
-        // flash idx is not the 0-based limit index this branch assumes
-        // (branch 7 was never in the 2026-07-11 live-verify set -- that
-        // covered Ice/Potion/Machine Gun/Tentacle only), or the 7H
-        // profile's runtime kernel differs in the limit region. Logging
-        // idx + the entry's raw head discriminates the two: a sane idx
-        // with non-vanilla bytes = modded kernel; a strange idx = wrong
-        // index model. Remove once a limit speaks correctly in a clean
-        // log (TODO [LIMITNAME]).
-        if (Config::Get().debug_log && k2_magic) {
-            uint16_t tab = 0, off = 0;
-            memcpy(&tab, k2_magic, sizeof(tab));
-            const uint32_t entry = idx + 128;
-            if ((entry + 1) * 2 <= tab)
-                memcpy(&off, k2_magic + entry * 2, sizeof(off));
-            char raw[3 * 12 + 1] = {};
-            // Same bounds discipline as SectionEntryText: only deref an
-            // offset that lands past the table and inside a sane section.
-            if (off >= tab && off <= 0x8000)
-                for (int i = 0; i < 12; ++i)
-                    _snprintf_s(raw + i * 3, 4, _TRUNCATE, "%02X ",
-                                k2_magic[off + i]);
-            char dbg[160];
-            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                "[FF7Access] LIMIT name probe idx=%lu entry=%lu off=0x%X "
-                "ok=%d raw=%s",
-                static_cast<unsigned long>(idx),
-                static_cast<unsigned long>(entry), off, ok ? 1 : 0, raw);
-            Log::Write(dbg);
-        }
-        return ok;
-    }
+        return SectionEntryText(k2_magic, idx + 128, out);
     case 8: { // cmd 0x20 enemy attack: per-formation table from scene.bin
         if (idx >= 64)     // formation attack slots are small indices (0-31)
             return false;

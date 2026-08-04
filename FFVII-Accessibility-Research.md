@@ -5619,6 +5619,67 @@ committed locally (push held per standing instruction). VERIFY
 [LIMITNAME]: one limit break on the 7H setup (+ ideally one on vanilla
 2026) then read the probe lines.
 
+### v2.30.77 (2026-08-04): stale-copy root cause closed -- section BODY validation
+
+The user ran the requested discriminating pair same-day: one battle with
+limit breaks on EACH install (2013+7H log 09:18, vanilla 2026 log 09:23,
+both with the v2.30.76 probe). Result: every limit resolution correct --
+"Cloud, Braver" (idx=0 entry=128) and "Barret, Big Shot" (idx=7
+entry=135) on BOTH installs, raw entry bytes byte-identical clean
+vanilla text ("F8 02 22 52 41 56 45 52 FF" = color prefix + "Braver").
+BOTH v2.30.76 hypotheses are DISPROVEN: the flash idx IS the 0-based
+limit index (branch 7 now live-verified), and the 7H runtime kernel is
+vanilla in the limit region (the two installs' entry offsets differ by
+0x14 -- earlier spell names retranslated -- but limit text matches).
+
+THE REAL CAUSE, caught red-handed by the same two logs: each session
+logged a mid-battle "kernel2 section STALE (head gone)" -- weapon at
+0FD4F916 (2013), command at 0BE69985 (2026). The scanner's first-match
+address-space walk runs bottom-up, so a TRANSIENT low-address loading
+buffer holding a kernel2 copy is matched BEFORE the resident cluster
+(0x2476/0x2E80 range this run). When such a copy dies, the head-only
+use-time re-check (v2.22.1) catches it ONLY if the head bytes are gone;
+a copy whose head survives while its BODY is reused passes and decodes
+reused memory. That is 2026-08-03's junk exactly: Ice/Bolt (entries
+near the head) spoke fine, Braver at +0x657 spoke junk. It also
+retro-explains v2.22.1's original "command section is transient"
+observation -- the section was never special, the scanner had latched a
+transient COPY.
+
+FIX (v2.30.77): SectionBodyPlausible() -- the section's u16 entry-offset
+table must be monotonically non-decreasing with every offset in
+[table_size, 0x8000]. Enforced at BOTH ends: ValidatedSectionBytes
+(use-time; STALE log line now says which check failed, "head gone" vs
+"body implausible") and FindSectionBase acceptance (scan-time; refuses
+already-reused transients and coincidental backwalk matches).
+
+OFFLINE DRY-RUN FIRST (NEW investigate/ff7_kernel2_offset_monotonic.py,
+both installs' kernel2.bin, all 12 sections): invariant HOLDS on all 11
+sig-locatable sections; the 12th (command, F9-blocked in-file since
+v2.30.47) was found structurally at blob +0x0004 (32 entries, monotone,
+runs of EQUAL offsets from zero-length dummy entries -- hence
+non-decreasing, not strictly increasing). The dry-run also VALIDATED the
+check adversarially: the file's only "Attack|" sig+backwalk candidate is
+a coincidental u16-equals-distance hit inside ordinary text whose
+"offsets" are string bytes -- exactly what the monotone walk rejects.
+
+Probe lines removed (question answered); the "BATTLE flash cmd= idx="
+line STAYS -- it is the institutionalized form of the v2.30.76 lesson
+(log the discriminating inputs on every named action). DLL literal
+check: "body implausible" present, "LIMIT name probe" absent. Deployed
+both installs (A2D3C5C8D75A7CF7), committed locally (push held).
+
+Same logs also gave [MENUGATE] partial verification on BOTH installs:
+victory window announced under GAME_MODE=2, then mode 9 rose and the
+menu spoke ("Item", "Quit", quit-prompt Yes/No) ~9s after battle end --
+verify items (b) and (c) observed; (a)/(d)/(e) still open.
+
+VERIFY [K2BODY]: watch the next few play-session logs for "STALE
+('...' body implausible" lines (evidence of a caught stale copy) and
+for any REPEATED body-implausible drops of the same section address
+(would mean a real section failing the invariant live -- rescan loop;
+none expected after the offline proof).
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
