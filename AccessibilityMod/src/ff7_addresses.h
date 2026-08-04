@@ -2138,7 +2138,56 @@ constexpr uint32_t FIELD_EVENT_TRIANGLE_ID = 0x78; // s16, walkmesh triangle the
 // LIVE per use, never cache per field; 0 = no collision right now
 // (intangible — e.g. parked models), which is exactly when a body
 // should NOT block routing or be named as a blocker.
+// ⚠ radius > 0 does NOT prove the model is tangible: the SOLID flag
+// below is the engine's actual gate and is toggled independently of the
+// radius (the Sector 1 station's unconscious guards keep their radii
+// while SOLID(1) makes them walk-through). Check BOTH.
 constexpr uint32_t FIELD_EVENT_COLLISION_RADIUS = 0x72; // s16, walkmesh units
+
+// ---------------------------------------------------------------------------
+// +0x5F: SOLID-OFF flag (u8) — 0 = model blocks movement, nonzero = the
+// model is INTANGIBLE (walk-through) regardless of its collision radius.
+// (v2.30.80, 2026-08-04 — pathfinder falsely called script-intangible
+// people "in the way", e.g. the station guards at the game start.)
+//
+// PROVENANCE (all static, disasm'd from the exe on disk,
+// ff7_solid_static.py / ff7_solid_consumer_static.py /
+// ff7_solid_modelhit_dump.py):
+//   - the SOLID opcode (0xC7) handler at 0x61C9DD stores its 1-byte
+//     script arg RAW to +0x5F (0x61CA30) — byte-identical code shape to
+//     the TLKON handler (0x618A80 → +0x61), and the neighbor handlers
+//     TALKR (0x618253 → +0x74) / SLIDR (0x61813D → +0x72) both matched
+//     their known offsets in the same session, validating the decode.
+//   - model INIT (0x60C327 block) writes 0 (solid is the default, like
+//     talkable); the model-UNBIND path writes 1 at 0x60C928 alongside
+//     talk-off=1 / visible=0 — polarity matches TLKON's convention.
+//   - CONSUMER PROOF: the engine's own movement blocking test at
+//     0x637724 ("would this candidate position overlap another model")
+//     skips any model whose +0x5F is nonzero — read at 0x637788 as
+//     `movsx edx, [ecx + 0xCC16CF]` with ecx = idx*0x88, i.e. the
+//     static event array 0xCC1670 + 0x5F (the [ptr]+offset==static
+//     cross-proof pattern). ⚠ engine code addresses event fields as
+//     absolute statics like this — disp-based .text sweeps for small
+//     struct offsets MISS these consumers (that's why the first sweep
+//     found no reader).
+//   Engine's FULL per-model skip list in 0x637724, for the record:
+//     self, +0x5F != 0, |Δz| >= 0x80 (128 walkmesh units — its own
+//     level gate), then hit iff dist < (r_mover + r_other)/2 tested
+//     from feeler points on the mover's radius circle. It also SETS
+//     +0x5E = 1 on the touched model when the mover is the player
+//     (0x637859) — a live "player is bumping this model" flag, mapped
+//     but not yet consumed by the mod.
+// SCALE (offline flevel scan, ff7_solid_flevel_scan.py): 2,876 entities
+// across 559 fields toggle SOLID — script-intangible people are the
+// COMMON case, not an edge case. md1stin's hei0/hei1/gu0/gu1/guadd
+// (the reported guards) all run SOLID(1).
+constexpr uint32_t FIELD_EVENT_SOLID_OFF = 0x5F; // u8, nonzero = intangible
+
+// The engine's model-vs-model z gate from 0x637724: bodies more than
+// this many walkmesh z-units from the mover never block it. Mirrored by
+// CollectBodies so a person on a catwalk above/below a split-z field is
+// not reported as a blocker on the player's level.
+constexpr int32_t FIELD_BODY_Z_GATE = 0x80;
 
 // Talk-enabled byte (v2.26): the TLKON opcode (0x7E, handler 0x618A80 —
 // static disasm 2026-07-16) writes its 1-byte arg RAW to +0x61 of the

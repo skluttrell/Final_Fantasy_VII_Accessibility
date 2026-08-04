@@ -256,6 +256,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | *(control_direction semantics)* | â€” | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg âˆ’ 180, a PURE ROTATION â€” left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124â†’174.4Â°; Up motion 5.6Â°, Down âˆ’174.4Â°. First guess world âˆ’ control was 180Â° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | â€” | field_event_data model_pos = walkmesh coords Ã— 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking â‰ˆ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
 | *(field_event_data offsets)* | â€” | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x36..+0x3B rotation/FACING cluster (+0x38 = THE authoritative facing byte - see the *(model FACING)* row below; audit cross-ref 2026-08-02), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled â€” handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), **+0x62 u8 VISIBILITY** (1=visible, 0=script-hidden; v2.30.45 â€” the VISI opcode (0xA4) handler 0x618A01 writes its operand here and the CHAR bind path stores 1 at 0x6143D2, so every bound model STARTS visible and 0 is always a deliberate hide; pickup scripts hide collected items exactly this way (game-wide walk, ff7_prop_interact_catalog.py) â€” the Items category and prox chirp filter on it; FFNx's unnamed field_62), **+0x63 s8 movement_type: 4 or 5 = ON A LADDER** (LADER's four cases write 4/4/5/5, its re-entry test is >=4 && <=5, arrival writes 0; the only two other writers in .text also write 0 => exclusive climb signal, v2.30.60), +0x6E u16 climb orientation variant (0/1 — explains the v2.30.24 'rc6E identical to 0' reading: only written on a climb), +0x70 u16 climb phase (0 armed/1 moving/2 arrived), +0x7C/+0x80/+0x84 s32 climb TARGET x/y/z <<12 (push-direction source), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL â€” see v2.18.1), +0x6C s16 character_id (âš  LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" â€” do NOT name from it, v2.15.2), **+0x72 s16 COLLISION RADIUS** (CONFIRMED 2026-07-25 v2.30.24: the v2.30.22 rc-candidate dump showed per-model radius-like values â€” Tifa 30, Barret 48, AVALANCHE trio 34 â€” and body-block rest distances fit player_r+npc_r with Cloud â‰ˆ32 on two independent anchors, 64 vs Tifa and 81 vs Barret; +0x6E â‰¡ 0 and +0x70 flaps 0/1, both rejected. âš  DYNAMIC â€” scripts change it (SLIDR family): 0 = intangible right now, Tifa read 20 in a hideout scene state, a prop briefly 120 â€” always read LIVE, never cache), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh â€” v2.15 People filter)** (v2.15/v2.18.1/v2.26/v2.30.24) |
+| *(SOLID-OFF flag +0x5F)* | â€” | **field_event_data +0x5F u8 = SOLID-OFF: 0 = model blocks movement (default), nonzero = INTANGIBLE regardless of collision radius** (v2.30.80, 2026-08-04 â€” the pathfinder's false "guard is in the way" reports at the station). Static, three agreeing directions (ff7_solid_static / _consumer_static / _modelhit_dump.py): (1) the SOLID opcode (0xC7) handler 0x61C9DD stores its 1-byte arg RAW here (0x61CA30) â€” byte-identical shape to TLKON, with TALKR (0x618253â†’+0x74) and SLIDR (0x61813Dâ†’+0x72) matching known offsets in the same decode; (2) model INIT (0x60C327 block) writes 0 alongside the other defaults, model UNBIND writes 1 at 0x60C928 alongside talk-off=1/visible=0 â€” TLKON's polarity convention; (3) **consumer proof: the engine's movement blocking test 0x637724 skips any model with +0x5F != 0**, read at 0x637788 as `[idxÂ·0x88 + 0xCC16CF]` (static event array 0xCC1670 + 0x5F â€” the [ptr]+offset==static pattern). âš  engine collision code addresses event fields as absolute statics like 0xCC16CF/0xCC16E2 â€” small-disp .text sweeps MISS these consumers. Scale (offline flevel scan, ff7_solid_flevel_scan.py): 2,876 entities / 559 fields toggle SOLID; md1stin's hei0/hei1/gu0/gu1/guadd (the reported guards) all run SOLID(1). Also mapped, unconsumed: **+0x5E u8 = "player is bumping this model" flag** (0x637724 sets it at 0x637859 when the mover is the player; init clears it). CollectBodies mirrors the whole 0x637724 skip list since v2.30.80 |
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0â€“0x20; the LINE handler refuses past 32). Per-field value â€” LIVE-CONFIRMED 2026-07-14 (0 on fields 116â€“119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 Ã— 0x18: **+0x00 s16Ã—6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id â†’ index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
@@ -5782,6 +5783,77 @@ equipped materia (Barret's Assault Gun slots differ from Cloud's Buster
 Sword load-out); Check mode (OK on Check) must match; I-key description
 must describe the spoken materia, not Cloud's.
 
+### v2.30.80 (2026-08-04): intangible people no longer block the pathfinder (SOLID flag)
+
+User report: "characters are blocking paths even when there are ways
+around them or they are intangible like the guard bodies in the first
+leg of the Reactor section when you first enter the station."
+
+ROOT CAUSE: CollectBodies -- the single collection point every body
+consumer shares (wall-bump naming, route cautions, the v2.30.24
+body-aware reroute) -- treated collision radius +0x72 <= 0 as the ONLY
+intangibility signal. But the engine has a dedicated tangibility flag
+the radius never reflects: the SOLID opcode (0xC7). The station guards
+(md1stin hei0/hei1/gu0/gu1/guadd) keep normal radii while their scripts
+run SOLID(1), so the game lets the player walk straight through them
+while the mod reported them as blockers and rerouted around them.
+
+ONE static session closed it end-to-end (5 scripts, all logs kept):
+  1. ff7_solid_static.py -- SOLID handler = table[0xC7] = 0x61C9DD,
+     stores its raw script arg to field_event_data **+0x5F**
+     (TLKON-identical code shape; TALKR->+0x74 and SLIDR->+0x72
+     validated the decode in the same pass).
+  2. ff7_solid_consumer_static.py -- polarity: model INIT writes 0
+     (solid default), UNBIND writes 1 alongside talk-off=1/visible=0.
+     Also exposed the addressing trap: NO +0x5F reader exists as a
+     small displacement -- engine collision code addresses event
+     fields as absolute statics (0xCC1670 + off).
+  3. ff7_solid_collision_dump.py / ff7_solid_builder_dump.py -- traced
+     the radius readers; the paired-read block 0x637ABB turned out to
+     be the LINE-trigger crossing test against 0xCC1F70 (bonus
+     re-confirmation of the v2.17 line array), not model collision.
+  4. ff7_solid_modelhit_dump.py -- the real consumer: **0x637724**, the
+     movement routine's per-model blocking test. Full predicate: skip
+     self, skip +0x5F != 0 (read 0x637788 via static 0xCC16CF), skip
+     |dz| >= 0x80, hit iff dist < (r_mover + r_other)/2 from feeler
+     points on the mover's radius circle; sets the touched model's
+     +0x5E = 1 when the mover is the player (a live "bumping" flag,
+     mapped but unconsumed).
+  5. ff7_solid_flevel_scan.py -- offline scale + scenario proof:
+     2,876 entities across 559 fields toggle SOLID (5,437 SOLID-off
+     ops game-wide); every reported station guard runs SOLID(1).
+     Script-intangible people are the COMMON case, not an edge case.
+
+FIX (CollectBodies, one place -- all consumers inherit): skip models
+with +0x5F != 0, and mirror the engine's own |dz| >= 128 level gate
+(player z guarded to the validated span; gate fails OPEN to the
+pre-.80 behavior on a torn player id). The radius <= 0 check stays
+(parked models). The mod's empirical contact model
+(player_r + body_r, two 2026-07-25 behavioral anchors) is deliberately
+UNTOUCHED: the engine's (r1+r2)/2 is tested from feeler points on the
+mover's radius circle, so the effective center-to-center stop distance
+is r_mover + (r1+r2)/2 -- close to the empirical fit; recalibration
+would need fresh play anchors and the current fit already matched
+observed pinning within one step.
+
+METHOD LESSON: a struct offset can have ZERO disp-form readers and
+still be consumed everywhere -- MSVC folds static-array element
+addressing into absolute constants (base + idx*stride + off), so
+consumer sweeps must ALSO search for base+offset as a dword immediate
+(here 0xCC16CF). The first sweep "finding nothing" was the tell that
+led to the real reader, not evidence the byte was write-only.
+
+Deployed both installs (28079A9DC0DD168E), committed locally (push
+held).
+
+VERIFY [SOLID]: (a) at the game start on the station platform, ask
+directions / walk the first leg -- the downed guards must NOT be named
+as blockers and no reroute detour should be spoken through that
+stretch; (b) hideout regression: Tifa standing in the aisle must STILL
+block and be named (she is genuinely solid there); (c) split-z fields
+(field 124 catwalk/save pad): a person on the other level must not be
+called "in the way".
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -6149,6 +6221,9 @@ Proven payoffs of cluster reasoning so far:
 | `0x64DAC8`.. | gateway ARROW renderer | reads show_arrow_flag hdr+0x218 and arrows[12] hdr+0x224/+0x228/+0x22C/+0x230 (x/y/z/type) - confirms the FFNx header-tail layout (2026-08-02) |
 | `0x76713B` | world-map -> field exit | writes DEST field/triangle/direction (0x76713B/0x767163/0x767172) - the world module uses the same FIELD_JUMP_INTERFACE (2026-08-02) |
 | `0x61A4D4` | opcode MPJPO handler (table[0xD2]) | one-arg store to [MODULES_PTR]+0x36 (0x61A4F7) = static 0xCC0DBE MAPJUMP_DISABLED, PC += 2 - the gateway on/off switch scripts flip during scenes (ff7_mpjpo_static.py 2026-08-02, v2.30.64) |
+| `0x61C9DD` | opcode SOLID handler (table[0xC7]) | stores its 1-byte arg RAW to field_event_data **+0x5F** at 0x61CA30 (0 = solid, nonzero = intangible) via the standard entityâ†’model chain; PC += 2. Neighbor cluster 0x61BD88..0x61D539 = scripted-move opcodes writing 0/1 to the same byte (temporary intangibility during jumps/climbs). TALKR 0x618253 / SLIDR 0x61813D validated in the same decode (ff7_solid_static.py 2026-08-04, v2.30.80) |
+| `0x637724` | model-vs-model movement blocking test | callers 0x637110/0x6371F3/0x6372CF pass feeler points on the mover's radius circle (facing Â±0x20 via sin/cos 0x6364EB/0x636500). Per model i: skip self, **skip if +0x5F (static 0xCC16CF) != 0**, skip if \|Î”z\| >= 0x80, hit iff distÂ² < ((r_mover + r_i)/2)Â² (radii = static 0xCC16E2 = +0x72); when the mover is the PLAYER (index cmp 0xCC162C) it also sets the touched model's **+0x5E = 1** at 0x637859 (live "player bumping" flag, unconsumed). The engine's complete tangibility predicate â€” CollectBodies mirrors its skip list (ff7_solid_modelhit_dump.py 2026-08-04, v2.30.80) |
+| `0x60C327` / `0x60C880`-region | field model init / unbind | init block writes the flag-byte DEFAULTS (+0x5E=0, +0x5F=0 solid, +0x60=0, +0x61=0 talkable, climb words 0) before the scale-based radii (see 0x60C3A8 row); the unbind loop (entityâ†’model map 0xCBFB70 := 0xFF) writes +0x62=0 hidden, **+0x5F=1**, +0x61=1 â€” polarity proof for both TLKON-convention bytes (ff7_solid_consumer_static.py 2026-08-04) |
 
 Pattern: field module code sits in 0x60xxxxâ€“0x6Exxxx, world map in
 0x74xxxxâ€“0x76xxxx (world_loop 0x74BE49, world_update_player 0x74EA48,

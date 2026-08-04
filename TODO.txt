@@ -5,6 +5,23 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[SOLID] Intangible people no longer block the pathfinder — SHIPPED v2.30.80 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+User report: characters blocked paths even when intangible (the downed
+guards on the Sector 1 station platform at the game start). Root cause:
+CollectBodies treated collision radius +0x72 as the only tangibility
+signal, but the engine's movement test (0x637724) actually gates on the
+SOLID opcode's flag byte (+0x5F, nonzero = walk-through) — which the
+station guards all set while keeping their radii. Offline scan: 2,876
+entities across 559 fields use SOLID, so this was systematic. Fix (one
+place, all consumers inherit): CollectBodies now mirrors the engine's
+full skip list — SOLID-off byte + its ±128-unit z level gate — beside
+the existing radius/parked filters.
+VERIFY: (a) station platform at game start: guards NOT named as
+blockers, no detour spoken on the first leg; (b) regression — hideout
+Tifa in the aisle must STILL block and be named; (c) split-z field
+(e.g. 124): person on another level never "in the way".
+
 [MATCHAR] Materia menu wrong-character slots — SHIPPED v2.30.79 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
 User report: every character's materia screen spoke CLOUD's equipped

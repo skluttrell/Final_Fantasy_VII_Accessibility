@@ -6979,6 +6979,17 @@ targeting_check:
 // sized margin. The radius is DYNAMIC (scripts set it; 0 = intangible),
 // so it is read fresh per call, never cached.
 //
+// v2.30.80: tangibility is now the ENGINE's OWN predicate, not a radius
+// heuristic. The user-reported false blockers (station guards you walk
+// straight through) carry a normal radius but a set SOLID-OFF flag
+// (+0x5F, the SOLID opcode) â€” the one byte the engine's movement
+// blocking test (0x637724) actually gates on. CollectBodies mirrors
+// that test's skip list (SOLID-OFF, and its Â±128-unit z level gate),
+// so every consumer below â€” wall-bump naming, route cautions, the
+// body-aware reroute â€” inherits engine-parity tangibility from the one
+// collection point. See FIELD_EVENT_SOLID_OFF in ff7_addresses.h for
+// the full derivation and the flevel-scan scale evidence.
+//
 // Constants:
 //   BODY_CONE_MIN_COS 0.5 (Â±60Â°): at rest ON a body, any direction within
 //     90Â° of the body bearing freezes; Â±60Â° covers every case observed in
@@ -9006,6 +9017,16 @@ static float HeldDirInputDeg(uint32_t keys)
 // yet very much a solid body. v2.30.24: each body carries its LIVE
 // collision radius; a radius of 0 (script-set intangible) or negative
 // means the model cannot block anything right now and is not collected.
+// v2.30.80: mirror the ENGINE's tangibility predicate (its movement
+// blocking test 0x637724 â€” see FIELD_EVENT_SOLID_OFF provenance):
+//   - skip models whose SOLID-OFF byte (+0x5F) is nonzero. The radius
+//     alone was never the whole story: the SOLID opcode toggles
+//     collision WITHOUT touching the radius, and script-intangible
+//     people are common (2,876 entities game-wide; the station guards
+//     the pathfinder falsely blamed all carry SOLID(1)).
+//   - skip models beyond the engine's own Â±128-unit z gate: a person
+//     on a catwalk above/below a split-z field never blocks the
+//     player's level, so it must not be named or rerouted around.
 static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
 {
     const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
@@ -9033,6 +9054,18 @@ static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
     for (char& c : fname)
         if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
 
+    // Player z for the engine's Â±128-unit level gate below. Only read
+    // when the player slot is inside the span validated above; a
+    // torn/odd player id disables the gate rather than reading outside
+    // the probed range (fail open: a kept body is the pre-.80 status
+    // quo, a skipped one must be certain).
+    const bool have_pz = pmid < n;
+    const int32_t pz = have_pz
+        ? (reinterpret_cast<const int32_t*>(
+               arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE +
+               FF7Addr::FIELD_EVENT_MODEL_POS)[2] >> 12)
+        : 0;
+
     size_t cnt = 0;
     for (uint16_t m = 0; m < n && cnt < 32; ++m) {
         if (m == pmid || static_cast<int>(m) == exclude_slot)
@@ -9053,6 +9086,20 @@ static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
         const int16_t rr = *reinterpret_cast<const int16_t*>(
             me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
         if (rr <= 0)
+            continue;
+        // SOLID-OFF flag (v2.30.80): the engine's movement test skips
+        // these models entirely, so walking straight through them works
+        // in-game â€” they must never be named as blockers or rerouted
+        // around. Read LIVE like the radius (scripts flip it at
+        // runtime: SOLID(0) on wake, SOLID(1) during scenes).
+        if (me[FF7Addr::FIELD_EVENT_SOLID_OFF] != 0)
+            continue;
+        // Engine z gate (v2.30.80): a body on another level of a
+        // split-z field cannot block the player no matter how close in
+        // 2D â€” same |dz| >= 128 test the engine's 0x637724 uses.
+        const int32_t mz = mpos[2] >> 12;
+        if (have_pz && (mz - pz >= FF7Addr::FIELD_BODY_Z_GATE ||
+                        pz - mz >= FF7Addr::FIELD_BODY_Z_GATE))
             continue;
         std::wstring lbl;
         if (!FieldModelLabel(m, fname, lbl))
