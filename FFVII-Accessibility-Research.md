@@ -5922,6 +5922,69 @@ log line naming the body; (d) log header reads "v2.30.81"; (e) NAV
 person lines carry sol= -- from a 7H session, note hei0/gu* values to
 settle whether Echo-S cleared their SOLID flags.
 
+### v2.30.82 (2026-08-04): "is in the way" now means SEALED, not grazed
+
+Third same-day session (v2.30.81 log 12:26 -- the new diagnostics all
+worked: version in header, sol= per person, both cautions logged with
+names). [SOLID2] items (a)/(b)/(e) effectively CONFIRMED by this log:
+hidden soldiers vis=0 sol=1 under Echo-S (matching the vanilla scan --
+the modded scripts did NOT diverge here), no soldier caution, no
+soldier listings. The remaining complaint is semantic and the user
+called it exactly: "the character it reports 'in the way' is Barret.
+He never actually blocks progression in this area."
+
+THE TWO LOGGED CAUTIONS, both station Barret (vis=1 sol=0 -- data
+correct, semantics wrong):
+  - 12:29:34 "up 12 seconds": the walkmesh route was already body-free
+    (no reroute line) -- but the v2.30.22 caution probed the QUANTIZED
+    word "up" as a ray, and Barret at (3751,28697) grazes it 28 units
+    off-axis, 1270 units out, mid-platform. Walking into him just
+    SLIDES the player around (engine behavior) -- a graze on a wide
+    corridor never gates progress.
+  - 12:30:28 "left 1 second": Barret had story-run to (3578,29360) --
+    standing AT the exit gateway, 55 units from the probe endpoint.
+    The player exited 5 seconds later. A companion at the destination
+    is not "in the way" of reaching it.
+
+REFACTOR -- the caution is now the route builder's verdict, not a ray
+probe:
+  1. BuildTurnByTurnRoute gained out_blocker: set ONLY when the final
+     route still crosses a body's contact circle AFTER the body-aware
+     reroute failed (corridor genuinely sealed -- the hideout-Tifa
+     case), AND that body's circle does not cover the reach-truncated
+     route END (at-the-destination rule). Verdict logged either way
+     ("NAV route: sealed by N bodies, blocker='X'" or "(all at
+     destination -- suppressed)").
+  2. Both K-handler route branches speak out_blocker instead of
+     running BodyOnRay over the first quantized leg.
+  3. Straight-line style keeps its short-ray probe (no walkmesh there)
+     but BodyOnRay gained the same at-the-destination suppression
+     (aim-point args; bodies covering it are skipped).
+  4. Mid-walk truth is unchanged and covers the honest remainder: a
+     player actually STOPPED by a person gets the wall-bump naming at
+     contact (slides don't trigger it -- position keeps changing).
+
+Dry-run against the three play anchors: 12:29:34 -> hits empty ->
+silent; 12:30:28 -> sealed but endpoint-suppressed -> silent;
+2026-07-25 hideout Tifa (aisle sealed mid-corridor) -> still named.
+
+DESIGN RULE (user-set): "X is in the way" is reserved for a body that
+actually PREVENTS following the spoken route -- prediction only for
+sealed corridors, contact handled at contact time, companions at the
+destination never named.
+
+Deployed both installs (20E566551AA7AA35), committed locally (push
+held). Literal check: 2.30.82 / "sealed by" / both caution tags in
+the DLL.
+
+VERIFY [BODYCAUTION]: (a) station: both asks (mid-platform and at the
+gateway with Barret standing in it) speak plain routes -- no "Barret
+is in the way"; log may show "sealed ... suppressed" for the gateway
+case; (b) hideout regression (the one real seal we have evidence
+for): Tifa in the bar aisle must STILL speak "Tifa is in the way";
+(c) physically walking into a person until stopped still names them
+via the WALL body line.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

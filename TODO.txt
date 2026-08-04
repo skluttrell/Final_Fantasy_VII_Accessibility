@@ -5,7 +5,26 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[SOLID2] Hidden people no longer block or list — SHIPPED v2.30.81 (2026-08-04), awaiting play-test
+[BODYCAUTION] "In the way" now means sealed, not grazed — SHIPPED v2.30.82 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+Third same-day session: v2.30.81's new logs confirmed the hidden-people
+fixes AND named the residual precisely — station Barret (visible,
+solid, correct data) was called "in the way" twice: once grazing the
+quantized "up" ray mid-platform (walkmesh route was already clear; the
+engine slides you around bodies), once standing AT the exit he'd just
+story-run to (player exited 5s later). Refactor: the caution is now
+the route builder's sealed-corridor verdict (reroute failed AND the
+body isn't at the route's end) instead of a first-leg ray probe; the
+straight-line style gained the same at-the-destination suppression;
+real mid-walk contact still names the person via wall-bump. Verdict
+always logged ("NAV route: sealed by ...").
+VERIFY: (a) station asks speak plain routes, no Barret caution (log
+may show "sealed ... suppressed" at the gateway); (b) regression —
+hideout Tifa in the bar aisle must STILL say "Tifa is in the way";
+(c) walking into a person until actually stopped still names them
+(WALL body line).
+
+[SOLID2] Hidden people no longer block or list — SHIPPED v2.30.81 (2026-08-04), log-confirmed (a)(b)(e) same day; (c)(d) confirmed by the 12:26 log header/caution lines
 ------------------------------------------------------------------------
 Same-day retest of v2.30.80 (2013+7H Echo-S log 12:03): station exit
 still "blocked by him". Reconstructed (cautions had no log line): the

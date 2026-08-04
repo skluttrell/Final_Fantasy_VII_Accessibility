@@ -7024,8 +7024,13 @@ static float  PlayerCollisionRadius();
 static bool BodyInDirection(float px, float py, float world_deg,
                             int exclude_slot, std::wstring& out_name,
                             float* out_dist);
+// dest_x/dest_y (v2.30.82): when given, bodies whose contact circle
+// covers that aim point are ignored -- someone standing AT the
+// destination is not "in the way" of walking to it (the station-Barret
+// at-the-exit false positive). FLT_MAX = no aim point.
 static bool BodyOnRay(float px, float py, float world_deg, float length,
-                      int exclude_slot, std::wstring& out_name);
+                      int exclude_slot, std::wstring& out_name,
+                      float dest_x = FLT_MAX, float dest_y = FLT_MAX);
 // Held direction bits -> screen/d-pad angle (0=up, 90=right...), or -1
 // when no direction (or a contradictory pair) is held.
 static float HeldDirInputDeg(uint32_t keys);
@@ -8212,8 +8217,25 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                                          std::wstring& out_route,
                                          int* out_first_sector = nullptr,
                                          float* out_first_len = nullptr,
-                                         bool to_nearest = false)
+                                         bool to_nearest = false,
+                                         std::wstring* out_blocker = nullptr)
 {
+    // out_blocker (v2.30.82): set to a body's name ONLY when that body
+    // genuinely SEALS the corridor -- the returned route still passes
+    // through its contact circle after the body-aware reroute failed to
+    // find a clear alternative, AND the body is not simply standing at
+    // the destination. This is the route-level truth the caller should
+    // speak as "<name> is in the way"; the old first-leg RAY probe
+    // (v2.30.22) warned whenever a body merely touched the quantized
+    // direction word, which play disproved twice in one 2026-08-04
+    // session: station Barret grazed the "up 12 seconds" ray on a wide
+    // platform the walkmesh route already cleared (the engine slides
+    // the player around bodies -- a graze never gates progress), and
+    // then stood AT the exit gateway he had just run to ("left 1
+    // second. Barret is in the way." while the player walked out 5s
+    // later). A body that truly stops the player mid-walk is named at
+    // contact time by the wall-bump thread -- prediction is reserved
+    // for corridors that are actually sealed (the hideout-Tifa case).
     // to_nearest (v2.30.25): when the target is graph-unreachable
     // (off the walkable floor â€” Biggs sitting on the hideout crates,
     // Tifa behind the locked bar counter), route to the REACHABLE
@@ -8385,6 +8407,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
             return hits;
         };
         const std::vector<int> hits = blocked_by(corners);
+        bool rerouted = false;
         if (!hits.empty()) {
             std::vector<uint8_t> avoid(n, 0);
             for (int b : hits) {
@@ -8406,6 +8429,7 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                 if (!corners2.empty() && blocked_by(corners2).empty()) {
                     corners.swap(corners2);
                     path.swap(path2);
+                    rerouted = true;
                     if (Config::Get().debug_log) {
                         char dbg[128];
                         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
@@ -8416,6 +8440,48 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                         Log::Write(dbg);
                     }
                 }
+            }
+        }
+        // Sealed-corridor verdict (v2.30.82): the route we are about to
+        // speak still crosses a body's contact circle and no clear
+        // alternative exists. Name the nearest such body -- EXCEPT one
+        // whose circle covers the route's (reach-truncated) END: that
+        // body is AT the destination (a companion who ran ahead to the
+        // exit, a greeter at the door), not an obstacle on the way to
+        // it; if it genuinely plugs the doorway the wall-bump namer
+        // reports the fact at contact, which needs no prediction.
+        if (out_blocker && !hits.empty() && !rerouted) {
+            const std::vector<NavPt> cs = truncate_reach(corners);
+            const NavPt end = cs.empty() ? NavPt{ px, py } : cs.back();
+            float best_d2 = FLT_MAX;
+            int   best_b  = -1;
+            for (int b : hits) {
+                const float rr = pr + bodies[b].radius + kBodyRouteMargin;
+                const float dxe = bodies[b].x - end.x;
+                const float dye = bodies[b].y - end.y;
+                if (dxe * dxe + dye * dye < rr * rr)
+                    continue;               // standing at the destination
+                const float dxp = bodies[b].x - px;
+                const float dyp = bodies[b].y - py;
+                const float d2 = dxp * dxp + dyp * dyp;
+                if (d2 < best_d2) {
+                    best_d2 = d2;
+                    best_b  = b;
+                }
+            }
+            if (best_b >= 0)
+                *out_blocker = bodies[best_b].name;
+            if (Config::Get().debug_log) {
+                char dbg[192];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV route: sealed by %u bod%s, "
+                    "blocker='%ls'%s",
+                    static_cast<unsigned>(hits.size()),
+                    hits.size() == 1 ? "y" : "ies",
+                    best_b >= 0 ? bodies[best_b].name.c_str() : L"",
+                    best_b < 0 ? " (all at destination -- suppressed)"
+                               : "");
+                Log::Write(dbg);
             }
         }
     }
@@ -9188,7 +9254,8 @@ static bool BodyInDirection(float px, float py, float world_deg,
 // segment from (px,py) of the given length enters â€” "will walking this
 // quantized leg run into somebody?"
 static bool BodyOnRay(float px, float py, float world_deg, float length,
-                      int exclude_slot, std::wstring& out_name)
+                      int exclude_slot, std::wstring& out_name,
+                      float dest_x, float dest_y)
 {
     BodyInfo bodies[32];
     const size_t n = CollectBodies(exclude_slot, bodies);
@@ -9207,6 +9274,15 @@ static bool BodyOnRay(float px, float py, float world_deg, float length,
         const float rr = pr + bodies[i].radius + kBodyRayMargin;
         if (cx * cx + cy * cy >= rr * rr)
             continue;
+        // At-the-destination suppression (v2.30.82, declaration
+        // comment): a body standing on the aim point is the scenery of
+        // arrival, not an obstacle en route.
+        if (dest_x != FLT_MAX) {
+            const float ex = bodies[i].x - dest_x;
+            const float ey = bodies[i].y - dest_y;
+            if (ex * ex + ey * ey < rr * rr)
+                continue;
+        }
         if (tc < best_t) {
             best_t   = tc;
             hit      = true;
@@ -12251,52 +12327,41 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             std::wstring route;
             int   first_sector = -1;
             float first_len    = 0.0f;
+            std::wstring blocker;
             const RouteOutcome ro = BuildTurnByTurnRoute(
                 fpx, fpy, fpz, player_tri, ftx, fty, ftz,
                 d.target_tri, control_deg, d.model_slot, target_reach,
-                route, &first_sector, &first_len);
+                route, &first_sector, &first_len,
+                /*to_nearest=*/false, &blocker);
             if (ro == RouteOutcome::SPOKEN_ROUTE) {
                 std::wstring rmsg(d.name);
                 rmsg += L": ";
                 rmsg += route;
                 rmsg += L'.';
-                // v2.30.22 body caution: the route is walkmesh-correct,
-                // but a solid PERSON standing on the first quantized leg
-                // stops the player exactly like a wall (the 2026-07-25
-                // hideout report â€” Tifa in the aisle to Barret). Warn in
-                // the same utterance so "left 1 second" comes with the
-                // reason it may thud. The destination model itself is
-                // excluded â€” routes TO a person always end at their body.
-                if (first_sector >= 0) {
-                    const float ray_world = first_sector * 45.0f
-                                            - control_deg + 180.0f;
-                    // v2.30.25: never probe INSIDE the target's reach
-                    // bubble â€” a companion standing next to the target
-                    // is not "in the way" of a walk that stops at talk
-                    // range. dist = straight-line distance to target.
-                    float clen = first_len + 40.0f;
-                    const float cap = dist - target_reach + 40.0f;
-                    if (clen > cap) clen = cap;
-                    std::wstring bname;
-                    if (clen > 0.0f &&
-                        BodyOnRay(fpx, fpy, ray_world, clen,
-                                  d.model_slot, bname)) {
-                        rmsg += L' ';
-                        rmsg += bname;
-                        rmsg += L" is in the way.";
-                        // v2.30.81: cautions were the ONE body speech
-                        // with no log line -- the 2026-08-04 station
-                        // report had to be reconstructed from ray
-                        // geometry. Same rule as the WALL body line:
-                        // if it was spoken, it is in the log.
-                        if (Config::Get().debug_log) {
-                            char dbg[160];
-                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                                "[FF7Access] NAV caution route: '%ls' "
-                                "ray=%.1f len=%.0f player=(%.0f,%.0f)",
-                                bname.c_str(), ray_world, clen, fpx, fpy);
-                            Log::Write(dbg);
-                        }
+                // v2.30.82 body caution: spoken ONLY on the route
+                // builder's sealed-corridor verdict (reroute failed and
+                // the body is not at the destination) -- the hideout-
+                // Tifa case. The old first-leg RAY probe stood here
+                // v2.30.22-81 and play disproved it twice in one
+                // session (station Barret, 2026-08-04): a body grazing
+                // the quantized word on a wide corridor never gates
+                // progress (the engine slides the player around), and a
+                // companion standing at the exit is not "in the way" of
+                // it. Real mid-walk contact is named by the wall-bump
+                // thread at the moment it happens. Cautions log
+                // ("if it was spoken, it is in the log" -- v2.30.81);
+                // the builder logs its verdict line either way.
+                if (!blocker.empty()) {
+                    rmsg += L' ';
+                    rmsg += blocker;
+                    rmsg += L" is in the way.";
+                    if (Config::Get().debug_log) {
+                        char dbg[160];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] NAV caution route: '%ls' "
+                            "player=(%.0f,%.0f)",
+                            blocker.c_str(), fpx, fpy);
+                        Log::Write(dbg);
                     }
                 }
                 TTS::Speak(rmsg, /*interrupt=*/true);
@@ -12317,38 +12382,29 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     std::wstring nroute;
                     int   nsec = -1;
                     float nlen = 0.0f;
+                    std::wstring nblocker;
                     if (BuildTurnByTurnRoute(fpx, fpy, fpz, player_tri,
                             ftx, fty, ftz, d.target_tri, control_deg,
                             d.model_slot, target_reach, nroute,
-                            &nsec, &nlen, /*to_nearest=*/true)
+                            &nsec, &nlen, /*to_nearest=*/true, &nblocker)
                         == RouteOutcome::SPOKEN_ROUTE) {
                         std::wstring rmsg(d.name);
                         rmsg += L", off the walkable area: ";
                         rmsg += nroute;
                         rmsg += L'.';
-                        if (nsec >= 0) {   // same caution + reach cap
-                            const float ray_world = nsec * 45.0f
-                                                    - control_deg + 180.0f;
-                            float clen = nlen + 40.0f;
-                            const float cap = dist - target_reach + 40.0f;
-                            if (clen > cap) clen = cap;
-                            std::wstring bname;
-                            if (clen > 0.0f &&
-                                BodyOnRay(fpx, fpy, ray_world, clen,
-                                          d.model_slot, bname)) {
-                                rmsg += L' ';
-                                rmsg += bname;
-                                rmsg += L" is in the way.";
-                                if (Config::Get().debug_log) {
-                                    char dbg[160];
-                                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                                        "[FF7Access] NAV caution offmesh: "
-                                        "'%ls' ray=%.1f len=%.0f "
-                                        "player=(%.0f,%.0f)",
-                                        bname.c_str(), ray_world, clen,
-                                        fpx, fpy);
-                                    Log::Write(dbg);
-                                }
+                        // Same v2.30.82 sealed-corridor rule as the
+                        // main route branch above.
+                        if (!nblocker.empty()) {
+                            rmsg += L' ';
+                            rmsg += nblocker;
+                            rmsg += L" is in the way.";
+                            if (Config::Get().debug_log) {
+                                char dbg[160];
+                                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                    "[FF7Access] NAV caution offmesh: "
+                                    "'%ls' player=(%.0f,%.0f)",
+                                    nblocker.c_str(), fpx, fpy);
+                                Log::Write(dbg);
                             }
                         }
                         TTS::Speak(rmsg, /*interrupt=*/true);
@@ -12398,9 +12454,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 const float cap = dist - target_reach + 40.0f;
                 if (ray_len > cap) ray_len = cap;
                 std::wstring bname;
+                // v2.30.82: pass the aim point so a body standing AT
+                // the destination (companion at the exit) is never
+                // called "in the way" in this style either.
                 if (ray_len > 0.0f &&
                     BodyOnRay(static_cast<float>(px), static_cast<float>(py),
-                              ray_world, ray_len, d.model_slot, bname)) {
+                              ray_world, ray_len, d.model_slot, bname,
+                              static_cast<float>(px) + dx,
+                              static_cast<float>(py) + dy)) {
                     wcsncat_s(msg, _countof(msg), L" ", _TRUNCATE);
                     wcsncat_s(msg, _countof(msg), bname.c_str(), _TRUNCATE);
                     wcsncat_s(msg, _countof(msg), L" is in the way.", _TRUNCATE);
