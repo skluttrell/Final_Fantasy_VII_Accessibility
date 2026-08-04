@@ -6241,6 +6241,89 @@ through never-visited screens carry the suffix; (f) the ~176
 caption-less fields still speak the map-code fallback + ", unexplored"
 (rare; mostly minigame/dev fields); (g) log header v2.30.86.
 
+### v2.30.87 (2026-08-04): path filter -- Shift+\ hides destinations with no valid path
+
+Implements the accessiblity_keys.txt roadmap line "Shift+\ or P:
+Toggle pathfinding filter so that not all destinations are visible,
+just ones with a valid path" (FF1-6 key-parity scheme; Shift+P is the
+same action, mirroring \ / P for directions).
+
+BEHAVIOR. Shift+\ (or Shift+P) toggles a session mode, default off,
+announced as "Path filter on. <Category>. N destinations." While on,
+every destination list (All / Exits / People / Save points / Triggers /
+Items) is filtered to entries the player can actually get to right now.
+"Valid path" mirrors the \-key outcome ladder, in its exact order:
+  1. same walkmesh component as the player (IDLCK locks applied)
+     -> shown (a turn-by-turn route exists);
+  2. connected only on the RAW mesh (locks ignored) -> HIDDEN: this is
+     the "\" answer "the way there is closed for now", and hiding
+     story-locked doors is the feature's point;
+  3. different component with a connector-chain journey (ladder/slide
+     pairs, the v2.23 machinery) -> shown ("on another level" targets
+     stay browsable);
+  4. model destinations off the walkable floor: shown only when the
+     nearest triangle of the player's component comes within the
+     model's interaction reach (talk radius / body contact, the
+     v2.30.25/.26 rule) -- Biggs-on-the-crates stays listed; a person
+     across an unbridgeable gap is hidden. This is deliberately
+     STRICTER than \, which always speaks an "off the walkable area"
+     route to the nearest point -- a filter that never hides
+     people/items would be a no-op.
+Places category is exempt (already reachable-only by construction:
+FieldGraphBFS drops unreachable fields). Fail-open: unreadable mesh or
+unlocatable player leaves the list untouched -- a transient read
+failure must never empty the browser. Names/ordinals are assigned
+BEFORE filtering, so hiding "Exit 1" never renames "Exit 2" (identity
+stability). Filtered-empty lists speak "No destinations with a path."
+(vs plain "No destinations.") so filter emptiness is distinguishable
+from an empty room; category announces append "Path filter on."
+whenever the filter actually hid something. Selection resets to 0 on
+toggle (the filtered list is a different list). Mode survives field
+changes, resets on launch; deliberately NOT a cfg key (no embed dance,
+and a forgotten persistent filter would read as vanished
+destinations).
+
+IMPLEMENTATION (no new addresses -- pure composition of proven
+machinery). New FilterReachableDests(): ONE locked-mesh load + ONE
+component flood + ONE journey-graph BFS answer all ~76 possible
+entries per keypress; the raw mesh loads lazily only when something is
+unreachable. Raw-mesh COMPONENT EQUALITY replaces per-destination
+ReachableIgnoringLocks A* calls (identical verdict -- A* succeeds
+exactly within a component -- at a fraction of the cost). Supporting
+refactors, both extracted so the filter and the spoken answers cannot
+drift: (1) BuildJourneyGraph() factored out of BuildJourneySpeech
+(line snapshot + pair/span connector edges + component BFS, now run to
+exhaustion instead of stopping at one goal -- the filter asks about
+many goals; JourneyLine/JourneyEdge/JourneyGraph hoisted to file
+scope); (2) ModelTargetReach() factored out of the \-handler's inline
+talk-radius/body-contact block (max(talk clamped [20,90], player_col +
+model_col + 8), read live per call -- scripts change radii). Key
+decode: act_filter = (\ or P) + Shift, mutation applied BEFORE the
+list build (v2.15.2 rule: announcements carry the new state's count).
+Debug lines: "NAV path filter on/off shown= hidden=", "NAV filter
+hides '<name>' goal= comp=" per hidden entry.
+
+cfg glossary: pathfinder_keys key list gained the Shift+\ line; embed
+re-ran, both installed cfgs spliced in place (CRLF-aware; values
+untouched). Deployed both installs (0D994E5FF399591283F7770350111F9C,
+full SHA256 in the deploy log), committed locally (push held). Literal
+checks: narrow "NAV path filter"/"NAV filter hides" and wide "Path
+filter "/"No destinations with a path." all present in the built DLL.
+
+VERIFY [PATHFILTER]: (a) Shift+\ speaks "Path filter on. All. N
+destinations." and N shrinks where story-locked doors exist (e.g. a
+reactor screen with a locked gate); (b) J/L cycles only reachable
+entries while on; (c) Shift+\ again restores the full list ("Path
+filter off"); (d) cross-level ladder destinations STAY listed while
+on; (e) a filtered-empty category speaks "No destinations with a
+path."; (f) category change announces append "Path filter on." only
+when something was hidden; (g) unshifted \ directions unchanged; (h)
+log header v2.30.87. RESIDUAL: filter verdicts are per-keypress
+snapshots -- a script locking/unlocking mid-browse changes the list
+between presses (same liveness rule as the rest of the browser);
+Shift+M exit filter and Ctrl+\ layer filter from the roadmap remain
+unimplemented.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

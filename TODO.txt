@@ -5,6 +5,28 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[PATHFILTER] Shift+\ path filter — SHIPPED v2.30.87 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+accessiblity_keys.txt roadmap item: Shift+\ or Shift+P toggles a
+session filter (default off) that hides destinations with no valid
+path. Rules mirror the \-key outcome ladder: same-component = shown;
+lock-blocked ("closed for now") = hidden; connector-chain journeys
+(other levels) = shown; off-floor models shown only within interaction
+reach. Places category exempt (already reachable-only). Fail-open on
+mesh read failures. Filtered-empty lists say "No destinations with a
+path."; category announces append "Path filter on." when something is
+hidden. Refactors: BuildJourneyGraph + ModelTargetReach extracted
+(shared with spoken journeys/directions — no drift).
+VERIFY: (a) toggle announces on/off + count, count shrinks near
+story-locked doors; (b) J/L cycles only reachable entries; (c) toggle
+off restores the full list; (d) ladder-reachable cross-level targets
+stay listed; (e) filtered-empty category speaks "No destinations with
+a path."; (f) unshifted \ directions unchanged; (g) log header
+v2.30.87.
+RESIDUAL: verdict is a per-keypress snapshot (scripts can lock/unlock
+mid-browse); Shift+M exit filter and Ctrl+\ layer filter still
+unimplemented roadmap items.
+
 [UNEXPLORED] Unvisited places named + "unexplored" suffix — SHIPPED v2.30.86 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
 User direction: the internal-map-code fallback for unvisited

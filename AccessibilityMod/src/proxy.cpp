@@ -9372,40 +9372,43 @@ static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
     out = buf;
 }
 
-// Journey plan for a target on another component. True = `out` holds the
-// full spoken message (destination name included); false = no connector
-// chain found (caller speaks the no-path fallback).
-static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
-                               float tx, float ty, float tz, int goal_hint,
-                               float control_deg, const wchar_t* dest_name,
-                               std::wstring& out)
+// ---------------------------------------------------------------------------
+// Journey connector graph (v2.30.87) â€” the line snapshot, connector-edge
+// rules, and component BFS factored out of BuildJourneySpeech so the
+// Shift+\ path filter can ask "is that LEVEL reachable at all?" for every
+// destination from ONE snapshot instead of re-planning per entry. One code
+// path for the reachability verdict means the filter and the spoken
+// journey can never disagree (the one-vocabulary rule applied to routes).
+// ---------------------------------------------------------------------------
+struct JourneyLine {
+    float   mx, my, mz;   // line midpoint â€” the standing point
+    int     tri, comp;    // midpoint's triangle and component
+    int     comp2;        // component of the SECOND endpoint (a line
+                          // drawn up a wall spans levels by itself)
+    uint8_t idx, ent;     // live array slot + owning entity (naming)
+};
+struct JourneyEdge { int ca, cb; int via; };   // stand on jl[via] (in ca)
+struct JourneyGraph {
+    JourneyLine jl[FF7Addr::FLINE_MAX];
+    int         n_jl = 0;
+    std::vector<JourneyEdge> edges;
+    std::vector<uint8_t> seen;        // per component: connector-reachable
+                                      // from the start component
+    std::vector<int>     prev_edge;   // BFS tree (index into edges) â€” the
+                                      // hop sequence reconstructs from it
+};
+
+// Snapshot enabled LINE triggers, build connector edges, and BFS the
+// component graph from start_comp to EXHAUSTION â€” not to one goal,
+// because the filter asks about many goals (component counts are tiny,
+// so the extra breadth costs nothing). False = no connector edges exist.
+static bool BuildJourneyGraph(const std::vector<WalkTri>& mesh,
+                              const std::vector<int>& comp, int n_comps,
+                              int start_comp, JourneyGraph& g)
 {
-    std::vector<WalkTri> mesh;
-    if (!LoadWalkmesh(mesh))
-        return false;
-    const int n = static_cast<int>(mesh.size());
-    const int start = ResolveTriHint(mesh, start_hint, px, py, pz);
-    const int goal  = ResolveTriHint(mesh, goal_hint, tx, ty, tz);
-    if (start < 0 || goal < 0)
-        return false;
-
-    std::vector<int> comp;
-    const int n_comps = WalkmeshComponents(mesh, comp);
-    if (n_comps < 2 || comp[start] == comp[goal])
-        return false;   // same level â€” not a journey problem
-
     // Snapshot enabled LINE triggers: standing point (line midpoint, with
     // height), its component, and identity. Same array and enabled-guard
     // as the Triggers category.
-    struct JLine {
-        float   mx, my, mz;
-        int     tri, comp;
-        int     comp2;      // component of the SECOND endpoint (a line
-                            // drawn up a wall spans levels by itself)
-        uint8_t idx, ent;
-    };
-    JLine jl[FF7Addr::FLINE_MAX];
-    int n_jl = 0;
     const uint16_t n_lines = *reinterpret_cast<const volatile uint16_t*>(
         FF7Addr::FIELD_LINE_COUNT);
     for (uint32_t i = 0; i < n_lines && i < FF7Addr::FLINE_MAX; ++i) {
@@ -9414,7 +9417,7 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
         if (le[FF7Addr::FLINE_OFF_ENABLED] == 0)
             continue;
         const int16_t* v = reinterpret_cast<const int16_t*>(le);
-        JLine& j = jl[n_jl];
+        JourneyLine& j = g.jl[g.n_jl];
         j.mx = (v[0] + v[3]) * 0.5f;
         j.my = (v[1] + v[4]) * 0.5f;
         j.mz = (v[2] + v[5]) * 0.5f;
@@ -9429,59 +9432,84 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
         j.comp2 = (t2 >= 0) ? comp[t2] : j.comp;
         j.idx = static_cast<uint8_t>(i);
         j.ent = le[FF7Addr::FLINE_OFF_ENTITY];
-        ++n_jl;
+        ++g.n_jl;
     }
 
-    // Connector edges between components (see header comment):
+    // Connector edges between components (see the journey header comment):
     //   pair rule â€” two triggers on different components, XY-close;
     //   span rule â€” one trigger whose own endpoints are on two components.
     constexpr float JOURNEY_PAIR_DIST = 300.0f;
-    struct JEdge { int ca, cb; int via; };   // stand on jl[via] (in ca)
-    std::vector<JEdge> edges;
-    for (int a = 0; a < n_jl; ++a) {
-        if (jl[a].comp2 != jl[a].comp) {
-            edges.push_back({ jl[a].comp,  jl[a].comp2, a });
-            edges.push_back({ jl[a].comp2, jl[a].comp,  a });
+    for (int a = 0; a < g.n_jl; ++a) {
+        if (g.jl[a].comp2 != g.jl[a].comp) {
+            g.edges.push_back({ g.jl[a].comp,  g.jl[a].comp2, a });
+            g.edges.push_back({ g.jl[a].comp2, g.jl[a].comp,  a });
         }
-        for (int b = a + 1; b < n_jl; ++b) {
-            if (jl[a].comp == jl[b].comp)
+        for (int b = a + 1; b < g.n_jl; ++b) {
+            if (g.jl[a].comp == g.jl[b].comp)
                 continue;
-            const float dx = jl[a].mx - jl[b].mx;
-            const float dy = jl[a].my - jl[b].my;
+            const float dx = g.jl[a].mx - g.jl[b].mx;
+            const float dy = g.jl[a].my - g.jl[b].my;
             if (dx * dx + dy * dy >
                 JOURNEY_PAIR_DIST * JOURNEY_PAIR_DIST)
                 continue;
-            edges.push_back({ jl[a].comp, jl[b].comp, a });
-            edges.push_back({ jl[b].comp, jl[a].comp, b });
+            g.edges.push_back({ g.jl[a].comp, g.jl[b].comp, a });
+            g.edges.push_back({ g.jl[b].comp, g.jl[a].comp, b });
         }
     }
-    if (edges.empty())
+    if (g.edges.empty())
         return false;
 
-    // BFS over components: fewest connectors from the player's level to
-    // the target's. prev_edge reconstructs the trigger sequence.
-    std::vector<int>     prev_edge(n_comps, -1);
-    std::vector<uint8_t> seen(n_comps, 0);
-    std::vector<int>     queue;
-    seen[comp[start]] = 1;
-    queue.push_back(comp[start]);
-    for (size_t qi = 0; qi < queue.size() && !seen[comp[goal]]; ++qi) {
+    // BFS over components: fewest connectors from the start's level
+    // outward. prev_edge reconstructs any trigger sequence.
+    g.prev_edge.assign(n_comps, -1);
+    g.seen.assign(n_comps, 0);
+    std::vector<int> queue;
+    g.seen[start_comp] = 1;
+    queue.push_back(start_comp);
+    for (size_t qi = 0; qi < queue.size(); ++qi) {
         const int c = queue[qi];
-        for (size_t e = 0; e < edges.size(); ++e) {
-            if (edges[e].ca != c || seen[edges[e].cb])
+        for (size_t e = 0; e < g.edges.size(); ++e) {
+            if (g.edges[e].ca != c || g.seen[g.edges[e].cb])
                 continue;
-            seen[edges[e].cb] = 1;
-            prev_edge[edges[e].cb] = static_cast<int>(e);
-            queue.push_back(edges[e].cb);
+            g.seen[g.edges[e].cb] = 1;
+            g.prev_edge[g.edges[e].cb] = static_cast<int>(e);
+            queue.push_back(g.edges[e].cb);
         }
     }
-    if (!seen[comp[goal]])
+    return true;
+}
+
+// Journey plan for a target on another component. True = `out` holds the
+// full spoken message (destination name included); false = no connector
+// chain found (caller speaks the no-path fallback).
+static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
+                               float tx, float ty, float tz, int goal_hint,
+                               float control_deg, const wchar_t* dest_name,
+                               std::wstring& out)
+{
+    std::vector<WalkTri> mesh;
+    if (!LoadWalkmesh(mesh))
+        return false;
+    const int start = ResolveTriHint(mesh, start_hint, px, py, pz);
+    const int goal  = ResolveTriHint(mesh, goal_hint, tx, ty, tz);
+    if (start < 0 || goal < 0)
+        return false;
+
+    std::vector<int> comp;
+    const int n_comps = WalkmeshComponents(mesh, comp);
+    if (n_comps < 2 || comp[start] == comp[goal])
+        return false;   // same level â€” not a journey problem
+
+    JourneyGraph g;
+    if (!BuildJourneyGraph(mesh, comp, n_comps, comp[start], g))
+        return false;
+    if (!g.seen[comp[goal]])
         return false;   // levels exist but nothing connects them
 
     // Trigger sequence, player's level first.
-    std::vector<int> hops;   // jl indices to take, in order
+    std::vector<int> hops;   // g.jl indices to take, in order
     for (int c = comp[goal]; c != comp[start]; ) {
-        const JEdge& e = edges[prev_edge[c]];
+        const JourneyEdge& e = g.edges[g.prev_edge[c]];
         hops.push_back(e.via);
         c = e.ca;
     }
@@ -9494,7 +9522,7 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
     // construction, so A* cannot fail â€” guarded anyway).
     std::wstring route;
     {
-        const JLine& first = jl[hops[0]];
+        const JourneyLine& first = g.jl[hops[0]];
         std::vector<uint16_t> path;
         if (WalkmeshAStar(mesh, start, first.tri, path)) {
             std::vector<PathPortal> portals;
@@ -9516,14 +9544,14 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
     out = dest_name;
     out += L": on another level. First take ";
     std::wstring nm;
-    TriggerLineSpokenName(jl[hops[0]].idx, jl[hops[0]].ent, nm);
+    TriggerLineSpokenName(g.jl[hops[0]].idx, g.jl[hops[0]].ent, nm);
     out += nm;
     if (!route.empty()) {
         out += L", ";
         out += route;
     }
     for (size_t h = 1; h < hops.size(); ++h) {
-        TriggerLineSpokenName(jl[hops[h]].idx, jl[hops[h]].ent, nm);
+        TriggerLineSpokenName(g.jl[hops[h]].idx, g.jl[hops[h]].ent, nm);
         out += L". Then ";
         out += nm;
     }
@@ -9534,10 +9562,181 @@ static bool BuildJourneySpeech(float px, float py, float pz, int start_hint,
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
             "[FF7Access] NAV journey comps=%d hops=%u first_line=%u '%ls'",
             n_comps, static_cast<unsigned>(hops.size()),
-            static_cast<unsigned>(jl[hops[0]].idx), out.c_str());
+            static_cast<unsigned>(g.jl[hops[0]].idx), out.c_str());
         Log::Write(dbg);
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Interaction reach for a model destination (v2.30.25/.26 rules, factored
+// out of the directions handler in v2.30.87 so the path filter applies the
+// SAME reach): how far short of the model a walk may stop and still
+// interact â€” max(talk radius clamped to [20, 90], body contact =
+// player_col + model_col + 8). The talk radius is read LIVE per call
+// because scripts change both radii at runtime (v2.30.24 lesson: never
+// cache). Non-model destinations (exits, LINE zones, hotspots) return 0:
+// those must be stepped on.
+// ---------------------------------------------------------------------------
+static float ModelTargetReach(uint32_t arr, int model_slot)
+{
+    if (model_slot < 0)
+        return 0.0f;
+    int16_t tr = 40;
+    int16_t mc = 0;
+    const uint8_t* tme = reinterpret_cast<const uint8_t*>(
+        arr + model_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+    if (IsReadableSpan(tme, FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
+        tr = *reinterpret_cast<const int16_t*>(
+            tme + FF7Addr::FIELD_EVENT_TALK_RADIUS);
+        mc = *reinterpret_cast<const int16_t*>(
+            tme + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
+    }
+    if (tr < 20) tr = 20;
+    if (tr > 90) tr = 90;
+    float reach = static_cast<float>(tr);
+    if (mc > 0 && mc <= 200) {
+        const float contact = PlayerCollisionRadius()
+                              + static_cast<float>(mc) + 8.0f;
+        if (contact > reach)
+            reach = contact;
+    }
+    return reach;
+}
+
+// ---------------------------------------------------------------------------
+// Path filter (v2.30.87, Shift+\ or Shift+P): drop every destination the
+// player has NO valid path to right now, so J/L cycles only things a
+// directions request would actually route to. "Valid path" mirrors the
+// \-key outcome ladder exactly, in the same order:
+//   1. same walkmesh component (locks applied)         -> KEEP (a route);
+//   2. raw-mesh-connected but lock-cut                 -> HIDE ("the way
+//      there is closed for now" is not a path â€” hiding story-locked
+//      doors is the point of the filter);
+//   3. another level with a connector-chain journey    -> KEEP (ladders);
+//   4. model off the walkable floor whose gap from the nearest reachable
+//      triangle is within its interaction reach        -> KEEP (Biggs on
+//      the crates: the walk ends at the crates, talk radius covers the
+//      last step). Beyond reach                        -> HIDE â€” this is
+//      deliberately STRICTER than \, which always speaks an "off the
+//      walkable area" route to the nearest point; a filter that never
+//      hides anything would be a no-op for people/items.
+// FAIL-OPEN: mesh unreadable or the player unlocatable leaves the list
+// untouched â€” never hide destinations on a transient read failure (the
+// same honesty rule as the route builder's UNAVAILABLE fallback).
+// Names/ordinals were assigned at build time, BEFORE this pass, so
+// filtering never renumbers anything ("Exit 2" stays "Exit 2" while
+// "Exit 1" is hidden â€” the identity-stability rule).
+// Runs per keypress like everything else in the browser: one locked mesh
+// + one component flood + one journey graph answer ALL destinations; the
+// raw (lock-ignoring) mesh loads lazily only when something is
+// unreachable. out_hidden reports how many entries were dropped so the
+// announcements can say the list is filtered.
+// ---------------------------------------------------------------------------
+static void FilterReachableDests(NavDest* dests, int& n_dests,
+                                 float px, float py, float pz,
+                                 int player_tri, uint32_t arr,
+                                 int& out_hidden)
+{
+    out_hidden = 0;
+    std::vector<WalkTri> mesh;
+    if (!LoadWalkmesh(mesh))
+        return;   // fail-open
+    const int start = ResolveTriHint(mesh, player_tri, px, py, pz);
+    if (start < 0)
+        return;   // fail-open
+    std::vector<int> comp;
+    const int n_comps = WalkmeshComponents(mesh, comp);
+
+    // Connector journeys can only exist when there are other levels.
+    JourneyGraph jg;
+    const bool jg_ok = n_comps > 1 &&
+        BuildJourneyGraph(mesh, comp, n_comps, comp[start], jg);
+
+    // Raw mesh for the lock discrimination, loaded at most once (see
+    // rule 2 above). rstart == -2 marks "not tried yet".
+    std::vector<WalkTri> raw;
+    std::vector<int>     rcomp;
+    int rstart = -2;
+
+    int kept = 0;
+    for (int i = 0; i < n_dests; ++i) {
+        const NavDest& d = dests[i];
+
+        // The exact target point a directions request would aim at: the
+        // nearest point of the destination's line to the player, height
+        // interpolated along the line.
+        const float ex = static_cast<float>(d.line_x2 - d.line_x1);
+        const float ey = static_cast<float>(d.line_y2 - d.line_y1);
+        const float wx = px - static_cast<float>(d.line_x1);
+        const float wy = py - static_cast<float>(d.line_y1);
+        const float len2 = ex * ex + ey * ey;
+        float t = (len2 > 0.0f) ? ((wx * ex + wy * ey) / len2) : 0.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        const float tx = d.line_x1 + t * ex;
+        const float ty = d.line_y1 + t * ey;
+        const float tz = d.line_z1 + t * (d.line_z2 - d.line_z1);
+
+        bool keep = true;
+        const int goal = ResolveTriHint(mesh, d.target_tri, tx, ty, tz);
+        if (goal >= 0 && comp[goal] != comp[start]) {
+            keep = false;
+            // Rule 2: reachable with every lock open = a story gate.
+            // Component equality on the raw mesh is the same verdict
+            // ReachableIgnoringLocks' A* reaches (A* succeeds exactly
+            // within a component), computed once instead of per call.
+            bool lock_blocked = false;
+            if (rstart == -2) {
+                rstart = -1;
+                if (LoadWalkmesh(raw, /*apply_locks=*/false)) {
+                    WalkmeshComponents(raw, rcomp);
+                    rstart = ResolveTriHint(raw, player_tri, px, py, pz);
+                }
+            }
+            if (rstart >= 0) {
+                const int rgoal = ResolveTriHint(raw, d.target_tri,
+                                                 tx, ty, tz);
+                lock_blocked = rgoal >= 0 && rcomp[rgoal] == rcomp[rstart];
+            }
+            if (!lock_blocked) {
+                if (jg_ok && jg.seen[comp[goal]]) {
+                    keep = true;   // rule 3: a ladder chain gets there
+                } else if (d.model_slot >= 0) {
+                    // Rule 4: nearest reachable triangle vs interaction
+                    // reach â€” the to_nearest walk ends there and the talk
+                    // radius must cover what remains.
+                    float best = FLT_MAX;
+                    for (size_t k = 0; k < mesh.size(); ++k) {
+                        if (comp[k] != comp[start])
+                            continue;
+                        const float dd = TriangleDistance(mesh[k], tx, ty);
+                        if (dd < best)
+                            best = dd;
+                    }
+                    keep = best <= ModelTargetReach(arr, d.model_slot);
+                }
+            }
+        }
+
+        if (keep) {
+            if (kept != i)
+                dests[kept] = dests[i];
+            ++kept;
+        } else {
+            ++out_hidden;
+            if (Config::Get().debug_log) {
+                char dbg[160];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV filter hides '%ls' goal=%d "
+                    "comp=%d/%d",
+                    d.name, goal, (goal >= 0) ? comp[goal] : -1,
+                    comp[start]);
+                Log::Write(dbg);
+            }
+        }
+    }
+    n_dests = kept;
 }
 
 // ---------------------------------------------------------------------------
@@ -10123,6 +10322,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     int16_t nav_field_id = 0;
     int     category     = 0;
     int     selection    = 0;
+    // Path filter (v2.30.87, Shift+\ or Shift+P): when on, the list only
+    // shows destinations with a valid path (see FilterReachableDests for
+    // the exact rules). Session-persistent and NOT reset by field changes
+    // â€” it is a browsing MODE like turn_by_turn, not a selection; a
+    // player who filters wants it to stay filtered on the next screen.
+    // Deliberately not a cfg key: a per-session toggle with a dedicated
+    // hotkey needs no embed dance, and defaulting OFF each launch means
+    // a tester can never be confused by a filter they forgot they set
+    // last week.
+    bool    path_filter  = false;
     // v2.30.60 ladder state: was the player climbing last poll, and which
     // d-pad sector was announced (so a target flip re-announces but a
     // steady climb stays quiet).
@@ -11274,8 +11483,8 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         //   J/[ prev dest, L/] next dest (unshifted)   | stick left/right
         //   Shift+J/- prev category, Shift+L/= next    | stick up/down
         //   K announce selection, Shift+K reset category
-        //   \/P directions (unshifted; Shift+\ filter  | R3 click
-        //       not applicable yet)
+        //   \/P directions (unshifted)                 | R3 click
+        //   Shift+\/Shift+P toggle path filter (v2.30.87)
         //   M current map name
         const bool act_prev_dest = (pressed[KJ] && !shift) ||
                                    pressed[KLBRACKET] || pad.prev_dest;
@@ -11290,10 +11499,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const bool act_directions =
             ((pressed[KBACKSLASH] || pressed[KP]) && !shift) ||
             pad.directions;
+        const bool act_filter =
+            (pressed[KBACKSLASH] || pressed[KP]) && shift;
         const bool act_map_name  = pressed[KM] && !shift;
 
         if (!(act_prev_dest || act_next_dest || act_prev_cat || act_next_cat ||
-              act_announce || act_reset_cat || act_directions || act_map_name))
+              act_announce || act_reset_cat || act_directions || act_filter ||
+              act_map_name))
             continue;
 
         // ---- field name (plain ASCII in the header, not FF7-encoded) -----
@@ -11342,7 +11554,18 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         bool announce_cat = false;
+        bool announce_filter = false;
         bool journey_cancelled = false;
+        // Path filter toggle mutates BEFORE the build for the same reason
+        // category changes do (v2.15.2): the announcement must carry the
+        // count of the list the player will actually cycle. Selection
+        // resets because the filtered list is a different list â€” keeping
+        // an index into the old one would land on an arbitrary entry.
+        if (act_filter) {
+            path_filter = !path_filter;
+            selection = 0;
+            announce_filter = true;
+        }
         if (act_prev_cat || act_next_cat) {
             category += act_next_cat ? 1 : -1;
             if (category < 0) category = kCategoryCount - 1;
@@ -12013,20 +12236,43 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
         }
 
+        // ---- path filter (v2.30.87, Shift+\ or Shift+P) -------------------
+        // Applied AFTER the build so names/ordinals are already assigned
+        // (identity stability: hiding "Exit 1" never renames "Exit 2").
+        // Places is exempt: that list is ALREADY reachable-only (the
+        // FieldGraphBFS build drops pdist<0 fields), and its entries are
+        // whole fields, not points on this screen's walkmesh.
+        int n_hidden = 0;
+        if (path_filter && category != CAT_PLACES && n_dests > 0)
+            FilterReachableDests(dests, n_dests,
+                                 static_cast<float>(px),
+                                 static_cast<float>(py),
+                                 static_cast<float>(pz),
+                                 player_tri, arr, n_hidden);
+
         if (selection >= n_dests)
             selection = (n_dests > 0) ? n_dests - 1 : 0;
 
         // Announce helpers ---------------------------------------------------
+        // "No destinations with a path." (vs the plain "No destinations.")
+        // tells the player the emptiness is the FILTER's doing, not an
+        // empty room â€” without it, a filtered-empty list is
+        // indistinguishable from a field with nothing in it.
+        const auto no_dest_text = [&]() {
+            return n_hidden > 0 ? L"No destinations with a path."
+                                : L"No destinations.";
+        };
         const auto speak_category = [&]() {
-            wchar_t msg[64];
-            _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d %ls.",
+            wchar_t msg[96];
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d %ls.%ls",
                          kCategoryNames[category], n_dests,
-                         n_dests == 1 ? L"destination" : L"destinations");
+                         n_dests == 1 ? L"destination" : L"destinations",
+                         n_hidden > 0 ? L" Path filter on." : L"");
             TTS::Speak(msg, /*interrupt=*/true);
         };
         const auto speak_selection = [&](bool with_position) {
             if (n_dests == 0) {
-                TTS::Speak(L"No destinations.", /*interrupt=*/true);
+                TTS::Speak(no_dest_text(), /*interrupt=*/true);
                 return;
             }
             wchar_t msg[128];  // name is up to 95 chars since v2.30.66
@@ -12043,6 +12289,27 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 Tones::Play(WANDER_BEEP_HZ, WANDER_BEEP_MS);
         };
 
+        // Path filter toggle: one utterance carrying the new state AND the
+        // count under it ("Path filter on. Exits. 2 destinations.") â€” the
+        // count is the immediate proof of what the filter just did.
+        if (announce_filter) {
+            wchar_t msg[96];
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                         L"Path filter %ls. %ls. %d %ls.",
+                         path_filter ? L"on" : L"off",
+                         kCategoryNames[category], n_dests,
+                         n_dests == 1 ? L"destination" : L"destinations");
+            TTS::Speak(msg, /*interrupt=*/true);
+            if (Config::Get().debug_log) {
+                char dbg[96];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV path filter %s shown=%d hidden=%d",
+                    path_filter ? "on" : "off", n_dests, n_hidden);
+                Log::Write(dbg);
+            }
+            continue;
+        }
+
         // Category changes were applied BEFORE the list build (v2.15.2 fix)
         // â€” only the announcement remains to be made here, with the count
         // of the list actually built for the new category.
@@ -12055,7 +12322,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
         if (act_prev_dest || act_next_dest) {
             if (n_dests == 0) {
-                TTS::Speak(L"No destinations.", /*interrupt=*/true);
+                TTS::Speak(no_dest_text(), /*interrupt=*/true);
                 continue;
             }
             selection += act_next_dest ? 1 : -1;
@@ -12140,7 +12407,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         }
 
         if (!leg_ready && n_dests == 0) {
-            TTS::Speak(L"No destinations.", /*interrupt=*/true);
+            TTS::Speak(no_dest_text(), /*interrupt=*/true);
             continue;
         }
 
@@ -12251,30 +12518,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         // body contact, whichever is larger â€” the same behaviorally
         // proven rule as the proximity chirp (Barret: contact 80 > talk
         // 70, and talking at contact works). Exits/lines keep 0: those
-        // must be stepped on. Used by the route builder's body tests AND
-        // both cautions below.
-        float target_reach = 0.0f;
-        if (d.model_slot >= 0) {
-            int16_t tr = 40;
-            int16_t mc = 0;
-            const uint8_t* tme = reinterpret_cast<const uint8_t*>(
-                arr + d.model_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-            if (IsReadableSpan(tme, FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
-                tr = *reinterpret_cast<const int16_t*>(
-                    tme + FF7Addr::FIELD_EVENT_TALK_RADIUS);
-                mc = *reinterpret_cast<const int16_t*>(
-                    tme + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
-            }
-            if (tr < 20) tr = 20;
-            if (tr > 90) tr = 90;
-            target_reach = static_cast<float>(tr);
-            if (mc > 0 && mc <= 200) {
-                const float contact = PlayerCollisionRadius()
-                                      + static_cast<float>(mc) + 8.0f;
-                if (contact > target_reach)
-                    target_reach = contact;
-            }
-        }
+        // must be stepped on. Shared with the path filter's rule 4 since
+        // v2.30.87 (ModelTargetReach) so the two can't drift.
+        const float target_reach = ModelTargetReach(arr, d.model_slot);
 
         const wchar_t* fallback_prefix = L"";
         bool spoke_route = false;
