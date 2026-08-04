@@ -995,21 +995,34 @@ static DWORD WINAPI MenuCursorThread(LPVOID /*unused*/)
             continue;
         }
 
-        // v2.32: the activation handler refuses rows whose bit is set in
-        // the disabled-rows mask (disasm 0x6CA4CD â€” this is exactly what
-        // grays Materia/PHS early game). Sighted players see the gray;
-        // append the same information.
+        // v2.30.78: mirror the game's OWN activation test, both halves.
+        // The confirm path (disasm 0x6CA4AB..0x6CA4E7) refuses a row
+        // unless its MENU_VISIBLE_ROWS bit is SET and its
+        // MENU_DISABLED_ROWS bit is CLEAR, in that order, before the row
+        // jump table.  v2.32 read only the disabled mask â€” but the
+        // early-game Materia/PHS story lock lives in the VISIBLE mask
+        // (savemap+0xBC0 = 0x02FB pre-hideout, locking mask all-zero),
+        // so Materia never spoke ", not available" (user report
+        // 2026-08-04).  Reading the engine's two dispatch words â€” not
+        // re-deriving from the savemap â€” keeps parity by construction:
+        // the Quit force-bit, the Quit never-locks bit, and the
+        // savemap+0xE13 Item/Limit script fold are already applied by
+        // the game's per-frame mask build at 0x6CA38C.
+        const uint16_t visible_rows =
+            *reinterpret_cast<const volatile uint16_t*>(FF7Addr::MENU_VISIBLE_ROWS);
         const uint16_t disabled_rows =
             *reinterpret_cast<const volatile uint16_t*>(FF7Addr::MENU_DISABLED_ROWS);
-        const bool row_disabled = ((disabled_rows >> curr) & 1u) != 0;
+        const bool row_disabled = ((disabled_rows >> curr) & 1u) != 0 ||
+                                  ((visible_rows  >> curr) & 1u) == 0;
 
         wchar_t line[64];
         _snwprintf_s(line, _countof(line), _TRUNCATE, L"%ls%ls",
                      label, row_disabled ? L", not available" : L"");
-        char dbg[96];
+        char dbg[112];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] MENU cursor=%u (%ls)%s", curr, label,
-            row_disabled ? " disabled" : "");
+            "[FF7Access] MENU cursor=%u (%ls)%s vis=%04X dis=%04X",
+            curr, label, row_disabled ? " disabled" : "",
+            visible_rows, disabled_rows);
         Log::Write(dbg);
         TTS::Speak(line, /*interrupt=*/true);
     }

@@ -170,7 +170,8 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `ITEMMENU_TOPBAR_CURSOR` | `0x00DD1A18` | u8 top-bar cursor: 0=Use 1=Arrange 2=Key Items. Single intersected Right/Left candidate Ã—2 rounds (same scan) |
 | `ITEMMENU_LIST_CURSOR` | `0x00DD1A54` | u8 item-list row; **speak-back verified live** (tracked 0..4 over a 3-item inventory â€” the cursor rides EMPTY rows, so v2.31 speaks "Empty"). âš  window-vs-absolute UNRESOLVED: 3 items cannot scroll the list (the v2.29.2 lesson); re-verify + hunt the nearby scroll word once inventory exceeds the visible rows |
 | `ITEMMENU_TARGET_CURSOR` | `0x00DD1A8C` | u8 use-on-whom party cursor 0..2 top-to-bottom (party slot order â†’ PartySlotLabel + savemap HP/MP readout). Single intersected Down/Up candidate Ã—2 rounds (same scan) |
-| `MENU_DISABLED_ROWS` | `0x00DC1130` | u16 bitmask, bit N = main-menu row N grayed/refuses activation (disasm 0x6CA4CD bit test â€” what grays Materia/PHS early game). v2.32 appends ", not available" from it |
+| `MENU_VISIBLE_ROWS` | `0x00DC111C` | u16 bitmask, bit N SET = main-menu row N available (v2.30.78, menu_mask_static/_disasm2 2026-08-04). Rebuilt EVERY main-menu frame at 0x6CA38C from **savemap+0xBC0** (the "menu visible/enabled" mask) OR 0x0400 (Quit forced on). **THIS carries the early-game Materia/PHS story lock** â€” pre-hideout save: +0xBC0 = 0x02FB = all rows except bit 2 (Materia) and bit 8 (PHS). The confirm path tests it FIRST (0x6CA4AB) before MENU_DISABLED_ROWS |
+| `MENU_DISABLED_ROWS` | `0x00DC1130` | u16 bitmask, bit N SET = main-menu row N locked/refuses activation (disasm 0x6CA4CD bit test). âš  v2.30.78 correction: this is only HALF the gate â€” it mirrors **savemap+0xBC2** (the "menu locking" mask) AND 0xFBFF (Quit never locks), plus bits 0 (Item) + 6 (Limit) forced while **savemap+0xE13** bit 0 set (field-script flag; save-menu module 0x7071A1/0x70728E/0x70CF14 also reads +0xE13). All-zero in the early game â€” the v2.32 ", not available" that read only this word missed the Materia/PHS story gray for 17 versions. A row activates iff VISIBLE bit set AND DISABLED bit clear; the mod now speaks from both |
 | `MENU_FOCUS_MODE` | `0x00DC1324` | u8 main-menu input focus: **0 = menu bar, 1 = character-select pane (set WITH confirm chime â€” Magic/Equip/Status rows), 2 = Order pane (set at 0x6CA526 with NO sound call â€” the "no chime" the player noticed)**. Static-derived (v2.32 disasm); the missing Order entry signal both live probes couldn't see |
 | `ORDERMENU_CURSOR` | `0x00DC11C4` | u8 Order-pane party cursor 0..2 (rides the empty slot). Single intersected candidate + speak-back verified (order_menu_scan_20260718_152825) |
 | `ORDERMENU_LATCH` | `0x00DC1320` | u32, 1 = first member selected (flashing cursor). Scan A/B/A single real candidate AND disasm-confirmed exact write sites (0x6CA61B set / 0x6CA634 clear / 0x6CA363 init) |
@@ -5680,6 +5681,61 @@ for any REPEATED body-implausible drops of the same section address
 (would mean a real section failing the invariant live -- rescan loop;
 none expected after the offline proof).
 
+### v2.30.78 (2026-08-04): menu availability -- the OTHER mask (Materia "not available" fix)
+
+User report: "The materia menu does not become available until the 7th
+Heaven hideout scene, yet it does not say unavailable before that" --
+and asked for a general audit of row-availability reporting.
+
+ROOT CAUSE (one static session, NEW investigate/ff7_menu_mask_static.py
++ ff7_menu_mask_disasm2.py): the main menu's activation gate is TWO
+masks, and v2.32 read only one. The confirm path (0x6CA4AB..0x6CA4E7)
+refuses a row unless
+
+    (MENU_VISIBLE_ROWS  0xDC111C bit N) == 1   -- tested FIRST
+AND (MENU_DISABLED_ROWS 0xDC1130 bit N) == 0
+
+before dispatching the row jump table (0x6CB53E, rows 0..10; no per-row
+handler does any further availability check -- verified by disasm, so
+the two masks ARE the complete signal for all 11 rows). Both words are
+rebuilt from the savemap every main-menu frame (0x6CA38C..0x6CA428,
+just after the handler's init-once branch):
+
+    VISIBLE  = u16 savemap+0xBC0 | 0x0400   (Quit forced available)
+    DISABLED = (u16 savemap+0xBC2 & 0xFBFF) (Quit can never lock)
+               | 0x41 if savemap+0xE13 bit0 (script flag: Item+Limit)
+
+GROUND TRUTH from the user's own pre-boss Reactor 1 save (story
+progress 16, BEFORE the hideout scene; both installs' save00.ff7
+agree): savemap+0xBC0 = 0x02FB = every row EXCEPT bit 2 (Materia) and
+bit 8 (PHS); savemap+0xBC2 = 0x0000. The early-game story lock lives
+ENTIRELY in the visible mask -- so the v2.32 suffix, which read only
+the locking mask, could never fire for Materia or PHS (or anything
+else) until a field script actually sets a locking bit. The 2026-07-18
+"works perfectly" play-confirm validated the Order-flow rework that
+shipped alongside; the ", not available" branch itself was dead the
+whole time.
+
+FIX: MenuCursorThread reads BOTH engine words and speaks ", not
+available" when (disabled bit set) OR (visible bit clear) -- the
+engine's own test, in its own dispatch-ready copies (Quit force-bit,
+never-lock bit, and the +0xE13 fold come along by construction; the
+project rule from v2.30.75 again: centralize on the engine's dispatch
+signal instead of re-deriving). Debug line now logs vis=/dis= masks on
+every row announce for live verification. New addresses documented:
+MENU_VISIBLE_ROWS 0xDC111C, SAVEMAP_MENU_VISIBLE +0xBC0,
+SAVEMAP_MENU_LOCKED +0xBC2, SAVEMAP_MENU_SCRIPTLOCK +0xE13 (Â§4 + Â§14).
+
+DLL literal check: "vis=%04X dis=%04X" present. Deployed both installs
+(A9845A309DD574FD), committed locally (push held).
+
+VERIFY [MENUAVAIL]: on a pre-hideout save, Materia and PHS rows must
+speak ", not available" (log shows vis=06FB dis=0000); after the
+hideout materia tutorial Materia must speak plain (vis bit 2 set); Save
+row should read available at a save point and "not available" where
+saving is script-locked (locking-mask bit 9 -- first live sighting will
+confirm which fields set it). Quit must never say "not available".
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -6241,7 +6297,10 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC08CE` | SAVEMAP_CONTINUE_FIELD | u16 saved field id (savemap+0xB96) - the save-load field entry 0x63CCBA copies it to the module field-id 0xCC0DEC (audit 2026-08-02; static disasm same day) |
 | `0xDC08D2â€“0xDC08DA` | SAVEMAP_CONTINUE_POS | saved re-entry position (savemap+0xB9A..): u16 X 0xDC08D2, Y 0xDC08D4, walkmesh triangle 0xDC08D6, u8 arrival DIRECTION 0xDC08D8, u8 pair 0xDC08D9/DA -> module 0xCC165C/0xCC1660 (unnamed). Loading a save feeds these into FIELD_JUMP_INTERFACE - the same arrival path as MAPJUMP/gateways (2026-08-02) |
 | `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var); logged as ppv= per arrival since v2.30.66 ([STORYNAV] pipeline) |
+| `0xDC08F8` | SAVEMAP_MENU_VISIBLE | u16 "menu visible/enabled" mask (savemap+0xBC0), bit N SET = main-menu row N available (0=Item..9=Save; bit 10 Quit is PC-only, forced on by the menu build, not stored). Pre-hideout save = 0x02FB (Materia+PHS clear). Source of MENU_VISIBLE_ROWS 0xDC111C (v2.30.78) |
+| `0xDC08FA` | SAVEMAP_MENU_LOCKED | u16 "menu locking" mask (savemap+0xBC2), bit N SET = row N locked. Source of MENU_DISABLED_ROWS 0xDC1130 (AND 0xFBFF). All-zero in the early save â€” story locks live in the VISIBLE mask instead (v2.30.78) |
 | `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |
+| `0xDC0B4B` | SAVEMAP_MENU_SCRIPTLOCK | u8 (savemap+0xE13): bit 0 set â‡’ the menu build forces DISABLED bits 0 (Item) + 6 (Limit); also read by the save-menu module (0x7071A1/0x70728E/0x70CF14 â€” semantics there unmapped). Field-script controlled; 0 in the early save (v2.30.78) |
 | `0xDC0C44` | LOCATION_NAME_BUFFER | savemap+0xF0C: the friendly menu caption ("Sector 1 Station"), FF7-encoded, â‰¤0x17 bytes, 0xFF-terminated, written by MPNAM's callee 0x633691 â€” live-confirmed 2026-07-16, spoken by v2.24. Persisting in the savemap is WHY save files remember the caption |
 | `0xDC0E10â€“0xDC0E24` | CONFIG_* value bytes | **these sit INSIDE the savemap range** â€” FF7 persists config in the save header region, which is why the sliders live here and not with the menu cursors |
 
@@ -6255,7 +6314,8 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC108C` | SOUND_CURSOR | |
 | `0xDC10F0` | CONFIG_ROW | |
 | `0xDC110C` | ORDERMENU_FIRST_SLOT | s8 slot latched at the Order pane's first confirm (v2.32 disasm) |
-| `0xDC1130` | MENU_DISABLED_ROWS | u16 bitmask, bit N = main-menu row N grayed (v2.32 â€” the Materia/PHS gray) |
+| `0xDC111C` | MENU_VISIBLE_ROWS | u16 bitmask, bit N SET = main-menu row N available; = savemap+0xBC0 OR 0x0400 (Quit), rebuilt every main-menu frame at 0x6CA38C. Carries the early-game Materia/PHS story lock (v2.30.78) |
+| `0xDC1130` | MENU_DISABLED_ROWS | u16 bitmask, bit N SET = row N locked; = savemap+0xBC2 AND 0xFBFF, + bits 0/6 while savemap+0xE13 bit 0 set. âš  only half the activation gate â€” all-zero early game (v2.30.78 correction; see Â§4) |
 | `0xDC1154` | MENU_CURSOR | frozen at 9 (Save row) for the whole save-menu session â€” v2.29's save-mode gate (the Config frozen-row signature again) |
 | `0xDC118C` | CHARSEL_CURSOR | u32 character-select pane cursor (mode-1 rows: Magic/Equip/Status; v2.32 speaks it) |
 | `0xDC11C4` | ORDERMENU_CURSOR | u8 Order-pane party cursor, scan speak-back verified (v2.32) |

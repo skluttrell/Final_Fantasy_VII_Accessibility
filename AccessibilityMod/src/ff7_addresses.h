@@ -743,7 +743,28 @@ constexpr uint32_t ITEMMENU_SCREEN_INDEX  = 1;          // dispatch index of ITE
 // order_entry_probe_20260718_153813) — the disasm settled it instead.
 // FOCUS_MODE semantics are static-derived; live confirm rides the v2.32
 // play-test (debug log on transitions).
-constexpr uint32_t MENU_DISABLED_ROWS   = 0x00DC1130; // u16 bitmask, bit N = row N grayed
+// v2.30.78: the main menu gates row activation on TWO masks, not one
+// (disasm 0x6CA4AB..0x6CA4E7 — the confirm path tests BOTH before the
+// row jump table; static session ff7_menu_mask_static/_disasm2.py
+// 2026-08-04). Both are rebuilt from the savemap EVERY frame the
+// main-menu handler 0x6CA346 runs (build at 0x6CA38C..0x6CA428, after
+// the init-once branch), so they are always fresh while the menu is up:
+//   MENU_VISIBLE_ROWS  0xDC111C = savemap+0xBC0 u16 ("menu visible/
+//     enabled" mask, bit SET = row available) OR 0x0400 (Quit, the
+//     PC-only row, is forced on).  THIS is what carries the early-game
+//     Materia/PHS story lock: the pre-hideout save has +0xBC0 = 0x02FB
+//     = all rows except bit 2 (Materia) and bit 8 (PHS).
+//   MENU_DISABLED_ROWS 0xDC1130 = savemap+0xBC2 u16 ("menu locking"
+//     mask, bit SET = row refused) AND 0xFBFF (Quit can never lock),
+//     then bits 0 (Item) + 6 (Limit) forced on while savemap+0xE13
+//     bit 0 is set (a field-script flag; the save-menu module reads
+//     +0xE13 too).
+// A row activates only when its VISIBLE bit is set AND its DISABLED
+// bit is clear.  v2.32..v2.30.77 read only DISABLED_ROWS, which is
+// all-zero in the early game — that is why Materia/PHS never spoke
+// ", not available" before the hideout scene (user report 2026-08-04).
+constexpr uint32_t MENU_VISIBLE_ROWS    = 0x00DC111C; // u16 bitmask, bit N SET = row N available
+constexpr uint32_t MENU_DISABLED_ROWS   = 0x00DC1130; // u16 bitmask, bit N SET = row N locked/grayed
 constexpr uint32_t MENU_FOCUS_MODE      = 0x00DC1324; // u8: 0=menu bar, 1=char-select pane, 2=Order pane
 constexpr uint32_t ORDERMENU_CURSOR     = 0x00DC11C4; // u8 party slot 0..2 (rides empty slots)
 constexpr uint32_t ORDERMENU_LATCH      = 0x00DC1320; // u32 1 = first member selected

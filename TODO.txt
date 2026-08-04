@@ -5,6 +5,32 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MENUAVAIL] Main-menu ", not available" — SHIPPED v2.30.78 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+User report: Materia never said "not available" before the 7th Heaven
+hideout scene. Root cause (static session,
+investigate/ff7_menu_mask_static.py + _disasm2.py): the game's
+activation gate is TWO masks — MENU_VISIBLE_ROWS 0xDC111C (bit set =
+available; from savemap+0xBC0 | 0x400) tested FIRST, then
+MENU_DISABLED_ROWS 0xDC1130 (bit set = locked; from savemap+0xBC2 &
+0xFBFF, + Item/Limit while savemap+0xE13 bit0). The early-game
+Materia/PHS story lock lives in the VISIBLE mask (pre-hideout save:
++0xBC0 = 0x02FB, locking mask 0x0000), so the v2.32 suffix — which
+read only the locking mask — was dead code until some field script
+sets a locking bit. v2.30.78 speaks from both words (the engine's own
+per-frame dispatch copies); no per-row handler does any further
+availability check (jump table 0x6CB53E disasm), so mask parity =
+engine parity for all 11 rows.
+VERIFY: (a) pre-hideout save: Materia AND PHS rows speak ", not
+available" (debug line vis=06FB dis=0000); (b) after the hideout
+materia tutorial: Materia speaks plain; (c) Quit NEVER says "not
+available"; (d) first live sighting of a locking-mask bit (dis=
+nonzero in the log — e.g. story sequences that lock Save/PHS) confirms
+the other half; (e) Save row wording at/away from save points — if
+vanilla grays Save somewhere and the masks stay clear there, that
+gray is driven by something else and needs a fresh look (log the
+vis=/dis= values from that field).
+
 [K2BODY] Kernel2 stale-copy junk — ROOT CAUSE CLOSED v2.30.77 (2026-08-04), body check live
 ------------------------------------------------------------------------
 [LIMITNAME] RESOLVED 2026-08-04: the user ran limit breaks on BOTH
