@@ -6141,6 +6141,32 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     enum class PartyLife : uint8_t { Unseen, Alive, Dead };
     PartyLife party_life[3] = {};
 
+    // v2.30.84: HP-delta damage/heal announcements (user request: the
+    // floating damage number a sighted player sees, spoken, brevity
+    // paramount). No new addresses — the same actor-vars HP pair the
+    // defeat/KO watchers above already poll. Per-slot baseline tracking:
+    // when a slot's currentHP moves and then holds still for
+    // DAMAGE_SETTLE_MS, the accumulated difference from the baseline is
+    // spoken as one line ("Cloud, 96." / "Cloud, plus 200."). The settle
+    // window exists because one game action can write HP more than once
+    // (multi-hit attacks, damage+drain) — announcing per poll would spray
+    // fragments; announcing the settled sum matches what the player needs
+    // ("what did that action cost me") in the fewest words.
+    //
+    // base_max is part of the baseline: multi-wave battles REUSE enemy
+    // slots for new creatures, and a slot whose maxHP changed is a new
+    // occupant, not a hit — re-baseline silently (same reasoning as the
+    // seen-alive-first rule above).
+    struct HpWatch {
+        bool      seen;        // baseline captured (first plausible read is silent)
+        int32_t   base_hp;     // HP at the last announcement (delta reference)
+        int32_t   base_max;    // maxHP the baseline was read under (occupant id)
+        int32_t   last_hp;     // most recent read
+        ULONGLONG change_tick; // when last_hp last moved; 0 = nothing pending
+    };
+    HpWatch hp_watch[10] = {};   // indexed by actor slot; 3 is an engine gap
+    constexpr ULONGLONG DAMAGE_SETTLE_MS = 400;
+
     // v2.12.1: defeats are NOT spoken at detection time. The v2.12 debug log
     // proved the killing blow's tick also fires action announcements (flash
     // resolution + next-turn) whose interrupt=true cancelled the queued
@@ -6233,6 +6259,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             if (game_mode != 2) {
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
                 party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
+                memset(hp_watch, 0, sizeof(hp_watch));
             } else {
                 for (uint8_t slot = 4; slot <= 9; ++slot) {
                     const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
@@ -6358,6 +6385,133 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     else
                         pending_defeats += L". ";
                     pending_defeats += msg;
+                }
+
+                // ---- v2.30.84: damage / healing announcements -----------
+                // See hp_watch above. Runs over BOTH sides every poll:
+                // party slots 0-2 speak hits taken (the "how bad was that"
+                // the sighted player reads off the floating number), enemy
+                // slots 4-9 speak the player's own damage dealt (the
+                // number over the enemy — visible to sighted players even
+                // without Sense, so no Sense gate here; enemy REMAINING HP
+                // is what stays hidden and is never spoken).
+                for (uint8_t slot = 0; slot <= 9; ++slot) {
+                    if (slot == 3)
+                        continue;   // engine gap between party and enemies
+
+                    const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
+                        static_cast<uint32_t>(slot) * FF7Addr::BATTLE_ACTOR_VARS_STRIDE;
+                    const int32_t cur = *reinterpret_cast<const volatile int32_t*>(
+                        base + FF7Addr::BAVARS_OFF_CURRENT_HP);
+                    const int32_t max = *reinterpret_cast<const volatile int32_t*>(
+                        base + FF7Addr::BAVARS_OFF_MAX_HP);
+
+                    HpWatch& w = hp_watch[slot];
+
+                    // Same plausibility rule as the watchers above; an
+                    // implausible read (battle init memset, empty slot)
+                    // drops the baseline so nothing computes a delta
+                    // against garbage.
+                    const bool plausible = (max > 0 && max <= 10000000 &&
+                                            cur >= 0 && cur <= max);
+                    if (!plausible) {
+                        w.seen = false;
+                        continue;
+                    }
+                    if (!w.seen || max != w.base_max) {
+                        // First plausible read, or a new occupant in a
+                        // reused slot (maxHP changed): silent re-baseline.
+                        w.seen        = true;
+                        w.base_hp     = cur;
+                        w.base_max    = max;
+                        w.last_hp     = cur;
+                        w.change_tick = 0;
+                        continue;
+                    }
+
+                    const ULONGLONG now = GetTickCount64();
+                    if (cur != w.last_hp) {
+                        w.last_hp     = cur;
+                        w.change_tick = now;   // (re)start the settle window
+                        continue;
+                    }
+                    if (w.change_tick == 0 || now - w.change_tick < DAMAGE_SETTLE_MS)
+                        continue;
+
+                    // HP moved and has now held still: fold the change into
+                    // the baseline FIRST (even when the announce below is
+                    // suppressed) so a later hit never re-reports this one.
+                    const int32_t before = w.base_hp;
+                    const int32_t after  = w.last_hp;
+                    w.base_hp     = after;
+                    w.change_tick = 0;
+
+                    if (!Config::Get().speak_battle_damage)
+                        continue;   // tracked regardless, so toggling the
+                                    // setting mid-battle starts clean
+                    // Killing blows and revivals are owned by the defeat /
+                    // "is down" / "is back up" announcements above — a
+                    // number on top would double the message at the moment
+                    // brevity matters most.
+                    if (before <= 0 || after <= 0)
+                        continue;
+                    const int32_t delta = before - after;   // positive = damage
+                    if (delta == 0)
+                        continue;
+
+                    wchar_t who[64];
+                    if (slot <= 2) {
+                        PartySlotLabel(slot, who, _countof(who));
+                    } else {
+                        std::wstring ename;
+                        if (EnemySlotName(slot, ename))
+                            _snwprintf_s(who, _countof(who), _TRUNCATE,
+                                         L"%ls", ename.c_str());
+                        else
+                            _snwprintf_s(who, _countof(who), _TRUNCATE,
+                                         L"enemy %u", static_cast<unsigned>(slot - 3u));
+                    }
+
+                    // Phrasing (brevity paramount, user rule): bare number
+                    // = damage, "plus" = healing. Remaining HP is spent
+                    // ONLY when a party member is left at a quarter of max
+                    // or less — the moment the sighted HP readout turns
+                    // yellow and the number becomes urgent.
+                    wchar_t msg[96];
+                    if (delta > 0) {
+                        if (slot <= 2 && after * 4 <= max)
+                            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                                         L"%ls, %ld, %ld left.", who,
+                                         static_cast<long>(delta),
+                                         static_cast<long>(after));
+                        else
+                            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                                         L"%ls, %ld.", who,
+                                         static_cast<long>(delta));
+                    } else {
+                        _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                                     L"%ls, plus %ld.", who,
+                                     static_cast<long>(-delta));
+                    }
+
+                    // Standing rule: every spoken claim ships with a log
+                    // line carrying its discriminating inputs.
+                    char dbg[192];
+                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] BATTLE dmg slot=%u delta=%ld cur=%ld "
+                        "max=%ld => %ls",
+                        static_cast<unsigned>(slot),
+                        static_cast<long>(delta), static_cast<long>(after),
+                        static_cast<long>(max), msg);
+                    Log::Write(dbg);
+
+                    // Queue behind the action name that caused this damage
+                    // (interrupt would clip it mid-word), and stamp
+                    // last_announce_tick so the NEXT turn's announce chains
+                    // instead of wiping this line — the v2.12.1 same-tick
+                    // cancellation lesson applied preemptively.
+                    last_announce_tick = now;
+                    TTS::Speak(msg, /*interrupt=*/false);
                 }
             }
 

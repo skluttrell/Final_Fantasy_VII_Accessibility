@@ -5,6 +5,29 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[BATTLEDMG] Battle damage/heal numbers spoken — SHIPPED v2.30.84 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+User request: speak the sighted player's floating damage number, brevity
+paramount. HP-delta watcher over the existing BATTLE_ACTOR_VARS reads
+(no new addresses): settled 400ms delta speaks once — "Cloud, 96." /
+"Cloud, plus 200." / "Cloud, 96, 45 left." (only when a hit leaves a
+party member at <= quarter max, the yellow-HP moment) / enemy side
+"Guard Hound A, 212.". Killing blows/revivals speak no number (defeat /
+"is down" / "is back up" own those); enemy remaining HP never spoken
+(sighted parity); multi-wave slot reuse re-baselines on maxHP change.
+New key speak_battle_damage (default true), embedded cfg + both
+installed cfgs spliced.
+VERIFY: (a) enemy hit on party speaks "<name>, <N>." after the attack
+name + "BATTLE dmg" log line; (b) player attack speaks enemy name +
+number, no remaining HP; (c) heals speak "plus N"; (d) drop to <= 1/4
+max appends "<hp> left"; (e) killing blow = only "defeated"/"is down",
+never a number too; (f) fast multi-hits (<400ms apart) sum to one line;
+(g) log header v2.30.84.
+RESIDUAL: crits and misses are invisible to HP polling — needs the
+damage-display writer (static hunt) if testers ask; regen/poison ticks
+announce per tick (parity with visible tick numbers) — if chatty,
+rate-limit status ticks, don't lengthen the settle window.
+
 [BLOCKMODEL] Corrected blocking model: characters never block — SHIPPED v2.30.83 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
 Tester domain statement forced a ground-up re-derivation

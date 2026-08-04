@@ -6093,6 +6093,72 @@ retired -- no speech should ever name a character as a blocker again;
 (e) log must carry v2.30.83 header, and any spoken gate line has a
 matching "WALL gate"/"lock-blocked" log line.
 
+### v2.30.84 (2026-08-04): battle damage and healing numbers spoken
+
+User request: the floating damage number a sighted player sees over
+whoever was struck, spoken, with brevity paramount because battle
+messages fire quickly. Sighted parity inventory that drove the design:
+a sighted player gets (1) the attack name banner, (2) the per-hit
+floating number (white=damage, green=heal), (3) the party window's
+updated HP with a yellow low-HP color, (4) crit/miss flavor. (1) was
+already ours (the flash-time action announcer); this version adds (2)
+and the urgent half of (3). Crit/miss detection is NOT derivable from
+HP polling and is a documented residual (needs the damage-display
+writer; future static hunt).
+
+NO new addresses -- the same BATTLE_ACTOR_VARS HP pair (0x9AB0DC,
+stride 0x68, i32 currentHP/maxHP at +0x2C/+0x30) the v2.12 defeat and
+v2.30 party-KO watchers already poll at 50ms in BattleActionThread. New
+per-slot HpWatch baseline tracker over slots 0-2 and 4-9: when a slot's
+currentHP moves and then holds still for 400ms (settle window -- one
+action can write HP several times: multi-hit attacks, drain), the
+settled difference from the baseline speaks as ONE line:
+
+  "Cloud, 96."           party hit (bare number = damage)
+  "Cloud, plus 200."     heal (party or enemy -- green numbers are
+                         sighted-visible on both sides)
+  "Cloud, 96, 45 left."  the hit left a party member at <= max/4 --
+                         the moment the sighted HP readout turns
+                         yellow; the only time remaining HP is spoken
+  "Guard Hound A, 212."  player's damage dealt (EnemySlotName voice)
+
+Design rules baked in: killing blows and revivals speak NO number --
+the existing "defeated"/"is down"/"is back up" announcements own those
+moments (suppression checks before <= 0 / after <= 0 around the
+baseline fold). Enemy REMAINING HP is never spoken (sighted players
+don't see it either; Sense parity stays with speak_enemy_hp_always).
+Multi-wave slot reuse re-baselines silently on a maxHP change (a new
+occupant is not a hit). Speech queues interrupt=false behind the
+action name and stamps last_announce_tick so the NEXT turn's announce
+chains instead of wiping it (v2.12.1 same-tick cancellation lesson
+applied preemptively). Every spoken line logs
+"BATTLE dmg slot= delta= cur= max=" (standing if-spoken-then-logged
+rule). Regen/poison ticks announce per tick -- parity with the visible
+green/white tick numbers; if a tester finds it chatty, rate-limit
+status-tick deltas rather than lengthening the settle window.
+
+New config key speak_battle_damage (default true, F8 "Battle damage
+speech", cfg glossary section added; separate from speak_battle so the
+numbers can be silenced independently of action names). cfg edit
+re-ran the CMake embed; new key + glossary block spliced into BOTH
+installed cfgs in place, values untouched (verified line 26 + glossary
+line 89 post-splice).
+
+Deployed both installs (AB4E9132CF7C7083), committed locally (push
+held). Literal checks: ascii "BATTLE dmg"/"speak_battle_damage"/
+"2.30.84" and wide ", plus "/" left."/"Battle damage speech" all
+present in the built DLL.
+
+VERIFY [BATTLEDMG]: (a) enemy hit on a party member speaks
+"<name>, <N>." shortly after the attack name, with a matching
+"BATTLE dmg" log line; (b) player attack speaks the enemy's name and
+number, no enemy remaining HP; (c) a Potion/Cure speaks "plus N";
+(d) a hit dropping a member to a quarter max or less appends
+"<hp> left"; (e) a killing blow speaks only "defeated"/"is down" --
+never a number too; (f) multi-hit attacks (e.g. Machine Gun bursts
+within 400ms) speak one summed line, slower multi-hits one line per
+hit; (g) log header v2.30.84.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

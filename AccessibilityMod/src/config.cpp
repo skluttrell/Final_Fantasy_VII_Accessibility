@@ -141,6 +141,7 @@ void Load()
         if      (key == "speak_dialog")  g_settings.speak_dialog  = parse_bool(value);
         else if (key == "speak_choices") g_settings.speak_choices = parse_bool(value);
         else if (key == "speak_battle")  g_settings.speak_battle  = parse_bool(value);
+        else if (key == "speak_battle_damage") g_settings.speak_battle_damage = parse_bool(value);
         else if (key == "speak_battle_menu") g_settings.speak_battle_menu = parse_bool(value);
         else if (key == "speak_menus")   g_settings.speak_menus   = parse_bool(value);
         else if (key == "speak_enemy_hp_always") g_settings.speak_enemy_hp_always = parse_bool(value);
