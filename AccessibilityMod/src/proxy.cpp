@@ -9094,6 +9094,21 @@ static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
         // runtime: SOLID(0) on wake, SOLID(1) during scenes).
         if (me[FF7Addr::FIELD_EVENT_SOLID_OFF] != 0)
             continue;
+        // VISI-hidden models (v2.30.81, the 2026-08-04 station log): a
+        // script-hidden person is INVISIBLE â€” a sighted player sees an
+        // empty walkway, so speech must never claim a person blocks it.
+        // The Echo-S station log proved the case live: hidden soldier
+        // 'hei0' (vis=0) stood 18 units off the exit ray and the route
+        // caution named him while the player walked straight through
+        // the spot. Vanilla scripts pair VISI(0) with SOLID(1), so this
+        // is usually redundant with the flag above; it exists for
+        // modded/edited scripts that hide without clearing solidity.
+        // Tradeoff (deliberate): if such a model IS still engine-solid,
+        // it blocks like an invisible wall â€” for a sighted player too â€”
+        // and the wall-bump tone reports it as exactly that: a wall,
+        // not a phantom person.
+        if (me[FF7Addr::FIELD_EVENT_VISIBLE] == 0)
+            continue;
         // Engine z gate (v2.30.80): a body on another level of a
         // split-z field cannot block the player no matter how close in
         // 2D â€” same |dz| >= 128 test the engine's 0x637724 uses.
@@ -11488,13 +11503,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     // v2.30.24 â€” the rc6E/rc70 candidates are retired,
                     // both rejected by the 2026-07-25 dump).
                     char dbg[224];
+                    // sol = SOLID-OFF byte (v2.30.81): logged so a play
+                    // log shows each model's live tangibility -- the
+                    // Echo-S station report could not be diagnosed
+                    // without it (modded scripts may hide people
+                    // without clearing solidity, or vice versa).
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] NAV person m=%u tri=%d ent=%u talk=%d "
-                        "col=%d vis=%u pos=(%ld,%ld) label='%ls'",
+                        "col=%d vis=%u sol=%u pos=(%ld,%ld) label='%ls'",
                         m, tri, ent_id,
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_TALK_RADIUS),
                         *reinterpret_cast<const int16_t*>(me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS),
                         vis,
+                        me[FF7Addr::FIELD_EVENT_SOLID_OFF],
                         static_cast<long>(mx), static_cast<long>(my),
                         have_lbl ? lbl.c_str() : L"(none)");
                     Log::Write(dbg);
@@ -11572,12 +11593,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // (tester report: collected items stayed listed all
                 // visit). Placed AFTER the label/ordinal assignment so a
                 // taken "Item" still reserves its ordinal and "Item 2"
-                // keeps its name (v2.18.2 identity-stability rule), and
-                // scoped to items/devices only: people are script-hidden
-                // and re-shown constantly during scenes, and this filter
-                // must not make the People list flap (their VISI churn
-                // is a documented follow-up, not an accident).
-                if ((cls[m] == MC_ITEM || cls[m] == MC_PROP) && vis == 0)
+                // keeps its name (v2.18.2 identity-stability rule).
+                // v2.30.81: extended to PEOPLE -- the follow-up evidence
+                // the v2.30.45 deferral asked for arrived in the
+                // 2026-08-04 station log: hidden soldiers (vis=0, the
+                // pair the intro scene removes) were browsable as
+                // "Shinra soldier 1/2, talk disabled" on a visibly empty
+                // platform, and one was named as blocking the exit. A
+                // person a sighted player cannot see is not a
+                // destination. List flap is not a regression: entries
+                // appearing/disappearing as scenes show/hide people IS
+                // the visible truth, and the ordinal pass (which counts
+                // ALL labeled models, eligible or not) keeps every
+                // returning person's spoken name stable.
+                if ((cls[m] == MC_ITEM || cls[m] == MC_PROP ||
+                     cls[m] == MC_PERSON) && vis == 0)
                     continue;
 
                 eligible[m] = true;
@@ -12254,6 +12284,19 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         rmsg += L' ';
                         rmsg += bname;
                         rmsg += L" is in the way.";
+                        // v2.30.81: cautions were the ONE body speech
+                        // with no log line -- the 2026-08-04 station
+                        // report had to be reconstructed from ray
+                        // geometry. Same rule as the WALL body line:
+                        // if it was spoken, it is in the log.
+                        if (Config::Get().debug_log) {
+                            char dbg[160];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] NAV caution route: '%ls' "
+                                "ray=%.1f len=%.0f player=(%.0f,%.0f)",
+                                bname.c_str(), ray_world, clen, fpx, fpy);
+                            Log::Write(dbg);
+                        }
                     }
                 }
                 TTS::Speak(rmsg, /*interrupt=*/true);
@@ -12296,6 +12339,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                 rmsg += L' ';
                                 rmsg += bname;
                                 rmsg += L" is in the way.";
+                                if (Config::Get().debug_log) {
+                                    char dbg[160];
+                                    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                        "[FF7Access] NAV caution offmesh: "
+                                        "'%ls' ray=%.1f len=%.0f "
+                                        "player=(%.0f,%.0f)",
+                                        bname.c_str(), ray_world, clen,
+                                        fpx, fpy);
+                                    Log::Write(dbg);
+                                }
                             }
                         }
                         TTS::Speak(rmsg, /*interrupt=*/true);
@@ -12351,6 +12404,15 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     wcsncat_s(msg, _countof(msg), L" ", _TRUNCATE);
                     wcsncat_s(msg, _countof(msg), bname.c_str(), _TRUNCATE);
                     wcsncat_s(msg, _countof(msg), L" is in the way.", _TRUNCATE);
+                    if (Config::Get().debug_log) {
+                        char dbg[160];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] NAV caution line: '%ls' ray=%.1f "
+                            "len=%.0f player=(%ld,%ld)",
+                            bname.c_str(), ray_world, ray_len,
+                            static_cast<long>(px), static_cast<long>(py));
+                        Log::Write(dbg);
+                    }
                 }
             }
             TTS::Speak(msg, /*interrupt=*/true);

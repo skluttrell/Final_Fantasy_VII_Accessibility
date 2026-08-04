@@ -5,7 +5,29 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[SOLID] Intangible people no longer block the pathfinder — SHIPPED v2.30.80 (2026-08-04), awaiting play-test
+[SOLID2] Hidden people no longer block or list — SHIPPED v2.30.81 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+Same-day retest of v2.30.80 (2013+7H Echo-S log 12:03): station exit
+still "blocked by him". Reconstructed (cautions had no log line): the
+12:07:28 exit ask's probe ray passed 18 units from script-HIDDEN
+soldier hei0 (vis=0, invisible on the captures) ⇒ "Shinra soldier is
+in the way" on an empty walkway; the player then walked through that
+spot. Modded scripts can hide without clearing SOLID, so v2.30.80's
+flag filter alone missed him. Fixes: CollectBodies skips vis==0
+(invisible ⇒ never named; if genuinely engine-solid it reads as a
+wall, honestly); People browser now filters vis==0 (the hidden
+soldiers were browsable — the exact evidence the v2.30.45 deferral
+awaited); every caution now logs "NAV caution ...'name'"; NAV person
+line adds sol=; log header stamps the version (FF7ACCESS_VERSION).
+VERIFY: (a) station exit ask speaks clean "up N seconds", no soldier
+caution, no NAV caution line; (b) People in the station lists only
+the visible downed guards (no "Shinra soldier 1/2"); (c) any spoken
+caution has a matching log line; (d) log header says v2.30.81;
+(e) note sol= values for hei0/gu* in a 7H log (Echo-S solidity
+question). Regression items from [SOLID] still apply: hideout Tifa
+must still block; split-z person never "in the way".
+
+[SOLID] Intangible people no longer block the pathfinder — SHIPPED v2.30.80 (2026-08-04), superseded-in-part by [SOLID2]
 ------------------------------------------------------------------------
 User report: characters blocked paths even when intangible (the downed
 guards on the Sector 1 station platform at the game start). Root cause:
@@ -16,7 +38,8 @@ station guards all set while keeping their radii. Offline scan: 2,876
 entities across 559 fields use SOLID, so this was systematic. Fix (one
 place, all consumers inherit): CollectBodies now mirrors the engine's
 full skip list — SOLID-off byte + its ±128-unit z level gate — beside
-the existing radius/parked filters.
+the existing radius/parked filters. First retest same day surfaced the
+hidden-people gap → [SOLID2].
 VERIFY: (a) station platform at game start: guards NOT named as
 blockers, no detour spoken on the first leg; (b) regression — hideout
 Tifa in the aisle must STILL block and be named; (c) split-z field

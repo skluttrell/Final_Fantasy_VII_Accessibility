@@ -5854,6 +5854,74 @@ block and be named (she is genuinely solid there); (c) split-z fields
 (field 124 catwalk/save pad): a person on the other level must not be
 called "in the way".
 
+### v2.30.81 (2026-08-04): HIDDEN people no longer block or list -- the station retest
+
+Same-day retest of v2.30.80 (2013+7H Echo-S, log 12:03, screenshots
+12:06-12:07): "I am supposed to follow him into the reactor. It claims
+the exit is blocked by him even when it's not."
+
+DIAGNOSIS -- reconstructed, because the caution speech had NO log line
+(the gap this version closes). The session's only field-116 exit ask
+with a body candidate is 12:07:28: player (3750,28403), route "up 6
+seconds" (single leg => the caution probe runs the full ~900 units).
+The NAV person dump shows 'shinra hei' hei0 at (3732,28752) -- 18
+units off that ray, squarely inside the ~70-unit hit radius => the
+route almost certainly appended "Shinra soldier is in the way." But
+hei0 is **vis=0** -- script-HIDDEN (the intro-scene soldiers the FMV
+removes; the auto-captures show a visibly empty walkway) -- and the
+player then walked through that exact spot and left the field
+(ARRIVE 117 at 12:07:37). The v2.30.80 SOLID filter did not catch him:
+under Echo-S's edited scripts the flag byte could not be confirmed
+from this log (nothing logged it -- second gap), and a modded script
+can hide a model without clearing its solidity. Also confirmed live:
+the People browser listed BOTH hidden soldiers ("Shinra soldier 1,
+talk disabled" spoken at 12:07:24, vis=0 in the same dump) -- this is
+exactly the "vis= log evidence" the v2.30.45 People-filter deferral
+was waiting for.
+
+FIXES:
+  1. CollectBodies also skips vis==0 models: a person a sighted player
+     cannot see must never be spoken as a blocker, whatever the solid
+     flag says. Deliberate tradeoff, documented in-code: a
+     hidden-but-still-solid model (modded scripts only; vanilla pairs
+     VISI 0 with SOLID 1) blocks like an invisible wall -- for sighted
+     players too -- and the wall-bump tone reports it as a wall, which
+     is the honest description.
+  2. People browser: the v2.30.45 vis==0 filter (items/devices) now
+     covers MC_PERSON. List flap when scenes hide/show people IS the
+     visible truth; the ordinal pass already counts ALL labeled models
+     so returning people keep their spoken names (identity-stability
+     rule holds).
+  3. Every body caution now logs ("NAV caution route/offmesh/line:
+     '<name>' ray= len= player=") -- cautions were the one body speech
+     with no log line (WALL body already had one; no WALL line in this
+     session's log is what pinned the K-handler as the producer).
+  4. NAV person line adds sol= (the +0x5F byte) -- the Echo-S solidity
+     question becomes readable from any future log.
+  5. Log header stamps the mod version (new FF7ACCESS_VERSION in
+     config.h): this session's build had to be inferred from deploy
+     timestamps.
+  (Prox chirp needed nothing -- it has gated on vis!=0 for ALL models
+  since v2.30.45.)
+
+METHOD LESSON: every SPOKEN claim needs a log line with its
+discriminating inputs, at the moment the feature ships -- the two
+unlogged items here (caution speech, solid byte) turned a 30-second
+log read into a geometry reconstruction. "If it was spoken, it is in
+the log" is now the standing rule for any new speech branch.
+
+Deployed both installs (0CC8F817F783A603), committed locally (push
+held). Built-DLL literal check passed for all four new log strings.
+
+VERIFY [SOLID2]: rides the next station run -- (a) 12:07:28-equivalent
+ask must speak a clean "up N seconds" with no soldier caution and the
+log must show NO "NAV caution" line for it; (b) People in field 116
+must list only the VISIBLE unconscious guards, not "Shinra soldier
+1/2"; (c) any spoken caution anywhere now has a matching "NAV caution"
+log line naming the body; (d) log header reads "v2.30.81"; (e) NAV
+person lines carry sol= -- from a 7H session, note hei0/gu* values to
+settle whether Echo-S cleared their SOLID flags.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

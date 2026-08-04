@@ -15,6 +15,12 @@
 
 #pragma once
 
+// Mod version, stamped into the debug log header (v2.30.81). Until now no
+// artifact in a play-test log said WHICH build produced it -- diagnosing the
+// 2026-08-04 station report meant inferring the deployed version from file
+// timestamps. One constant, bumped per release alongside the commit tag.
+#define FF7ACCESS_VERSION "2.30.81"
+
 namespace Config {
 
 // All mod settings are stored in this struct. One global instance is populated

@@ -22,6 +22,7 @@
  */
 
 #include "log.h"
+#include "config.h"   // FF7ACCESS_VERSION for the session header
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -114,7 +115,7 @@ void Init(bool enabled)
     SYSTEMTIME st;
     GetLocalTime(&st);
     fprintf(g_file,
-        "# FF7 Accessibility Mod — debug log\n"
+        "# FF7 Accessibility Mod v" FF7ACCESS_VERSION " — debug log\n"
         "# Session started: %04u-%02u-%02u %02u:%02u:%02u\n"
         "# To disable this log, set debug_log = false in ffvii_accessibility.cfg\n"
         "#\n",
