@@ -194,7 +194,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `SHOP_SESSION` / `SHOP_FADE_STATE` | `0x00DD6D78` / `0x00DD4734` | Session-active flag (wrapper 0x71FF95: 0â†’initâ†’1) and fade state (1 fading in / 2 fading out / -1 exiting â†’ menu-exit flag 0xDC12F4). Not consumed by the mod (GAME_MODE==8 is the gate); documented for completeness |
 | `MATMENU_MODE` | `0x00920FA0` | u32 materia-menu state machine (jump table 0x70E246, modes 0-0xB, v2.30.33 static): 0=Check/Arrange bar, 1=slot navigation, 3=equip list, 4=Check mode, 5/6/7=transient, 8=Arrange popup (Arrange/Exchange/Remove all/Trash), 9/10=arrange list phases, 2/11=empty. Same .data band as SHOP_STATE/BATTLE_MENU_STATE â€” fourth confirmation of the per-screen state-machine cluster |
 | `MATMENU_*` cursors | `0xDD12BC/F0/F4, 0xDD1364/74, 0xDD14B4/C4, 0xDD147C, 0xDD1398/9C, 0xDD1638` | bar cursor (0=Check 1=Arrange); slot idx/row (row 0=weapon 1=armor, OK on slot -> equip list); equip-list row/scroll (**materia[200] index = row+scroll**, the commit math at 0x70DC80); arrange-list row/scroll; popup row 0..3; Check-mode widget col/row; party slot 0..2 (Ã—0x440 = shared char-data index; weapon slot count byte at chardata+0x21) |
-| `MATMENU_CHARREC_PTR` | `0x00DCA810` | u32 â†’ the viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was THIS screen's state all along |
+| `MATMENU_CHARREC_PTR` | `0x00DCA810` | u32 â†’ the viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was THIS screen's state all along. **⚠ STALE for identity (v2.30.79, 2026-08-04 play report):** the page-up/down character flip does NOT rewrite it, so reading it made every character speak Cloud's materia — resolve the viewed character via MATMENU_PARTY_SLOT → SAVEMAP_PARTY_IDS instead (same bug class as the v2.30.50 CHARSEL equip fix) |
 | `EQMENU_PARTY_SLOT` | `0x00DCA4A4` | u32 equip-screen PARTY-MEMBER cycler 0..2 (L1/R1 char flip). âš  **PLAY-CORRECTED v2.30.50**: v2.30.34 shipped this as the category row â€” the Â±1-wrap code (0x707079/0x7070C0) reads SAVEMAP_PARTY_IDS[value] and re-steps on 0xFF (empty-slot skip), and the 0x707105 path copies it into CHARSEL_CHOSEN: it cycles CHARACTERS. The real category row is `EQMENU_CATEGORY` 0x00DCA5C4 (OK handler 0x707175/0x707187 passes it to the candidate builder 0x7083ED; bounds cmp 2 throughout the sub). Two 0..2 cursors on one screen â€” the wrap shape alone couldn't tell them apart (Â§8 v2.30.50 lesson)ettled it as the cursor |
 | `EQMENU_LIST_OPEN` / `EQMENU_LIST_ROW/SCROLL/COUNT/BYTES` | `0xDCA6A0 / 0xDCA5FC / 0xDCA60C / 0xDCA7EC / 0xDCA6A8` | candidate-pane flag (0=rows 1=list); list widget @0xDCA5F8 (+4/+0x14); **candidate = u8[0xDCA6A8][row+scroll]** (the OK-commit's own read at 0x707350) â€” bytes are category-relative kernel gear indices, 0xFF terminator, count from the list builder 0x708640. Equip menu char = CHARSEL_CHOSEN (char page-flip writes it at 0x707148/0x70726E); equipped ids = record +0x1C/1D/1E. Equip sub = table[4] = FFNx menu_sub_705D16 (table[15] dupes it) |
 | `LIMITMENU_MODE` | `0x009204D8` | u32 limit-menu state 0..4 (draw switch 0x70313A; 0 = Set/Check bar, 1-4 = grid/confirm phases â€” per-value mapping rides the mod's debug log; v2.30.35 static). Same 0x92 state band as the shop/materia/battle machines |
@@ -5736,6 +5736,52 @@ row should read available at a save point and "not available" where
 saving is script-locked (locking-mask bit 9 -- first live sighting will
 confirm which fields set it). Quit must never say "not available".
 
+### v2.30.79 (2026-08-04): materia menu spoke CLOUD's materia for every character
+
+User report: "In the materia menu, when I select any other character
+besides Cloud, it always just shows Cloud's equipped materia instead of
+that of who is currently selected."
+
+ROOT CAUSE: MateriaSlotWord (the modes-1/4 slot-content reader, and the
+I-key description path through it) resolved the viewed character by
+dereferencing MATMENU_CHARREC_PTR (0xDCA810). That pointer is
+INITIALIZED to Cloud's record (0xDBFD8C) and the page-up/down character
+flip does NOT rewrite it, so the slot contents always came from Cloud's
+record -- while the character NAME announced correctly, because the flip
+branch reads the live MATMENU_PARTY_SLOT cursor (0xDD1638). Name and
+contents were fed from two different sources; only one of them tracked
+the flip. This is the exact bug class of the v2.30.50 equip fix
+(CHARSEL_CHOSEN receives a copy only on specific key paths while
+EQMENU_PARTY_SLOT is the live cursor -- the "Barret wearing Bronze
+Bangle" report).
+
+FIX: MateriaSlotWord now resolves the record via the equip screen's
+CharRecFromPartySlot(MATMENU_PARTY_SLOT) -- the helper carries the
+leader cross-check (layout-guard: speak nothing wrong, never wrong
+contents), the flashback aliases (ids 9/10 -> Cait Sith/Vincent
+records), and the party-slot -> SAVEMAP_PARTY_IDS -> record derivation
+already live-proven on three other screens (equip/limit/order). Name
+and contents now come from the SAME cursor and cannot disagree.
+0xDCA810 stays documented but flagged STALE-for-identity in Section 4,
+Section 14, and ff7_addresses.h.
+
+Slipped through v2.30.33's static session because the pointer IS
+correct for the character the screen opened on (party slot 0 = Cloud in
+every test save) -- the flip path was never exercised before commit.
+CLASS LESSON (the v2.30.50 pattern, now twice): any per-screen
+"current character record" pointer must be distrusted until the L1/R1
+/ page flip is play-tested; prefer deriving from the screen's own
+party-slot cursor, which the game must keep live for its header draw.
+
+Deployed both installs (8E9DCEC8C29F478C), committed locally (push
+held).
+
+VERIFY [MATCHAR]: in the materia menu, page-up/down to Barret/Tifa and
+arrow across weapon/armor slots -- each character must speak their own
+equipped materia (Barret's Assault Gun slots differ from Cloud's Buster
+Sword load-out); Check mode (OK on Check) must match; I-key description
+must describe the spoken materia, not Cloud's.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -6351,7 +6397,7 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDCA6A0` | EQMENU_LIST_OPEN | pane flag: 0=category rows, 1=candidate list (set 0x7071C3, cleared 0x707346/0x707601) (v2.30.34) |
 | `0xDCA6A8` | EQMENU candidate bytes | u8[] category-relative kernel gear indices, 0xFF terminator; candidate = [row+scroll] (the OK-commit's own read) (v2.30.34) |
 | `0xDCA7EC` | EQMENU_LIST_COUNT | candidate count from the list builder 0x708640 (v2.30.34) |
-| `0xDCA810` | MATMENU_CHARREC_PTR | u32 â†’ viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was the materia screen's state all along (v2.30.33) |
+| `0xDCA810` | MATMENU_CHARREC_PTR | u32 â†’ viewed character's savemap record (init 0xDBFD8C=Cloud); slot contents = rec+0x40 weapon / +0x60 armor u32[8] materia words. The v2.31 "0xDCA7F8 exclusive block" was the materia screen's state all along (v2.30.33). ⚠ STALE on the page-up/down char flip — do not read for identity; use MATMENU_PARTY_SLOT → SAVEMAP_PARTY_IDS (v2.30.79) |
 
 ### Materia menu cursor block: 0xDD12BC â€“ 0xDD1638 (v2.30.33, all static)
 

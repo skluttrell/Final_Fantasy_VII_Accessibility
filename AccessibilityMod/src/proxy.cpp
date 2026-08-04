@@ -3318,17 +3318,34 @@ static void MateriaWordLine(uint32_t w, std::wstring& out)
         out += L", mastered";
 }
 
+// Savemap record VA for a party slot (defined with the equip thread below,
+// shared here since v2.30.79 -- see MateriaSlotWord).
+static uint32_t CharRecFromPartySlot(uint32_t sel);
+
 // The materia word under the equipment-slot cursor (modes 1 and 4). Returns
-// false when the char-record pointer fails its layout check â€” the reader
-// then speaks position-only, never wrong contents.
+// false when the party-slot -> record resolution fails its layout check â€”
+// the reader then speaks position-only, never wrong contents.
+//
+// v2.30.79: resolve the character via MATMENU_PARTY_SLOT -> SAVEMAP_PARTY_IDS,
+// NOT via MATMENU_CHARREC_PTR. The pointer at 0xDCA810 is initialized to
+// Cloud's record (0xDBFD8C) and the page-up/down character flip does NOT
+// rewrite it -- it only receives a copy on paths this reader doesn't gate on.
+// Result: every character's slots spoke CLOUD's equipped materia (2026-08-04
+// play report). This is the exact bug class the equip screen had in v2.30.50
+// (CHARSEL_CHOSEN vs EQMENU_PARTY_SLOT -- the "Barret wearing Bronze Bangle"
+// report); the fix is the same shape: trust the live per-screen party-slot
+// cursor, which this thread ALREADY reads to announce the character's name
+// on a flip -- so name and contents now come from the same source and can
+// never disagree.
 static bool MateriaSlotWord(uint32_t row, uint32_t slot, uint32_t& w)
 {
-    const uint32_t rec = *reinterpret_cast<const volatile uint32_t*>(
-        FF7Addr::MATMENU_CHARREC_PTR);
-    // Must be one of the 9 savemap char records, exactly on stride.
-    if (rec < FF7Addr::SAVEMAP_CHAR_RECORDS ||
-        rec >= FF7Addr::SAVEMAP_CHAR_RECORDS + 9 * FF7Addr::SAVEMAP_CHAR_REC_SIZE ||
-        (rec - FF7Addr::SAVEMAP_CHAR_RECORDS) % FF7Addr::SAVEMAP_CHAR_REC_SIZE != 0)
+    const uint32_t party = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::MATMENU_PARTY_SLOT);
+    // CharRecFromPartySlot carries the leader cross-check + flashback-alias
+    // mapping (ids 9/10 -> Cait Sith/Vincent records) and returns 0 when the
+    // savemap layout check fails -- speak nothing wrong, ever.
+    const uint32_t rec = CharRecFromPartySlot(party);
+    if (rec == 0)
         return false;
     if (row > 1 || slot > 7)
         return false;

@@ -5,6 +5,20 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[MATCHAR] Materia menu wrong-character slots — SHIPPED v2.30.79 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+User report: every character's materia screen spoke CLOUD's equipped
+materia (names announced correctly on the page-up/down flip, contents
+did not follow). Root cause: MateriaSlotWord dereferenced
+MATMENU_CHARREC_PTR 0xDCA810, which is initialized to Cloud's record
+and NOT rewritten by the character flip — the v2.30.50 equip bug class
+(stale copy-pointer vs live party-slot cursor). Fix: resolve the record
+via CharRecFromPartySlot(MATMENU_PARTY_SLOT) — same source as the name
+announce, so name and contents can no longer disagree.
+VERIFY: page to Barret/Tifa in the materia menu; weapon/armor slot
+arrows must speak THEIR materia (not Cloud's); Check mode and the
+I-key description must match the spoken slot.
+
 [MENUAVAIL] Main-menu ", not available" — SHIPPED v2.30.78 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
 User report: Materia never said "not available" before the 7th Heaven

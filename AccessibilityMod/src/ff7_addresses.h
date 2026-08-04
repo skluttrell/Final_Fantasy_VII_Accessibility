@@ -936,6 +936,21 @@ constexpr uint32_t MATMENU_PARTY_SLOT    = 0x00DD1638; // u32 party slot 0..2
 constexpr uint32_t MATMENU_CHARREC_PTR   = 0x00DCA810; // u32 -> savemap char
                                                        // record (init
                                                        // 0xDBFD8C = Cloud)
+                                                       // ⚠ STALE on the
+                                                       // page-up/down char
+                                                       // flip (2026-08-04
+                                                       // play report: every
+                                                       // char spoke Cloud's
+                                                       // materia). DO NOT
+                                                       // read for identity —
+                                                       // resolve the char
+                                                       // via MATMENU_PARTY_
+                                                       // SLOT → SAVEMAP_
+                                                       // PARTY_IDS instead
+                                                       // (v2.30.79; same
+                                                       // class as the
+                                                       // v2.30.50 CHARSEL
+                                                       // equip bug).
 constexpr uint32_t MATMENU_EQUIP_ROW     = 0x00DD1364; // mode-3 list widget
 constexpr uint32_t MATMENU_EQUIP_SCROLL  = 0x00DD1374; // idx = row + scroll
 constexpr uint32_t MATMENU_ARR_ROW       = 0x00DD14B4; // mode-9/10 list
