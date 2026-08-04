@@ -2175,18 +2175,28 @@ constexpr uint32_t FIELD_EVENT_COLLISION_RADIUS = 0x72; // s16, walkmesh units
 //     level gate), then hit iff dist < (r_mover + r_other)/2 tested
 //     from feeler points on the mover's radius circle. It also SETS
 //     +0x5E = 1 on the touched model when the mover is the player
-//     (0x637859) — a live "player is bumping this model" flag, mapped
-//     but not yet consumed by the mod.
+//     (0x637859) — a flag NOTHING in the exe reads (whole-.text sweep,
+//     v2.30.83): player-vs-NPC contact is consequence-free.
 // SCALE (offline flevel scan, ff7_solid_flevel_scan.py): 2,876 entities
 // across 559 fields toggle SOLID — script-intangible people are the
 // COMMON case, not an edge case. md1stin's hei0/hei1/gu0/gu1/guadd
 // (the reported guards) all run SOLID(1).
+// ⚠ ROLE CORRECTED v2.30.83 (ff7_player_blocking_ground_truth.py, the
+// tester-prompted ground-up re-derivation): 0x637724's verdict is
+// DISCARDED for the user-controlled player — the movement step's
+// decision branch (0x63732F) commits the move through model contacts
+// whenever FIELD_UC_LOCK == 0. Solidity matters only to NPC steering
+// and scripted (UC-locked) player movement. The mod therefore consumes
+// NEITHER this flag nor the radius for blocking decisions any more;
+// both stay mapped as engine documentation and for proximity/talk
+// semantics (the talk-target selector at 0x63640x picks the nearest
+// model within talk_radius + player_radius).
 constexpr uint32_t FIELD_EVENT_SOLID_OFF = 0x5F; // u8, nonzero = intangible
 
 // The engine's model-vs-model z gate from 0x637724: bodies more than
-// this many walkmesh z-units from the mover never block it. Mirrored by
-// CollectBodies so a person on a catwalk above/below a split-z field is
-// not reported as a blocker on the player's level.
+// this many walkmesh z-units from the mover never interact. No longer
+// consumed (v2.30.83 — the body-blocking model was retired with it);
+// kept as engine documentation.
 constexpr int32_t FIELD_BODY_Z_GATE = 0x80;
 
 // Talk-enabled byte (v2.26): the TLKON opcode (0x7E, handler 0x618A80 —

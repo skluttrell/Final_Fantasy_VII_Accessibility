@@ -220,7 +220,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) â€” but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** â€” PSX comments identify unnamed PC fields |
 | `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 1=FIELD JUMP PENDING (audit 2026-08-02: held for the whole screen load; set by MAPJUMP/gateway-hit/save-load/world-exit when arming FIELD_JUMP_INTERFACE, cleared at phase 2 - v2.30.64 watcher saw it on every transition of both runs), 2=battle, 6=name entry, 9=menu, 26=game-over handoff (TRANSIENT ~60ms â€” v2.30.37, 2026-07-27 wipe log)**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline â€” index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens**; also STATIC 2026-08-02: field_loop's own dispatch (0x63C1A0..) switches on mode - 0xF via jump table 0x63CC09, so modes **15..24 = menu-module sub-entries** invoked from the field loop (several take DEST_FIELD_ID as an argument) â€” the two live-confirmed values (6, 9) both match the decode, validating the table. LIVE v2.30.75 (ff7_menu_handoff_monitor.py 2026-08-03, full battle-victory-menu run at 30ms): **the VICTORY results screens never leave mode 2** - MENU_OPEN=1 for the whole sequence (no dips between the two results screens) while the byte stays battle, so `MENU_OPEN==1 && mode==2` = the results window and `mode==9` = the real main-menu family (new constants GAME_MODE_BATTLE / GAME_MODE_MAIN_MENU); on a real menu open **mode rises to 9 ~0.5-1.2s BEFORE MENU_OPEN** and both drop together on close; every menu-family thread now gates on ==9 (replaced the v2.35.1 g_victory_active flag + 4-second battle-recency tick, whose holes are logged in proxy.cpp's v2.30.75 header comment). âš  FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable). âš  the GAME OVER film reel + post-game-over title prompt read as mode **0** with FIELD_ID **stale** at the dead field â€” the 26 blip is the only positive game-over signal (GameOverWatchThread polls it at 30ms) |
-| `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match |
+| `FIELD_UC_LOCK` | `0x00CC0DBA` | +0x32, u8. Player-control lock (field opcode UC); nonzero = scripted scene, input ignored. Via PSX struct match. **v2.30.83: also the movement engine's collision-mode switch** — while 0 (all free play) the movement step's 0x63732F branch makes the player IGNORE model contacts entirely (walk-through) and enables LINE-crossing processing (0x637475); while nonzero the player collision-steers like an NPC and LINE triggers are skipped. Rest value 0 live-proven across every session log (the WALL gates line) |
 | `FIELD_BGMOVIE_FLAG` | `0x00CC0DC2` | +0x3A, u8. Movie is background-only (player walkable) |
 | `FIELD_KEY_INPUT_STATUS` | `0x00CC0DF0` | +0x68, u32. Digested input: UP=0x1000 RIGHT=0x2000 DOWN=0x4000 LEFT=0x8000, Cancel/run=0x40. **Freezes at last value when battle starts** |
 | `FIELD_EVENT_DATA_PTR` | `0x00CC0B60` | â†’ per-model array, stride 0x88: model_pos 3Ã—i32 at +0x0C, movement_speed u16 at +0x76. Observed target: static 0xCC1670 |
@@ -256,7 +256,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | *(control_direction semantics)* | â€” | **FULLY CONFIRMED 2026-07-13** (calibration walkabout + follow-up play test): control_direction = the WORLD BEARING OF SCREEN-DOWN in atan2(dx,dy) convention (0=+Y, clockwise toward +X). Screen/d-pad angle = world_deg + control_deg âˆ’ 180, a PURE ROTATION â€” left/right ear-confirmed correct, no mirror. (Calibration data: md1stin control_dir=124â†’174.4Â°; Up motion 5.6Â°, Down âˆ’174.4Â°. First guess world âˆ’ control was 180Â° off.) Player-accepted v1 limitation: story-locked exits are still listed (see TODO for the show_arrow_flag/unknown-bytes detection routes) |
 | *(coordinate scale)* | â€” | field_event_data model_pos = walkmesh coords Ã— 4096 (FFNx background.cpp `/4096.f`); player walkmesh pos = model_pos >> 12, directly comparable to gateway vertices. Walking â‰ˆ 160 walkmesh units/sec (from v2.6: 32768 highres/50ms at walk speed 1024) |
 | *(field_event_data offsets)* | â€” | Per-model struct (stride 0x88, base via FIELD_EVENT_DATA_PTR 0xCC0B60), offsets from FFNx ff7.h field order, anchored by the LIVE-verified movement_speed +0x76 (v2.6): **+0x00 u16 apply_kawai, +0x04 kawai params ptr (toggles every frame while an effect runs), +0x36..+0x3B rotation/FACING cluster (+0x38 = THE authoritative facing byte - see the *(model FACING)* row below; audit cross-ref 2026-08-02), +0x5D u8 entity_id, +0x61 u8 TALK-DISABLED (the TLKON opcode's arg written raw: 0=talkable default, 1=disabled â€” handler 0x618A80 disasm + live confirm 2026-07-16, the "Jessie won't talk" incident; v2.26 speaks ", talk disabled"), **+0x62 u8 VISIBILITY** (1=visible, 0=script-hidden; v2.30.45 â€” the VISI opcode (0xA4) handler 0x618A01 writes its operand here and the CHAR bind path stores 1 at 0x6143D2, so every bound model STARTS visible and 0 is always a deliberate hide; pickup scripts hide collected items exactly this way (game-wide walk, ff7_prop_interact_catalog.py) â€” the Items category and prox chirp filter on it; FFNx's unnamed field_62), **+0x63 s8 movement_type: 4 or 5 = ON A LADDER** (LADER's four cases write 4/4/5/5, its re-entry test is >=4 && <=5, arrival writes 0; the only two other writers in .text also write 0 => exclusive climb signal, v2.30.60), +0x6E u16 climb orientation variant (0/1 — explains the v2.30.24 'rc6E identical to 0' reading: only written on a climb), +0x70 u16 climb phase (0 armed/1 moving/2 arrived), +0x7C/+0x80/+0x84 s32 climb TARGET x/y/z <<12 (push-direction source), +0x64 s8 animation_id, +0x66 s16 animation_speed, +0x68 s16 currentFrame, +0x6A s16 lastFrame (CHEST OPEN SIGNAL â€” see v2.18.1), +0x6C s16 character_id (âš  LIVE-DISPROVED as a party indicator 2026-07-13: an ordinary reactor NPC carried 4 = "Red XIII" â€” do NOT name from it, v2.15.2), **+0x72 s16 COLLISION RADIUS** (CONFIRMED 2026-07-25 v2.30.24: the v2.30.22 rc-candidate dump showed per-model radius-like values â€” Tifa 30, Barret 48, AVALANCHE trio 34 â€” and body-block rest distances fit player_r+npc_r with Cloud â‰ˆ32 on two independent anchors, 64 vs Tifa and 81 vs Barret; +0x6E â‰¡ 0 and +0x70 flaps 0/1, both rejected. âš  DYNAMIC â€” scripts change it (SLIDR family): 0 = intangible right now, Tifa read 20 in a hideout scene state, a prop briefly 120 â€” always read LIVE, never cache), +0x74 s16 talk_radius, +0x78 s16 field_triangle_id (<0 = off-walkmesh â€” v2.15 People filter)** (v2.15/v2.18.1/v2.26/v2.30.24) |
-| *(SOLID-OFF flag +0x5F)* | â€” | **field_event_data +0x5F u8 = SOLID-OFF: 0 = model blocks movement (default), nonzero = INTANGIBLE regardless of collision radius** (v2.30.80, 2026-08-04 â€” the pathfinder's false "guard is in the way" reports at the station). Static, three agreeing directions (ff7_solid_static / _consumer_static / _modelhit_dump.py): (1) the SOLID opcode (0xC7) handler 0x61C9DD stores its 1-byte arg RAW here (0x61CA30) â€” byte-identical shape to TLKON, with TALKR (0x618253â†’+0x74) and SLIDR (0x61813Dâ†’+0x72) matching known offsets in the same decode; (2) model INIT (0x60C327 block) writes 0 alongside the other defaults, model UNBIND writes 1 at 0x60C928 alongside talk-off=1/visible=0 â€” TLKON's polarity convention; (3) **consumer proof: the engine's movement blocking test 0x637724 skips any model with +0x5F != 0**, read at 0x637788 as `[idxÂ·0x88 + 0xCC16CF]` (static event array 0xCC1670 + 0x5F â€” the [ptr]+offset==static pattern). âš  engine collision code addresses event fields as absolute statics like 0xCC16CF/0xCC16E2 â€” small-disp .text sweeps MISS these consumers. Scale (offline flevel scan, ff7_solid_flevel_scan.py): 2,876 entities / 559 fields toggle SOLID; md1stin's hei0/hei1/gu0/gu1/guadd (the reported guards) all run SOLID(1). Also mapped, unconsumed: **+0x5E u8 = "player is bumping this model" flag** (0x637724 sets it at 0x637859 when the mover is the player; init clears it). CollectBodies mirrors the whole 0x637724 skip list since v2.30.80 |
+| *(SOLID-OFF flag +0x5F)* | â€” | **field_event_data +0x5F u8 = SOLID-OFF: 0 = model blocks movement (default), nonzero = INTANGIBLE regardless of collision radius** (v2.30.80, 2026-08-04 â€” the pathfinder's false "guard is in the way" reports at the station). Static, three agreeing directions (ff7_solid_static / _consumer_static / _modelhit_dump.py): (1) the SOLID opcode (0xC7) handler 0x61C9DD stores its 1-byte arg RAW here (0x61CA30) â€” byte-identical shape to TLKON, with TALKR (0x618253â†’+0x74) and SLIDR (0x61813Dâ†’+0x72) matching known offsets in the same decode; (2) model INIT (0x60C327 block) writes 0 alongside the other defaults, model UNBIND writes 1 at 0x60C928 alongside talk-off=1/visible=0 â€” TLKON's polarity convention; (3) **consumer proof: the engine's movement blocking test 0x637724 skips any model with +0x5F != 0**, read at 0x637788 as `[idxÂ·0x88 + 0xCC16CF]` (static event array 0xCC1670 + 0x5F â€” the [ptr]+offset==static pattern). âš  engine collision code addresses event fields as absolute statics like 0xCC16CF/0xCC16E2 â€” small-disp .text sweeps MISS these consumers. Scale (offline flevel scan, ff7_solid_flevel_scan.py): 2,876 entities / 559 fields toggle SOLID; md1stin's hei0/hei1/gu0/gu1/guadd (the reported guards) all run SOLID(1). Also mapped: **+0x5E u8 = "player is bumping this model" flag** (0x637724 sets it at 0x637859 when the mover is the player; init clears it) — v2.30.83 whole-.text sweep: NO reader exists, the flag is vestigial. ⚠ ROLE CORRECTED v2.30.83: the 0x637724 verdict this flag gates is DISCARDED for the user-controlled player (movement decision 0x63732F commits through model contacts while FIELD_UC_LOCK==0) — solidity drives NPC steering and scripted movement only; the mod no longer consumes +0x5F for any blocking decision (the v2.30.80-82 CollectBodies pipeline was retired with the corrected blocking model) |
 | `FIELD_LINE_COUNT` | `0x00CC088C` | u16, number of LINE trigger zones declared on the current field (0â€“0x20; the LINE handler refuses past 32). Per-field value â€” LIVE-CONFIRMED 2026-07-14 (0 on fields 116â€“119, 2 on field 120, stable on field re-entry). Static find: all three line-opcode handlers read/increment it (ff7_line_triggers_static.py, v2.17) |
 | `FIELD_LINE_ARRAY` | `0x00CC1F70` | The engine's LINE trigger zone array, 32 Ã— 0x18: **+0x00 s16Ã—6 = x1,y1,z1,x2,y2,z2 (walkmesh coords, raw LINE-opcode args), +0x0C u8 enabled (1 on create; LINON writes its arg byte here), +0x0D u8 owning entity id, +0x0E u8 state latch (cleared on disable)**. Three handlers agree on base/stride/offsets: LINE 0x6111D8, LINON 0x6115AD, SLINE 0x6114D0 (opcode table 0x9055A0 read from disk via the mod's own Resolve() chain, validated by MESSAGE+0x3B=E8). LIVE-CONFIRMED 2026-07-14 on field 120: 2 sane segments, valid entity ids, plausible distances (v2.17) |
 | `FIELD_ENTITY_LINE_SLOT` | `0x00CBF600` | u8 per entity id â†’ index of that entity's line in FIELD_LINE_ARRAY (written by the LINE handler, read by LINON/SLINE). Not needed for browsing (the array itself carries the entity id at +0x0D) |
@@ -5984,6 +5984,114 @@ case; (b) hideout regression (the one real seal we have evidence
 for): Tifa in the bar aisle must STILL speak "Tifa is in the way";
 (c) physically walking into a person until stopped still names them
 via the WALL body line.
+[OBSOLETE same day -- v2.30.83 removed body cautions entirely; the
+(b) "regression" expectation was itself built on the disproven model.]
+
+### v2.30.83 (2026-08-04): THE CORRECTED BLOCKING MODEL -- characters never block; walls and story gates do
+
+A tester's domain statement, relayed by the user with a request for a
+full re-examination before any code: "On screen characters should
+never block any path unless there's a story reason. We have been
+assuming all on screen characters block paths... a wall or furniture
+was the reason I couldn't move and the mod claimed I was being blocked
+by the character." User: start fresh, rely on nothing.
+
+GROUND-UP RE-DERIVATION (ff7_player_blocking_ground_truth.py -- full
+annotated disasm of the per-frame movement pipeline, assuming nothing
+from prior passes):
+  - Per-model movement step (retry loop head 0x636F18, <=16
+    iterations): probes STRAIGHT plus two 45-degree feelers (facing
+    +/-0x20, points on the mover's radius circle); each probe = the
+    walkmesh try-move 0x6367B7 AND the model-overlap test 0x637724.
+  - 0x6367B7 is PURE GEOMETRY: cross-products against the current
+    triangle's edges (vertex pool [0xCFF744]), neighbor lookup
+    ([0xCFF748]), and the IDLCK lock-bit test (0xCC0E3A) on the
+    DESTINATION triangle at each crossing. No character data anywhere.
+  - THE CRUX (decision branch 0x63732F): for the PLAYER while
+    FIELD_UC_LOCK (0xCC0DBA) == 0, any probe that failed ONLY on a
+    model jumps straight to the commit -- THE PLAYER WALKS THROUGH
+    CHARACTERS. Pure-wall failures run the slide (facing +/-8, retry);
+    a head-on dead end is the pin. NPCs (and the UC-locked player) get
+    steer-around instead -- character collision exists only for NPC
+    steering and scripted scenes, i.e. exactly "a story reason".
+  - The model test's sole player-side effect -- +0x5E "player is
+    bumping me" (0x637859) -- has NO reader in the entire exe
+    (0xCC16CE appears exactly once, at the write). Contact is
+    consequence-free.
+  - Every free-play log ever captured shows uc_lock=0 while walking
+    (the WALL gates line) -- the walk-through branch IS normal play.
+  - Bonus decodes closing loose ends: 0x633FBC = field-arrival player
+    init (+0x72 radius := 34*scale>>9 -- why station reads col=30 and
+    the double-scale street col=60; +0x76 speed := scale<<10>>9);
+    0x63640x = the TALK-TARGET selector (nearest model within
+    talk_radius + player_radius, minimum angular offset, window 0x40);
+    field-id hacks 0x107/0x22E force-clear collision flags (dev
+    special cases); LINE_CROSS_RESULT 0xCC0870 written per move.
+
+WHAT ACTUALLY BLOCKS PATHS (complete list): walkmesh boundaries
+(walls/furniture -- no-neighbor edges), IDLCK story locks (0xCC0E3A),
+LINE-trigger scripts (usher/push-back), MPJPO-disabled gateways, and
+UC-locked scenes. A "guard blocking a door" is set dressing on a
+locked edge or mesh gap.
+
+HISTORY CORRECTED: v2.30.22's foundation -- the 2026-07-25 hideout
+pins at 64.0/81.0 units "matching radius sums" (62/80) -- was
+coincidence: NPCs get parked at furniture chokes, so the mesh-edge pin
+distances landed near the radius math. Everything built on it
+(v2.30.22 body naming, v2.30.24 radii + reroute, v2.30.80-82
+solid/vis/sealed refinements) chased a model the engine does not
+implement. The +0x5F/+0x62 findings themselves remain TRUE and mapped
+-- they are real engine state -- they just gate NPC steering and
+script semantics, not player blocking.
+
+REFACTOR SHIPPED (net deletion):
+  1. REMOVED: CollectBodies / BodyInDirection / BodyOnRay / BodyInfo +
+     the four body constants; the body-aware reroute and sealed-
+     corridor verdict in BuildTurnByTurnRoute (routes are walkmesh
+     truth alone); every "X is in the way" caution (route / offmesh /
+     straight-line); the wall-bump body naming. exclude_model_slot
+     kept in the route signature for stability, no longer consulted.
+     PlayerCollisionRadius() kept -- proximity semantics only.
+  2. ADDED, wall-vs-story-gate discrimination:
+     - LockedEdgeAhead(world_deg): on a proven freeze, load the RAW
+       mesh (new LoadWalkmesh apply_locks=false mode), test the
+       player-triangle edges for a locked neighbor whose outward
+       normal matches the push (dot > 0.3) within 48 units => speak
+       "The way is closed for now." once per contact episode (log
+       "WALL gate: locked edge ahead"). Plain walls stay thud-only.
+     - ReachableIgnoringLocks(...): on route NO_PATH, re-run A* on the
+       raw mesh; success => "<name>: the way there is closed for now."
+       (log "NAV route: lock-blocked") INSTEAD of connector-journey /
+       "off the walkable area" fallbacks that would otherwise walk the
+       player to a shut door; failure => existing fallback chain.
+  3. cfg glossary (wall_bump_tone) rewritten -- the shipped text
+     taught the false model ("people block movement exactly like
+     walls"); embedded cfg re-built, BOTH installed cfgs' glossary
+     block spliced in place (values untouched).
+
+Dry-run sanity vs history: station Barret asks now speak plain routes
+(nothing to name); hideout Tifa aisle -- if the aisle pin recurs it
+speaks as wall/lock, never "Tifa"; Tifa-behind-the-counter keeps
+working via the SAME lock knowledge that already cut those edges
+(v2.30.21) -- now it can SAY "closed for now" instead of routing at a
+counter wall silently.
+
+Deployed both installs (C5C4A13920A45F37), committed locally (push
+held). Literal checks: "is in the way" GONE from the DLL (ascii+wide),
+"closed for now" wide string present, both new log tags present,
+retired "sealed by"/"NAV caution" tags absent.
+
+VERIFY [BLOCKMODEL]: (a) walk into any NPC on an open field -- player
+should slide/pass through with NO speech and no wall tone (position
+keeps changing); (b) push into plain walls/furniture -- thud only,
+never a name, never "closed for now"; (c) find a story gate (e.g. a
+locked exit early in the reactor, or the hideout counter) -- pushing
+into it speaks "The way is closed for now." once per episode, and
+asking directions to a target behind it says "the way there is closed
+for now"; (d) the old [SOLID]/[BODYCAUTION] regression items are
+retired -- no speech should ever name a character as a blocker again;
+(e) log must carry v2.30.83 header, and any spoken gate line has a
+matching "WALL gate"/"lock-blocked" log line.
 
 ---
 
@@ -6353,7 +6461,10 @@ Proven payoffs of cluster reasoning so far:
 | `0x76713B` | world-map -> field exit | writes DEST field/triangle/direction (0x76713B/0x767163/0x767172) - the world module uses the same FIELD_JUMP_INTERFACE (2026-08-02) |
 | `0x61A4D4` | opcode MPJPO handler (table[0xD2]) | one-arg store to [MODULES_PTR]+0x36 (0x61A4F7) = static 0xCC0DBE MAPJUMP_DISABLED, PC += 2 - the gateway on/off switch scripts flip during scenes (ff7_mpjpo_static.py 2026-08-02, v2.30.64) |
 | `0x61C9DD` | opcode SOLID handler (table[0xC7]) | stores its 1-byte arg RAW to field_event_data **+0x5F** at 0x61CA30 (0 = solid, nonzero = intangible) via the standard entityâ†’model chain; PC += 2. Neighbor cluster 0x61BD88..0x61D539 = scripted-move opcodes writing 0/1 to the same byte (temporary intangibility during jumps/climbs). TALKR 0x618253 / SLIDR 0x61813D validated in the same decode (ff7_solid_static.py 2026-08-04, v2.30.80) |
-| `0x637724` | model-vs-model movement blocking test | callers 0x637110/0x6371F3/0x6372CF pass feeler points on the mover's radius circle (facing Â±0x20 via sin/cos 0x6364EB/0x636500). Per model i: skip self, **skip if +0x5F (static 0xCC16CF) != 0**, skip if \|Î”z\| >= 0x80, hit iff distÂ² < ((r_mover + r_i)/2)Â² (radii = static 0xCC16E2 = +0x72); when the mover is the PLAYER (index cmp 0xCC162C) it also sets the touched model's **+0x5E = 1** at 0x637859 (live "player bumping" flag, unconsumed). The engine's complete tangibility predicate â€” CollectBodies mirrors its skip list (ff7_solid_modelhit_dump.py 2026-08-04, v2.30.80) |
+| `0x637724` | model-vs-model movement OVERLAP test | callers 0x637110/0x6371F3/0x6372CF pass feeler points on the mover's radius circle (facing Â±0x20 via sin/cos 0x6364EB/0x636500). Per model i: skip self, **skip if +0x5F (static 0xCC16CF) != 0**, skip if \|Î”z\| >= 0x80, hit iff distÂ² < ((r_mover + r_i)/2)Â² (radii = static 0xCC16E2 = +0x72); when the mover is the PLAYER (index cmp 0xCC162C) it also sets the touched model's **+0x5E = 1** at 0x637859 â€” a flag with NO reader anywhere in .text (0xCC16CE appears once = the write). âš  ROLE CORRECTED v2.30.83: this verdict is DISCARDED for the user-controlled player (see the 0x636F18 row) â€” it drives NPC steering and UC-locked scripted movement only, never player blocking (ff7_solid_modelhit_dump.py v2.30.80; ff7_player_blocking_ground_truth.py v2.30.83) |
+| `0x636F18` | per-model MOVEMENT STEP (retry loop head; prologue above, steer branches jump back here; <=16 iterations) | probes straight + feelers (facing Â±0x20) each via try-move 0x6367B7 AND overlap test 0x637724 â†’ six flags. **Decision 0x63732F: PLAYER && FIELD_UC_LOCK==0 && any MODEL-only failure â†’ COMMIT the move anyway = the player walks THROUGH characters**; pure-wall failures â†’ slide (facing Â±8, retry); both-feelers-fail â†’ commit into the pin. NPCs/UC-locked player steer around models too. Tail: player-only LINE crossing test 0x637ABB â†’ 0xCC0870 (skipped while UC-locked), gateway 0x637EBA (skipped while MPJPO-disabled), doors 0x638177; field-id hacks 0x107/0x22E force-clear flags; commit writes pos + walk animation from speed thresholds 0xCC0DB6/0xCC0DB8 (ff7_player_blocking_ground_truth.py 2026-08-04, v2.30.83) |
+| `0x6367B7` | walkmesh TRY-MOVE (the only thing that ever stops the free player) | pure geometry: cross-products vs the current triangle's 3 edges (vertex pool [0xCFF744], stride 3Ã—8), neighbor lookup ([0xCFF748], stride 3Ã—2), **IDLCK bit test of the DESTINATION triangle (0xCC0E3A, the v2.30.21 sites 0x6369E8..) refuses locked crossings**; writes scratch current-triangle word 0xCC1630 (the v2.30.21 "unconfirmed" write, now explained). Zero character involvement (v2.30.83) |
+| `0x63640x` | TALK-TARGET selector | per-model angular-offset table; picks the model with minimum angular distance from facing (window 0x40) among those within **talk_radius(+0x74) + player_radius(+0x72)** â€” the engine's own talk-reach formula, matching the mod's chirp/reach behavioral derivation (v2.30.83) |
 | `0x60C327` / `0x60C880`-region | field model init / unbind | init block writes the flag-byte DEFAULTS (+0x5E=0, +0x5F=0 solid, +0x60=0, +0x61=0 talkable, climb words 0) before the scale-based radii (see 0x60C3A8 row); the unbind loop (entityâ†’model map 0xCBFB70 := 0xFF) writes +0x62=0 hidden, **+0x5F=1**, +0x61=1 â€” polarity proof for both TLKON-convention bytes (ff7_solid_consumer_static.py 2026-08-04) |
 
 Pattern: field module code sits in 0x60xxxxâ€“0x6Exxxx, world map in

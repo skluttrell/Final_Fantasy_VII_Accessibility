@@ -5,7 +5,31 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
-[BODYCAUTION] "In the way" now means sealed, not grazed — SHIPPED v2.30.82 (2026-08-04), awaiting play-test
+[BLOCKMODEL] Corrected blocking model: characters never block — SHIPPED v2.30.83 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+Tester domain statement forced a ground-up re-derivation
+(ff7_player_blocking_ground_truth.py): the movement engine COMMITS the
+player's move through character contacts while FIELD_UC_LOCK==0 — the
+free player walks through people; only walkmesh boundaries and IDLCK
+story locks stop them (character collision = NPC steering + scripted
+scenes only; the +0x5E bump flag has no reader in the exe). The
+v2.30.22-.82 body machinery chased a model the engine doesn't
+implement (the 64.0/81.0 hideout "radius" pins were mesh-edge pins at
+furniture chokes). Removed: CollectBodies/BodyInDirection/BodyOnRay,
+body reroute + sealed verdict, all "X is in the way" speech, wall-bump
+body naming, the false cfg glossary text (embedded + both installed
+cfgs). Added: wall-vs-story-gate discrimination — frozen against a
+locked edge speaks "The way is closed for now." (once per episode);
+route NO_PATH re-runs A* lock-free and speaks "the way there is closed
+for now" when locks are the only barrier.
+VERIFY: (a) walking into NPCs: pass/slide through, no speech, no wall
+tone; (b) walls/furniture: thud only, never a name; (c) a story gate:
+push = "The way is closed for now.", directions to a target behind it
+= "the way there is closed for now" (log lines "WALL gate"/
+"lock-blocked" must match); (d) no speech ever names a character as a
+blocker again; (e) log header v2.30.83.
+
+[BODYCAUTION] "In the way" now means sealed, not grazed — SHIPPED v2.30.82 (2026-08-04), OBSOLETE same day (superseded by [BLOCKMODEL] — body cautions removed entirely)
 ------------------------------------------------------------------------
 Third same-day session: v2.30.81's new logs confirmed the hidden-people
 fixes AND named the residual precisely — station Barret (visible,

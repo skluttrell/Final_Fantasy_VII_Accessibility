@@ -6947,90 +6947,55 @@ targeting_check:
 }
 
 // ---------------------------------------------------------------------------
-// Solid-body awareness (v2.30.22).
+// What blocks the player -- the corrected model (v2.30.83, 2026-08-04).
 //
-// FF7 field models body-block each other: walking into another character
-// stops the player dead, byte-identical (to every signal this mod reads) to
-// walking into a wall. The 2026-07-25 hideout play report proved how
-// disorienting that is: the route to Barret said "left", but Tifa stood in
-// the aisle and the player heard only the wall thud â€” the log shows them
-// pinned at EXACTLY 64.0 units from her center for 3Â½ minutes (64 = 32+32,
-// the classic FF7 collision radius pair; any input with a positive
-// component toward her produced zero movement).
+// A tester's domain statement ("on screen characters should never block
+// any path unless there's a story reason") forced a ground-up
+// re-derivation of the engine's movement pipeline
+// (ff7_player_blocking_ground_truth.py -- full annotated disasm of the
+// per-frame movement step 0x636F18, walkmesh try-move 0x6367B7, and
+// model-overlap test 0x637724). Instruction-proven results:
 //
-// The offline dry run of that exact scene (investigate/
-// ff7_hideout_firstleg_dryrun.py, logs 20260725_*) established:
-//   - the walkmesh route and its quantized directions were CORRECT â€” the
-//     leg was walkable, a body made it unfollowable;
-//   - with 64-unit contact this room's aisles SEAL COMPLETELY (flood fill:
-//     Barret unreachable from anywhere) yet at 56 they open â€” so per-model
-//     radii differ and body-aware REROUTING is deferred until the real
-//     radii are known (see the rc6E/rc70/rc72 diagnostic below and the
-//     TODO entry).
-// What ships now is the honest layer: NAME the body. The wall-bump thread
-// speaks "<Name> is in the way" once per contact episode when a person
-// stands in the held direction, and the directions announce appends the
-// same caution when the first leg's quantized ray passes through a body.
+//   - The USER-CONTROLLED PLAYER IS NEVER BLOCKED BY CHARACTERS. The
+//     movement step probes straight + two 45-degree feelers, each against
+//     the walkmesh AND against other models -- but the decision branch at
+//     0x63732F throws the model answer away for the player while
+//     FIELD_UC_LOCK == 0: any probe failing ONLY on a model commits the
+//     move anyway (the player walks straight through people). The
+//     model-overlap test's sole player-path side effect, the +0x5E
+//     "player is bumping me" flag, has NO reader anywhere in the exe.
+//   - Wall failures instead run the slide loop (facing +/-8/256ths,
+//     up to 16 retries) -- the familiar wall slide; a head-on dead end
+//     is the pin.
+//   - Character collision exists only for NPC-vs-NPC steering and for
+//     the player while a script has control (UC lock) -- i.e. exactly
+//     "a story reason", during which input is ignored anyway.
+//   - Paths are therefore blocked by exactly three things: walkmesh
+//     boundaries (walls/furniture -- edges with no neighbor), IDLCK
+//     triangle locks (0xCC0E3A -- the scripted STORY GATES, tested at
+//     edge crossing inside the try-move), and disabled gateways/lines.
+//     A "guard blocking a door" is set dressing standing on a locked
+//     edge or a mesh gap.
 //
-// v2.30.24: per-model collision radii are now REAL â€” the v2.30.22
-// candidate dump confirmed FIELD_EVENT_COLLISION_RADIUS (+0x72; see
-// ff7_addresses.h for the two-anchor derivation). Every body test below
-// uses live radii: contact = player_radius + body_radius, plus a purpose-
-// sized margin. The radius is DYNAMIC (scripts set it; 0 = intangible),
-// so it is read fresh per call, never cached.
+// This RETIRES the v2.30.22-.82 solid-body machinery (CollectBodies /
+// BodyInDirection / BodyOnRay, the route reroute + "X is in the way"
+// cautions): its founding evidence -- the 2026-07-25 hideout pins at
+// 64.0/81.0 units matching radius sums -- was a coincidence; the pins
+// were mesh edges at the furniture chokes the NPCs were parked in, the
+// exact wall-vs-person misattribution the user later reported. What
+// replaced it: the wall-bump thread now DISCRIMINATES wall vs story
+// gate (locked edge ahead => "The way is closed for now."), and route
+// NO_PATH checks whether ignoring locks would make the target
+// reachable (=> "closed for now" instead of "no walkable path").
 //
-// v2.30.80: tangibility is now the ENGINE's OWN predicate, not a radius
-// heuristic. The user-reported false blockers (station guards you walk
-// straight through) carry a normal radius but a set SOLID-OFF flag
-// (+0x5F, the SOLID opcode) â€” the one byte the engine's movement
-// blocking test (0x637724) actually gates on. CollectBodies mirrors
-// that test's skip list (SOLID-OFF, and its Â±128-unit z level gate),
-// so every consumer below â€” wall-bump naming, route cautions, the
-// body-aware reroute â€” inherits engine-parity tangibility from the one
-// collection point. See FIELD_EVENT_SOLID_OFF in ff7_addresses.h for
-// the full derivation and the flevel-scan scale evidence.
-//
-// Constants:
-//   BODY_CONE_MIN_COS 0.5 (Â±60Â°): at rest ON a body, any direction within
-//     90Â° of the body bearing freezes; Â±60Â° covers every case observed in
-//     the hideout log while excluding bodies clearly off to the side.
-//   kBodyNameSlack  26: naming search reaches contact + slack â€” a frozen
-//     player rests up to one step OUTSIDE contact, and naming a body a
-//     half-body away is still the right answer; farther = a wall problem.
-//   kBodyRayMargin   8: route-caution ray width beyond contact â€” warn
-//     only about bodies that will actually stop the walk.
-//   kBodyRouteMargin 6: reroute leg test beyond contact â€” a leg passing
-//     within a step of contact is treated as blocked so the reroute
-//     doesn't thread the needle.
+// FIELD_EVENT_COLLISION_RADIUS (+0x72) remains real and mapped -- it
+// feeds NPC steering, the engine's talk-target selector (nearest model
+// within talk_radius + player_radius, 0x63640x), and this mod's
+// proximity semantics. It just never gated the player's movement.
 // ---------------------------------------------------------------------------
-constexpr float BODY_CONE_MIN_COS = 0.5f;
-constexpr float kBodyNameSlack    = 26.0f;
-constexpr float kBodyRayMargin    = 8.0f;
-constexpr float kBodyRouteMargin  = 6.0f;
 static bool IsReadableSpan(const void* p, size_t len);
-
-// One placed person-class model with a live body. name = translated dev
-// label (no dedup ordinal â€” "shinra guard is in the way" is enough to
-// explain a bump; the browser distinguishes guard 2 from guard 3).
-struct BodyInfo {
-    float        x, y;
-    float        radius;   // live +0x72 (DYNAMIC; intangible models are
-                           // not collected at all)
-    int          slot;
-    std::wstring name;
-};
-static size_t CollectBodies(int exclude_slot, BodyInfo out[32]);
-static float  PlayerCollisionRadius();
-static bool BodyInDirection(float px, float py, float world_deg,
-                            int exclude_slot, std::wstring& out_name,
-                            float* out_dist);
-// dest_x/dest_y (v2.30.82): when given, bodies whose contact circle
-// covers that aim point are ignored -- someone standing AT the
-// destination is not "in the way" of walking to it (the station-Barret
-// at-the-exit false positive). FLT_MAX = no aim point.
-static bool BodyOnRay(float px, float py, float world_deg, float length,
-                      int exclude_slot, std::wstring& out_name,
-                      float dest_x = FLT_MAX, float dest_y = FLT_MAX);
+static float PlayerCollisionRadius();
+static bool LockedEdgeAhead(float world_deg);
 // Held direction bits -> screen/d-pad angle (0=up, 90=right...), or -1
 // when no direction (or a contradictory pair) is held.
 static float HeldDirInputDeg(uint32_t keys);
@@ -7328,9 +7293,20 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
             // nothing here â€” at 3+ beeps/second even debug logging would spam.
             Tones::Play(kBeepFreqHz, kBeepDurMs);
 
-            // v2.30.22: if a PERSON stands in the held direction, this
-            // "wall" is a body â€” say who, once per contact episode (see the
-            // solid-body block above WallBumpThread for the derivation).
+            // v2.30.83: WALL vs STORY GATE. Characters never stop the
+            // user-controlled player (the movement step commits through
+            // model contacts while FIELD_UC_LOCK==0 -- see the corrected
+            // model block above), so a proven freeze has exactly two
+            // causes: real geometry (walls/furniture = mesh boundary)
+            // or an IDLCK-locked edge (a script gate that will open at
+            // a story beat). Geometry gets the thud alone -- it speaks
+            // for itself. A locked edge gets ONE spoken line per
+            // contact episode, because "come back later" is knowledge a
+            // sighted player gets from context and a blind player
+            // otherwise can't distinguish from a dead end.
+            // (This replaces the v2.30.22-.82 "<Name> is in the way"
+            // body naming -- the misattribution machine that blamed
+            // whoever stood near the wall that actually stopped you.)
             // interrupt=false: queue behind any route announcement in
             // progress rather than clobbering it.
             if (!episode_named) {
@@ -7346,20 +7322,15 @@ static DWORD WINAPI WallBumpThread(LPVOID /*unused*/)
                     // input = world + control - 180  =>  world = input - control + 180
                     const float world = held_input -
                         control_dir * (360.0f / 256.0f) + 180.0f;
-                    std::wstring bname;
-                    float bdist = 0.0f;
-                    if (BodyInDirection(static_cast<float>(x >> 12),
-                                        static_cast<float>(y >> 12),
-                                        world, /*exclude_slot=*/-1,
-                                        bname, &bdist)) {
-                        std::wstring msg = bname + L" is in the way.";
-                        TTS::Speak(msg, /*interrupt=*/false);
+                    if (LockedEdgeAhead(world)) {
+                        TTS::Speak(L"The way is closed for now.",
+                                   /*interrupt=*/false);
                         if (Config::Get().debug_log) {
                             char dbg[160];
                             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                                "[FF7Access] WALL body: '%ls' dist=%.1f "
+                                "[FF7Access] WALL gate: locked edge ahead "
                                 "held_input=%.0f world=%.1f player=(%ld,%ld)",
-                                bname.c_str(), bdist, held_input, world,
+                                held_input, world,
                                 static_cast<long>(x >> 12),
                                 static_cast<long>(y >> 12));
                             Log::Write(dbg);
@@ -7676,7 +7647,14 @@ struct NavPt { float x, y; };
 // Snapshot and validate the current field's walkmesh. False = caller must
 // fall back to straight-line directions (buffer mid-transition, count
 // implausible, or the access pool failed its self-guard).
-static bool LoadWalkmesh(std::vector<WalkTri>& out)
+// apply_locks (v2.30.83): true = overlay the IDLCK story-lock cuts (the
+// graph the player can walk RIGHT NOW -- what routing wants); false =
+// the raw geometric mesh (what the field would allow if scripts opened
+// every gate). Loading both and comparing reachability is how NO_PATH
+// distinguishes "closed for now" (story gate) from "genuinely
+// unreachable"; the raw mesh is also what the wall-bump thread probes
+// to tell a locked edge from a plain wall.
+static bool LoadWalkmesh(std::vector<WalkTri>& out, bool apply_locks = true)
 {
     const uint32_t buf = *reinterpret_cast<const volatile uint32_t*>(
         FF7Addr::FIELD_FILE_BUFFER);
@@ -7764,7 +7742,7 @@ static bool LoadWalkmesh(std::vector<WalkTri>& out)
     // where the talk radius already reaches across (matching how a
     // sighted player interacts).
     uint32_t locked = 0;
-    for (uint32_t t = 0; t < ntris; ++t) {
+    for (uint32_t t = 0; apply_locks && t < ntris; ++t) {
         for (int e = 0; e < 3; ++e) {
             const uint16_t nb = out[t].nbr[e];
             if (nb == FF7Addr::FWMESH_NO_NEIGHBOR)
@@ -8217,40 +8195,28 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
                                          std::wstring& out_route,
                                          int* out_first_sector = nullptr,
                                          float* out_first_len = nullptr,
-                                         bool to_nearest = false,
-                                         std::wstring* out_blocker = nullptr)
+                                         bool to_nearest = false)
 {
-    // out_blocker (v2.30.82): set to a body's name ONLY when that body
-    // genuinely SEALS the corridor -- the returned route still passes
-    // through its contact circle after the body-aware reroute failed to
-    // find a clear alternative, AND the body is not simply standing at
-    // the destination. This is the route-level truth the caller should
-    // speak as "<name> is in the way"; the old first-leg RAY probe
-    // (v2.30.22) warned whenever a body merely touched the quantized
-    // direction word, which play disproved twice in one 2026-08-04
-    // session: station Barret grazed the "up 12 seconds" ray on a wide
-    // platform the walkmesh route already cleared (the engine slides
-    // the player around bodies -- a graze never gates progress), and
-    // then stood AT the exit gateway he had just run to ("left 1
-    // second. Barret is in the way." while the player walked out 5s
-    // later). A body that truly stops the player mid-walk is named at
-    // contact time by the wall-bump thread -- prediction is reserved
-    // for corridors that are actually sealed (the hideout-Tifa case).
+    // v2.30.83: routes IGNORE characters entirely. The engine's movement
+    // step walks the user-controlled player straight through models (see
+    // the corrected-model block above WallBumpThread), so the
+    // v2.30.24-.82 body-aware reroute and "sealed corridor" verdict --
+    // built on the belief that people block like walls -- computed
+    // detours around obstacles that do not exist and named blockers
+    // that never blocked. The route is walkmesh truth alone: geometry
+    // plus IDLCK story locks (cut in LoadWalkmesh).
     // to_nearest (v2.30.25): when the target is graph-unreachable
     // (off the walkable floor â€” Biggs sitting on the hideout crates,
     // Tifa behind the locked bar counter), route to the REACHABLE
     // triangle nearest the target instead of giving up, aiming the walk
     // at that triangle's closest point. The caller words the result as
     // "off the walkable area" and the talk radius covers the last gap.
-    // exclude_model_slot (v2.30.24): the destination's own model when
-    // routing to a person â€” their body always sits at the route's end
-    // and must not count as a blocker.
+    // exclude_model_slot: kept for signature stability (the destination
+    // model's slot when routing to a person) -- no longer consulted.
     // target_reach (v2.30.25): how far short of the target the walk may
     // END and still succeed â€” a person is "reached" at their talk
-    // radius. Body tests ignore the final reach-length of the route, so
-    // a companion standing shoulder-to-shoulder with the target (Barret
-    // 73 units from Biggs) neither blocks the route nor triggers a
-    // reroute the room can't satisfy.
+    // radius.
+    (void)exclude_model_slot;
     std::vector<WalkTri> mesh;
     if (!LoadWalkmesh(mesh)) {
         Log::Write("[FF7Access] NAV route: walkmesh unavailable, "
@@ -8347,144 +8313,11 @@ static RouteOutcome BuildTurnByTurnRoute(float px, float py, float pz,
         corners.push_back({ tx, ty });
     }
 
-    // ---- body-aware reroute (v2.30.24) --------------------------------
-    // Solid people block movement exactly like walls (v2.30.22), and the
-    // collision radii are now live-readable, so the route can be tested
-    // against bodies and REROUTED around them when another corridor
-    // exists. Method (validated offline in the 2026-07-25 dry run):
-    // temp-avoid every triangle a blocking body's contact circle
-    // overlaps (start/goal exempt â€” pinning the player or target inside
-    // an avoided triangle would only manufacture failure) and re-run A*.
-    // The reroute is adopted ONLY if its own funnel comes back clear of
-    // ALL bodies; otherwise the original route stands and the v2.30.22
-    // caution names the blocker â€” a clear route or the honest truth,
-    // never a guess. Triangle granularity is a known limit: a body in a
-    // large doorway triangle can seal a corridor a foot-width gap would
-    // technically allow (the hideout's Tifa case) â€” that outcome is the
-    // caution, which is correct enough for a squeeze a player must
-    // shimmy through anyway.
-    {
-        BodyInfo bodies[32];
-        const size_t nb = CollectBodies(exclude_model_slot, bodies);
-        const float pr = PlayerCollisionRadius();
-        // Pull the route's END back by target_reach before testing (the
-        // v2.30.25 rule above): walk backward along the corners removing
-        // reach-length of polyline.
-        const auto truncate_reach = [&](std::vector<NavPt> cs) {
-            float cut = target_reach;
-            while (cut > 0.0f && !cs.empty()) {
-                const NavPt prev = (cs.size() >= 2)
-                                       ? cs[cs.size() - 2] : NavPt{ px, py };
-                const float lx = cs.back().x - prev.x;
-                const float ly = cs.back().y - prev.y;
-                const float len = sqrtf(lx * lx + ly * ly);
-                if (len > cut && len > 0.0f) {
-                    cs.back().x -= lx / len * cut;
-                    cs.back().y -= ly / len * cut;
-                    break;
-                }
-                cut -= len;
-                cs.pop_back();
-            }
-            return cs;
-        };
-        const auto blocked_by = [&](const std::vector<NavPt>& corners_in) {
-            // indices of bodies whose contact circle some leg enters
-            const std::vector<NavPt> cs = truncate_reach(corners_in);
-            std::vector<int> hits;
-            for (size_t b = 0; b < nb; ++b) {
-                const float rr = pr + bodies[b].radius + kBodyRouteMargin;
-                float ax = px, ay = py;
-                for (const NavPt& c : cs) {
-                    if (PointSegDist2(bodies[b].x, bodies[b].y,
-                                      ax, ay, c.x, c.y) < rr * rr) {
-                        hits.push_back(static_cast<int>(b));
-                        break;
-                    }
-                    ax = c.x; ay = c.y;
-                }
-            }
-            return hits;
-        };
-        const std::vector<int> hits = blocked_by(corners);
-        bool rerouted = false;
-        if (!hits.empty()) {
-            std::vector<uint8_t> avoid(n, 0);
-            for (int b : hits) {
-                const float rr = pr + bodies[b].radius;
-                for (int t = 0; t < n; ++t) {
-                    if (t == start || t == goal)
-                        continue;
-                    if (TriangleDistance(mesh[t], bodies[b].x,
-                                         bodies[b].y) < rr)
-                        avoid[t] = 1;
-                }
-            }
-            std::vector<uint16_t> path2;
-            if (WalkmeshAStar(mesh, start, goal, path2, &avoid)) {
-                std::vector<PathPortal> portals2;
-                BuildPortals(mesh, path2, portals2);
-                std::vector<NavPt> corners2;
-                FunnelPath(px, py, tx, ty, portals2, corners2);
-                if (!corners2.empty() && blocked_by(corners2).empty()) {
-                    corners.swap(corners2);
-                    path.swap(path2);
-                    rerouted = true;
-                    if (Config::Get().debug_log) {
-                        char dbg[128];
-                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                            "[FF7Access] NAV route: rerouted around %u "
-                            "bod%s (player_r=%.0f)",
-                            static_cast<unsigned>(hits.size()),
-                            hits.size() == 1 ? "y" : "ies", pr);
-                        Log::Write(dbg);
-                    }
-                }
-            }
-        }
-        // Sealed-corridor verdict (v2.30.82): the route we are about to
-        // speak still crosses a body's contact circle and no clear
-        // alternative exists. Name the nearest such body -- EXCEPT one
-        // whose circle covers the route's (reach-truncated) END: that
-        // body is AT the destination (a companion who ran ahead to the
-        // exit, a greeter at the door), not an obstacle on the way to
-        // it; if it genuinely plugs the doorway the wall-bump namer
-        // reports the fact at contact, which needs no prediction.
-        if (out_blocker && !hits.empty() && !rerouted) {
-            const std::vector<NavPt> cs = truncate_reach(corners);
-            const NavPt end = cs.empty() ? NavPt{ px, py } : cs.back();
-            float best_d2 = FLT_MAX;
-            int   best_b  = -1;
-            for (int b : hits) {
-                const float rr = pr + bodies[b].radius + kBodyRouteMargin;
-                const float dxe = bodies[b].x - end.x;
-                const float dye = bodies[b].y - end.y;
-                if (dxe * dxe + dye * dye < rr * rr)
-                    continue;               // standing at the destination
-                const float dxp = bodies[b].x - px;
-                const float dyp = bodies[b].y - py;
-                const float d2 = dxp * dxp + dyp * dyp;
-                if (d2 < best_d2) {
-                    best_d2 = d2;
-                    best_b  = b;
-                }
-            }
-            if (best_b >= 0)
-                *out_blocker = bodies[best_b].name;
-            if (Config::Get().debug_log) {
-                char dbg[192];
-                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] NAV route: sealed by %u bod%s, "
-                    "blocker='%ls'%s",
-                    static_cast<unsigned>(hits.size()),
-                    hits.size() == 1 ? "y" : "ies",
-                    best_b >= 0 ? bodies[best_b].name.c_str() : L"",
-                    best_b < 0 ? " (all at destination -- suppressed)"
-                               : "");
-                Log::Write(dbg);
-            }
-        }
-    }
+    // (v2.30.83: the body-aware reroute + sealed-corridor verdict that
+    // lived here were removed with the corrected blocking model --
+    // characters do not block the player, so there is nothing to
+    // reroute around and nobody to name. See the block above
+    // WallBumpThread for the derivation.)
 
     out_route = RouteToSpeech(px, py, corners, control_deg,
                               out_first_sector, out_first_len);
@@ -9076,131 +8909,12 @@ static float HeldDirInputDeg(uint32_t keys)
     return -1.0f;
 }
 
-// Fill out[] with every placed MC_PERSON model except the player and
-// exclude_slot. Same filters as the destination-list build: the parked
-// signature (tri==0 AND pos==(0,0), v2.30.19) is skipped, but OFF-mesh
-// models (tri<0) are kept â€” Marlene behind the bar counter is off-mesh
-// yet very much a solid body. v2.30.24: each body carries its LIVE
-// collision radius; a radius of 0 (script-set intangible) or negative
-// means the model cannot block anything right now and is not collected.
-// v2.30.80: mirror the ENGINE's tangibility predicate (its movement
-// blocking test 0x637724 â€” see FIELD_EVENT_SOLID_OFF provenance):
-//   - skip models whose SOLID-OFF byte (+0x5F) is nonzero. The radius
-//     alone was never the whole story: the SOLID opcode toggles
-//     collision WITHOUT touching the radius, and script-intangible
-//     people are common (2,876 entities game-wide; the station guards
-//     the pathfinder falsely blamed all carry SOLID(1)).
-//   - skip models beyond the engine's own Â±128-unit z gate: a person
-//     on a catwalk above/below a split-z field never blocks the
-//     player's level, so it must not be named or rerouted around.
-static size_t CollectBodies(int exclude_slot, BodyInfo out[32])
-{
-    const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
-        FF7Addr::FIELD_EVENT_DATA_PTR);
-    const uint16_t pmid = *reinterpret_cast<const volatile uint16_t*>(
-        FF7Addr::FIELD_PLAYER_MODEL_ID);
-    const uint16_t nmod = *reinterpret_cast<const volatile uint16_t*>(
-        FF7Addr::FIELD_N_MODELS);
-    if (arr < 0x401000 || pmid > 0x20)
-        return 0;
-    const uint32_t n = (nmod < 32u) ? nmod : 32u;
-    if (!IsReadableSpan(reinterpret_cast<const void*>(arr),
-                        n * FF7Addr::FIELD_EVENT_DATA_STRIDE))
-        return 0;
-
-    // Field name for the label lookup (same sanitize as the nav thread).
-    const uint32_t hdr = *reinterpret_cast<const volatile uint32_t*>(
-        FF7Addr::FIELD_TRIGGERS_HEADER_PTR);
-    if (hdr < 0x401000 ||
-        !IsReadableSpan(reinterpret_cast<const void*>(hdr), 10))
-        return 0;
-    char fname[10] = {};
-    memcpy(fname, reinterpret_cast<const void*>(
-        hdr + FF7Addr::FTRIG_OFF_FIELD_NAME), 9);
-    for (char& c : fname)
-        if (c != '\0' && (c < 0x20 || c > 0x7E)) c = '\0';
-
-    // Player z for the engine's Â±128-unit level gate below. Only read
-    // when the player slot is inside the span validated above; a
-    // torn/odd player id disables the gate rather than reading outside
-    // the probed range (fail open: a kept body is the pre-.80 status
-    // quo, a skipped one must be certain).
-    const bool have_pz = pmid < n;
-    const int32_t pz = have_pz
-        ? (reinterpret_cast<const int32_t*>(
-               arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE +
-               FF7Addr::FIELD_EVENT_MODEL_POS)[2] >> 12)
-        : 0;
-
-    size_t cnt = 0;
-    for (uint16_t m = 0; m < n && cnt < 32; ++m) {
-        if (m == pmid || static_cast<int>(m) == exclude_slot)
-            continue;
-        const uint8_t* me = reinterpret_cast<const uint8_t*>(
-            arr + m * FF7Addr::FIELD_EVENT_DATA_STRIDE);
-        const int32_t* mpos = reinterpret_cast<const int32_t*>(
-            me + FF7Addr::FIELD_EVENT_MODEL_POS);
-        const int16_t tri = *reinterpret_cast<const int16_t*>(
-            me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
-        const int32_t mx = mpos[0] >> 12;
-        const int32_t my = mpos[1] >> 12;
-        if (tri == 0 && mx == 0 && my == 0)
-            continue;                       // parked (v2.30.19)
-        // Live collision radius (v2.30.24). <=0 = intangible right now
-        // (script-cleared) â€” no body to block or name. Implausibly large
-        // values (torn read) clamp to the common default 30.
-        const int16_t rr = *reinterpret_cast<const int16_t*>(
-            me + FF7Addr::FIELD_EVENT_COLLISION_RADIUS);
-        if (rr <= 0)
-            continue;
-        // SOLID-OFF flag (v2.30.80): the engine's movement test skips
-        // these models entirely, so walking straight through them works
-        // in-game â€” they must never be named as blockers or rerouted
-        // around. Read LIVE like the radius (scripts flip it at
-        // runtime: SOLID(0) on wake, SOLID(1) during scenes).
-        if (me[FF7Addr::FIELD_EVENT_SOLID_OFF] != 0)
-            continue;
-        // VISI-hidden models (v2.30.81, the 2026-08-04 station log): a
-        // script-hidden person is INVISIBLE â€” a sighted player sees an
-        // empty walkway, so speech must never claim a person blocks it.
-        // The Echo-S station log proved the case live: hidden soldier
-        // 'hei0' (vis=0) stood 18 units off the exit ray and the route
-        // caution named him while the player walked straight through
-        // the spot. Vanilla scripts pair VISI(0) with SOLID(1), so this
-        // is usually redundant with the flag above; it exists for
-        // modded/edited scripts that hide without clearing solidity.
-        // Tradeoff (deliberate): if such a model IS still engine-solid,
-        // it blocks like an invisible wall â€” for a sighted player too â€”
-        // and the wall-bump tone reports it as exactly that: a wall,
-        // not a phantom person.
-        if (me[FF7Addr::FIELD_EVENT_VISIBLE] == 0)
-            continue;
-        // Engine z gate (v2.30.80): a body on another level of a
-        // split-z field cannot block the player no matter how close in
-        // 2D â€” same |dz| >= 128 test the engine's 0x637724 uses.
-        const int32_t mz = mpos[2] >> 12;
-        if (have_pz && (mz - pz >= FF7Addr::FIELD_BODY_Z_GATE ||
-                        pz - mz >= FF7Addr::FIELD_BODY_Z_GATE))
-            continue;
-        std::wstring lbl;
-        if (!FieldModelLabel(m, fname, lbl))
-            continue;
-        const wchar_t* friendly = nullptr;
-        if (ClassifyModelLabel(lbl, &friendly) != MC_PERSON)
-            continue;                       // props/chests never named here
-        out[cnt].x      = static_cast<float>(mx);
-        out[cnt].y      = static_cast<float>(my);
-        out[cnt].radius = (rr > 200) ? 30.0f : static_cast<float>(rr);
-        out[cnt].slot   = m;
-        out[cnt].name   = TranslateDevLabel(lbl);
-        ++cnt;
-    }
-    return cnt;
-}
-
 // The player's own live collision radius (same +0x72 field on the player's
-// element). Falls back to 32 â€” the value both 2026-07-25 contact anchors
-// solved for â€” when the element is unreadable or the value implausible.
+// element). Falls back to 32 when the element is unreadable or the value
+// implausible. Used for PROXIMITY semantics only (reach bubbles, journey
+// completion) â€” the field the engine itself initializes from the field
+// scale at arrival (0x633FBC: 34 Â· scale >> 9) and consults for talk
+// targeting and NPC steering, never to block the player (v2.30.83).
 static float PlayerCollisionRadius()
 {
     const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
@@ -9218,78 +8932,103 @@ static float PlayerCollisionRadius()
     return (rr >= 8 && rr <= 120) ? static_cast<float>(rr) : 32.0f;
 }
 
-// Nearest person within its contact distance (+ naming slack) whose
-// bearing lies within the blocking cone of the given world direction.
-// The d<1 case (standing literally on the body's coordinates â€” scripted
-// overlaps) counts as a hit regardless of bearing.
-static bool BodyInDirection(float px, float py, float world_deg,
-                            int exclude_slot, std::wstring& out_name,
-                            float* out_dist)
+// Is the player pinned against a STORY-LOCKED edge in the pushed
+// direction? (v2.30.83 -- the wall-vs-story-gate discriminator.)
+//
+// Called by the wall-bump thread once per contact episode, when the
+// player is provably frozen pushing a direction. The engine refuses a
+// crossing when the DESTINATION triangle's IDLCK bit is set (edge tests
+// 0x6369E8/0x636AAF/0x636B76 inside the try-move); mirroring that:
+// load the RAW mesh (locks NOT cut, so locked neighbors are still
+// visible as neighbors), take the player's triangle, and look for an
+// edge whose neighbor is locked, whose outward normal roughly matches
+// the push direction, and which the player is standing close to (a
+// frozen player rests against the refusing edge). Any such edge means
+// the "wall" is a script gate that will open later -- worth saying,
+// because walking elsewhere WON'T help a player who is expected to
+// come back here after a story beat.
+static bool LockedEdgeAhead(float world_deg)
 {
-    BodyInfo bodies[32];
-    const size_t n = CollectBodies(exclude_slot, bodies);
-    const float pr = PlayerCollisionRadius();
+    const uint32_t arr = *reinterpret_cast<const volatile uint32_t*>(
+        FF7Addr::FIELD_EVENT_DATA_PTR);
+    const uint16_t pmid = *reinterpret_cast<const volatile uint16_t*>(
+        FF7Addr::FIELD_PLAYER_MODEL_ID);
+    if (arr < 0x401000 || pmid > 0x20)
+        return false;
+    const uint8_t* me = reinterpret_cast<const uint8_t*>(
+        arr + pmid * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+    if (!IsReadableSpan(me, FF7Addr::FIELD_EVENT_DATA_STRIDE))
+        return false;
+    const int16_t tri = *reinterpret_cast<const int16_t*>(
+        me + FF7Addr::FIELD_EVENT_TRIANGLE_ID);
+    if (tri < 0)
+        return false;
+    const int32_t* mpos = reinterpret_cast<const int32_t*>(
+        me + FF7Addr::FIELD_EVENT_MODEL_POS);
+    const float px = static_cast<float>(mpos[0] >> 12);
+    const float py = static_cast<float>(mpos[1] >> 12);
+
+    std::vector<WalkTri> mesh;
+    if (!LoadWalkmesh(mesh, /*apply_locks=*/false))
+        return false;
+    if (static_cast<size_t>(tri) >= mesh.size())
+        return false;
+
     const float rad = world_deg * (3.14159265f / 180.0f);
     const float ux = sinf(rad), uy = cosf(rad);
-    float best = FLT_MAX;
-    bool  hit  = false;
-    for (size_t i = 0; i < n; ++i) {
-        const float dx = bodies[i].x - px;
-        const float dy = bodies[i].y - py;
-        const float d  = sqrtf(dx * dx + dy * dy);
-        if (d >= pr + bodies[i].radius + kBodyNameSlack || d >= best)
+    const WalkTri& w = mesh[tri];
+    for (int e = 0; e < 3; ++e) {
+        const uint16_t nb = w.nbr[e];
+        if (nb == FF7Addr::FWMESH_NO_NEIGHBOR ||
+            !FF7Addr::is_triangle_locked(nb))
             continue;
-        if (d >= 1.0f && (dx * ux + dy * uy) / d < BODY_CONE_MIN_COS)
+        const int f = (e + 1) % 3, o = (e + 2) % 3;
+        // Outward edge normal = perpendicular pointing away from the
+        // third vertex (i.e. out of the triangle through this edge).
+        float nx = w.vy[f] - w.vy[e];
+        float ny = -(w.vx[f] - w.vx[e]);
+        const float ox = w.vx[o] - w.vx[e];
+        const float oy = w.vy[o] - w.vy[e];
+        if (nx * ox + ny * oy > 0.0f) { nx = -nx; ny = -ny; }
+        const float nlen = sqrtf(nx * nx + ny * ny);
+        if (nlen <= 0.0f)
             continue;
-        best     = d;
-        hit      = true;
-        out_name = bodies[i].name;
+        // Pushing roughly INTO the locked edge (within ~72 degrees --
+        // generous because the freeze predicate already proved the
+        // held direction produces no movement)...
+        if ((ux * nx + uy * ny) / nlen < 0.3f)
+            continue;
+        // ...while standing against it (a pinned player rests at the
+        // refusing edge; 48 covers every field-scale player radius).
+        if (PointSegDist2(px, py, w.vx[e], w.vy[e],
+                          w.vx[f], w.vy[f]) > 48.0f * 48.0f)
+            continue;
+        return true;
     }
-    if (hit && out_dist)
-        *out_dist = best;
-    return hit;
+    return false;
 }
 
-// First person (smallest advance along the ray) whose contact circle the
-// segment from (px,py) of the given length enters â€” "will walking this
-// quantized leg run into somebody?"
-static bool BodyOnRay(float px, float py, float world_deg, float length,
-                      int exclude_slot, std::wstring& out_name,
-                      float dest_x, float dest_y)
+// Would the route target be reachable if every IDLCK story lock were
+// open? (v2.30.83.) Called only after routing on the lock-cut graph
+// returned NO_PATH: true = the target is walled off by SCRIPT locks,
+// not geometry -- a "closed for now" story gate the player should
+// expect to open later; false = genuinely disconnected (another level,
+// off-mesh) and the existing fallbacks (connector journeys, nearest-
+// reachable) apply.
+static bool ReachableIgnoringLocks(float px, float py, float pz,
+                                   int start_hint,
+                                   float tx, float ty, float tz,
+                                   int goal_hint)
 {
-    BodyInfo bodies[32];
-    const size_t n = CollectBodies(exclude_slot, bodies);
-    const float pr = PlayerCollisionRadius();
-    const float rad = world_deg * (3.14159265f / 180.0f);
-    const float ux = sinf(rad), uy = cosf(rad);
-    float best_t = FLT_MAX;
-    bool  hit    = false;
-    for (size_t i = 0; i < n; ++i) {
-        const float dx = bodies[i].x - px;
-        const float dy = bodies[i].y - py;
-        const float t  = dx * ux + dy * uy;        // advance along the ray
-        const float tc = (t < 0.0f) ? 0.0f : (t > length ? length : t);
-        const float cx = px + ux * tc - bodies[i].x;
-        const float cy = py + uy * tc - bodies[i].y;
-        const float rr = pr + bodies[i].radius + kBodyRayMargin;
-        if (cx * cx + cy * cy >= rr * rr)
-            continue;
-        // At-the-destination suppression (v2.30.82, declaration
-        // comment): a body standing on the aim point is the scenery of
-        // arrival, not an obstacle en route.
-        if (dest_x != FLT_MAX) {
-            const float ex = bodies[i].x - dest_x;
-            const float ey = bodies[i].y - dest_y;
-            if (ex * ex + ey * ey < rr * rr)
-                continue;
-        }
-        if (tc < best_t) {
-            best_t   = tc;
-            hit      = true;
-            out_name = bodies[i].name;
-        }
-    }
-    return hit;
+    std::vector<WalkTri> mesh;
+    if (!LoadWalkmesh(mesh, /*apply_locks=*/false))
+        return false;
+    const int start = ResolveTriHint(mesh, start_hint, px, py, pz);
+    const int goal  = ResolveTriHint(mesh, goal_hint, tx, ty, tz);
+    if (start < 0 || goal < 0)
+        return false;
+    std::vector<uint16_t> path;
+    return WalkmeshAStar(mesh, start, goal, path);
 }
 
 // ---------------------------------------------------------------------------
@@ -12325,92 +12064,72 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             const float fty = fpy + dy;
             const float ftz = d.line_z1 + t * (d.line_z2 - d.line_z1);
             std::wstring route;
-            int   first_sector = -1;
-            float first_len    = 0.0f;
-            std::wstring blocker;
             const RouteOutcome ro = BuildTurnByTurnRoute(
                 fpx, fpy, fpz, player_tri, ftx, fty, ftz,
                 d.target_tri, control_deg, d.model_slot, target_reach,
-                route, &first_sector, &first_len,
-                /*to_nearest=*/false, &blocker);
+                route);
             if (ro == RouteOutcome::SPOKEN_ROUTE) {
+                // v2.30.83: no body caution -- characters cannot block
+                // the player (corrected-model block above
+                // WallBumpThread), so the route is the whole truth.
                 std::wstring rmsg(d.name);
                 rmsg += L": ";
                 rmsg += route;
                 rmsg += L'.';
-                // v2.30.82 body caution: spoken ONLY on the route
-                // builder's sealed-corridor verdict (reroute failed and
-                // the body is not at the destination) -- the hideout-
-                // Tifa case. The old first-leg RAY probe stood here
-                // v2.30.22-81 and play disproved it twice in one
-                // session (station Barret, 2026-08-04): a body grazing
-                // the quantized word on a wide corridor never gates
-                // progress (the engine slides the player around), and a
-                // companion standing at the exit is not "in the way" of
-                // it. Real mid-walk contact is named by the wall-bump
-                // thread at the moment it happens. Cautions log
-                // ("if it was spoken, it is in the log" -- v2.30.81);
-                // the builder logs its verdict line either way.
-                if (!blocker.empty()) {
-                    rmsg += L' ';
-                    rmsg += blocker;
-                    rmsg += L" is in the way.";
-                    if (Config::Get().debug_log) {
-                        char dbg[160];
-                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                            "[FF7Access] NAV caution route: '%ls' "
-                            "player=(%.0f,%.0f)",
-                            blocker.c_str(), fpx, fpy);
-                        Log::Write(dbg);
-                    }
-                }
                 TTS::Speak(rmsg, /*interrupt=*/true);
                 spoke_route = true;
             } else if (ro == RouteOutcome::NO_PATH) {
-                std::wstring jmsg;
-                if (BuildJourneySpeech(fpx, fpy, fpz, player_tri,
-                                       ftx, fty, ftz, d.target_tri,
-                                       control_deg, d.name, jmsg)) {
-                    TTS::Speak(jmsg, /*interrupt=*/true);
+                // v2.30.83: STORY-GATE check first. If the target would
+                // be reachable with every IDLCK lock open, the honest
+                // answer is "closed for now" -- a script gate a story
+                // beat will open -- not a connector journey or an
+                // "off the walkable area" detour toward a shut door.
+                if (ReachableIgnoringLocks(fpx, fpy, fpz, player_tri,
+                                           ftx, fty, ftz, d.target_tri)) {
+                    std::wstring rmsg(d.name);
+                    rmsg += L": the way there is closed for now.";
+                    TTS::Speak(rmsg, /*interrupt=*/true);
                     spoke_route = true;
+                    if (Config::Get().debug_log) {
+                        char dbg[160];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] NAV route: lock-blocked '%ls' "
+                            "player=(%.0f,%.0f)",
+                            d.name, fpx, fpy);
+                        Log::Write(dbg);
+                    }
                 } else {
-                    // v2.30.25: no journey either â€” the target stands
-                    // OFF the walkable floor (Biggs on the crates, Tifa
-                    // behind the locked counter). Route to the nearest
-                    // reachable point instead of a bare straight-line
-                    // shrug; the talk radius covers the last gap.
-                    std::wstring nroute;
-                    int   nsec = -1;
-                    float nlen = 0.0f;
-                    std::wstring nblocker;
-                    if (BuildTurnByTurnRoute(fpx, fpy, fpz, player_tri,
-                            ftx, fty, ftz, d.target_tri, control_deg,
-                            d.model_slot, target_reach, nroute,
-                            &nsec, &nlen, /*to_nearest=*/true, &nblocker)
-                        == RouteOutcome::SPOKEN_ROUTE) {
-                        std::wstring rmsg(d.name);
-                        rmsg += L", off the walkable area: ";
-                        rmsg += nroute;
-                        rmsg += L'.';
-                        // Same v2.30.82 sealed-corridor rule as the
-                        // main route branch above.
-                        if (!nblocker.empty()) {
-                            rmsg += L' ';
-                            rmsg += nblocker;
-                            rmsg += L" is in the way.";
-                            if (Config::Get().debug_log) {
-                                char dbg[160];
-                                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                                    "[FF7Access] NAV caution offmesh: "
-                                    "'%ls' player=(%.0f,%.0f)",
-                                    nblocker.c_str(), fpx, fpy);
-                                Log::Write(dbg);
-                            }
-                        }
-                        TTS::Speak(rmsg, /*interrupt=*/true);
+                    std::wstring jmsg;
+                    if (BuildJourneySpeech(fpx, fpy, fpz, player_tri,
+                                           ftx, fty, ftz, d.target_tri,
+                                           control_deg, d.name, jmsg)) {
+                        TTS::Speak(jmsg, /*interrupt=*/true);
                         spoke_route = true;
                     } else {
-                        fallback_prefix = L"No walkable path found. ";
+                        // v2.30.25: no journey either â€” the target
+                        // stands OFF the walkable floor (Biggs on the
+                        // hideout crates). Route to the nearest
+                        // reachable point instead of a bare
+                        // straight-line shrug; the talk radius covers
+                        // the last gap.
+                        std::wstring nroute;
+                        int   nsec = -1;
+                        float nlen = 0.0f;
+                        if (BuildTurnByTurnRoute(fpx, fpy, fpz,
+                                player_tri, ftx, fty, ftz, d.target_tri,
+                                control_deg, d.model_slot, target_reach,
+                                nroute, &nsec, &nlen,
+                                /*to_nearest=*/true)
+                            == RouteOutcome::SPOKEN_ROUTE) {
+                            std::wstring rmsg(d.name);
+                            rmsg += L", off the walkable area: ";
+                            rmsg += nroute;
+                            rmsg += L'.';
+                            TTS::Speak(rmsg, /*interrupt=*/true);
+                            spoke_route = true;
+                        } else {
+                            fallback_prefix = L"No walkable path found. ";
+                        }
                     }
                 }
             }
@@ -12441,41 +12160,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                              L"%ls%ls: %ls, %d %ls.",
                              fallback_prefix, d.name, DpadSectorName(input_deg),
                              secs, secs == 1 ? L"second" : L"seconds");
-            // v2.30.22 body caution, straight-line flavor: test the
-            // QUANTIZED direction the announcement names (not the exact
-            // bearing â€” the player walks the d-pad word they heard),
-            // over the first ~2 seconds of travel.
-            {
-                const float ray_world =
-                    DpadSectorIndex(input_deg) * 45.0f - control_deg + 180.0f;
-                // v2.30.25: capped at the target's reach bubble, same
-                // rule as the turn-by-turn caution.
-                float ray_len = (dist < 320.0f ? dist : 320.0f) + 40.0f;
-                const float cap = dist - target_reach + 40.0f;
-                if (ray_len > cap) ray_len = cap;
-                std::wstring bname;
-                // v2.30.82: pass the aim point so a body standing AT
-                // the destination (companion at the exit) is never
-                // called "in the way" in this style either.
-                if (ray_len > 0.0f &&
-                    BodyOnRay(static_cast<float>(px), static_cast<float>(py),
-                              ray_world, ray_len, d.model_slot, bname,
-                              static_cast<float>(px) + dx,
-                              static_cast<float>(py) + dy)) {
-                    wcsncat_s(msg, _countof(msg), L" ", _TRUNCATE);
-                    wcsncat_s(msg, _countof(msg), bname.c_str(), _TRUNCATE);
-                    wcsncat_s(msg, _countof(msg), L" is in the way.", _TRUNCATE);
-                    if (Config::Get().debug_log) {
-                        char dbg[160];
-                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                            "[FF7Access] NAV caution line: '%ls' ray=%.1f "
-                            "len=%.0f player=(%ld,%ld)",
-                            bname.c_str(), ray_world, ray_len,
-                            static_cast<long>(px), static_cast<long>(py));
-                        Log::Write(dbg);
-                    }
-                }
-            }
+            // (v2.30.83: the straight-line body caution that lived here
+            // was removed with the corrected blocking model --
+            // characters do not block the player.)
             TTS::Speak(msg, /*interrupt=*/true);
         }
         // Wandering cue on the directions query too â€” a moving target's
