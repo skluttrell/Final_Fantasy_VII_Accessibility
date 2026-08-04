@@ -79,6 +79,8 @@
 #include "settings_menu.h" // F8 in-game audio-only settings menu (v2.30.42)
 #include "gamepad.h" // right-analog-stick pathfinder input (v2.21)
 #include "ff7_field_names.h" // generated maplist: field id -> internal name (v2.25)
+#include "ff7_field_captions.h" // generated MPNAM harvest: field id -> friendly
+                                // caption for UNVISITED places (v2.30.86)
 #include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
 #include "ff7_field_graph.h"          // generated: gateway edges (journeys, v2.30.65)
 #include "ff7_prop_catalog.h" // generated: talk-scripted model entities
@@ -9577,13 +9579,20 @@ static bool FriendlyLocationName(std::wstring& out)
 // ffvii_accessibility_places.txt next to the DLL.
 //
 // WHY: gateways know their destination FIELD ID, and the maplist gives
-// every id an internal name ("nmkin_2") â€” but the FRIENDLY caption
-// ("No. 1 Reactor") for another field cannot be read at runtime (each
+// every id an internal name ("nmkin_2") -- but the FRIENDLY caption
+// ("No.1 Reactor") for another field cannot be read at runtime (each
 // field's caption lives in its own script). It CAN be remembered: while
-// the player stands on field X, the mod sees both X and X's caption, so
-// exits to anywhere the player has ever been speak the friendly name.
-// New games start with what previous sessions learned â€” the file is the
+// the player stands on field X, the mod sees both X and X's caption.
+// New games start with what previous sessions learned -- the file is the
 // player's own map knowledge, growing as they explore.
+//
+// Since v2.30.86 this cache is no longer the ONLY caption source: the
+// offline MPNAM harvest (ff7_field_captions.h) names unvisited fields
+// too. The cache keeps two jobs the harvest cannot do: (1) it is the
+// EXPLORED-vs-unexplored tracker (", unexplored" hangs off its absence),
+// and (2) a learned caption overrides the harvested one, so text mods
+// (7th Heaven retranslations) and runtime caption inheritance win over
+// the vanilla-flevel harvest once the player actually goes there.
 //
 // INHERITANCE CAVEAT (documented, accepted): a field whose script sets no
 // MPNAM keeps the PREVIOUS field's caption, and the cache records that
@@ -9671,29 +9680,59 @@ static void PlacesLearn(int field_id, const std::wstring& caption)
     }
 }
 
-// Spoken destination name for a gateway's target field id (v2.25):
-//   1. the player's own learned caption ("No. 1 Reactor");
-//   2. the game's maplist internal name ("nmkin 2"; underscores spoken
-//      as spaces; wm* entries are the world map);
-//   3. false -> caller keeps the positional "Exit N" label.
-static bool DestinationName(int dest_id, std::wstring& out)
+// Spoken destination name for a gateway's target field id (v2.25,
+// reworked v2.30.86):
+//   1. the player's own learned caption ("No.1 Reactor") -- the game's
+//      exact spelling as seen when the place was visited;
+//   2. the offline MPNAM harvest (ff7_field_captions.h) -- the SAME
+//      friendly name for places not yet visited. Until v2.30.86 this
+//      layer did not exist and unvisited places fell through to the
+//      internal map code ("nmkin 2"); testers read that as deliberate
+//      name-obscuring and found it a nuisance, so the real name now
+//      speaks everywhere (user decision 2026-08-04);
+//   3. the maplist internal name ("nmkin 2"; underscores spoken as
+//      spaces) -- only ~176 caption-less fields (their scripts set no
+//      MPNAM) can still land here;
+//   4. false -> caller keeps the positional "Exit N" label.
+//
+// explored_out (optional): false when the place is known only from the
+// harvest/maplist, i.e. the player has never stood there -- callers
+// append ", unexplored" so the name change stays informative without
+// hiding anything. The visited-places cache remains the tracker (a
+// field is "explored" once its caption was learned by standing on it).
+// World-map exits count as explored: there is no per-field visit to
+// track behind a "World map" label.
+static bool DestinationName(int dest_id, std::wstring& out,
+                            bool* explored_out = nullptr)
 {
+    if (explored_out)
+        *explored_out = true;
     if (dest_id > 0 && dest_id < FF7FieldNames::kCount &&
         g_places[dest_id][0]) {
         out = g_places[dest_id];
         return true;
     }
     const char* nm = FF7FieldNames::Get(dest_id);
-    if (!nm)
-        return false;
-    if (nm[0] == 'w' && nm[1] == 'm') {
+    if (nm && nm[0] == 'w' && nm[1] == 'm') {
         out = L"World map";
         return true;
     }
+    if (const wchar_t* cap = FF7FieldCaptions::Get(dest_id)) {
+        out = cap;
+        if (explored_out)
+            *explored_out = false;
+        return true;
+    }
+    if (!nm)
+        return false;
     out.clear();
     for (const char* p = nm; *p; ++p)
         out += (*p == '_') ? L' ' : static_cast<wchar_t>(*p);
-    return !out.empty();
+    if (out.empty())
+        return false;
+    if (explored_out)
+        *explored_out = false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -9873,8 +9912,14 @@ static bool BuildJourneyLegDest(int field_id, int next_field, uint32_t hdr,
         return false;
 
     std::wstring dn;
-    if (!DestinationName(next_field, dn))
+    bool explored = true;
+    if (!DestinationName(next_field, dn, &explored))
         dn = L"next screen";
+    else if (!explored)
+        dn += L", unexplored";   // v2.30.86: journeys can route THROUGH
+                                 // never-visited screens now that unvisited
+                                 // names speak -- same suffix vocabulary as
+                                 // the Exits browser (one voice)
 
     for (const FieldGraphEdge& e : adj[field_id]) {
         if (e.dst != next_field)
@@ -11110,10 +11155,14 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                 case LK_EXIT:
                                 case LK_EXIT_OK: {
                                     std::wstring dn;
+                                    bool explored = true;
                                     if (li->dest_field >= 0 &&
-                                        DestinationName(li->dest_field, dn)) {
+                                        DestinationName(li->dest_field, dn,
+                                                        &explored)) {
                                         name += L", exit to ";
                                         name += dn;
+                                        if (!explored)
+                                            name += L", unexplored";
                                     } else {
                                         name += L", exit";
                                     }
@@ -11328,17 +11377,22 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         int n_dests = 0;
 
         if (category == CAT_ALL || category == CAT_EXITS) {
-            // v2.25: exits are named by DESTINATION â€” "To No. 1 Reactor"
-            // (visited-place caption), "To nmkin 2" (maplist internal
-            // name), "To World map" â€” with "Exit N" only when the id
-            // resolves to nothing (see DestinationName). Two passes so
-            // duplicate destinations get ordinals ("To Platform 2"), the
-            // same slot-order identity rule as every other category. A
-            // name can UPGRADE mid-session (internal -> caption once the
-            // place is visited) â€” slot order still never changes.
+            // v2.25: exits are named by DESTINATION -- "To No.1 Reactor",
+            // "To World map" -- with "Exit N" only when the id resolves
+            // to nothing (see DestinationName). v2.30.86: unvisited
+            // destinations speak their REAL harvested caption plus
+            // ", unexplored" instead of the old internal map code
+            // ("To nmkin 2") -- tester-reported nuisance, user-directed
+            // change 2026-08-04. Two passes so duplicate destinations
+            // get ordinals ("To Platform 2"), the same slot-order
+            // identity rule as every other category. A name can still
+            // UPGRADE mid-session (harvested spelling -> learned game
+            // spelling, suffix drops, once the place is visited) --
+            // slot order never changes.
             struct GwTmp {
                 const int16_t* v;
                 std::wstring   base;
+                bool           explored;
             } gws[FF7Addr::FTRIG_GATEWAY_COUNT];
             int n_gws = 0;
             int exit_no = 0;   // fallback numbering: eligible slot order,
@@ -11355,8 +11409,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 ++exit_no;
                 GwTmp& t = gws[n_gws++];
                 t.v = v;
+                t.explored = true;
                 std::wstring dn;
-                if (DestinationName(dest_id, dn)) {
+                if (DestinationName(dest_id, dn, &t.explored)) {
                     t.base = L"To ";
                     t.base += dn;
                 } else {
@@ -11374,13 +11429,21 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         if (k < a) ++ordinal;
                     }
                 }
+                // ", unexplored" rides AFTER the ordinal ("To Platform 2,
+                // unexplored") and stays OUT of the dedupe identity --
+                // two exits to one unvisited field must still pair up.
+                // (v2.30.86: the suffix replaces the old internal-code
+                // obscuring; the name itself is now always the real one.)
+                const wchar_t* sfx =
+                    gws[a].explored ? L"" : L", unexplored";
                 NavDest& d = dests[n_dests++];
                 if (total > 1)
                     _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                                 L"%ls %d", gws[a].base.c_str(), ordinal);
+                                 L"%ls %d%ls", gws[a].base.c_str(), ordinal,
+                                 sfx);
                 else
                     _snwprintf_s(d.name, _countof(d.name), _TRUNCATE,
-                                 L"%ls", gws[a].base.c_str());
+                                 L"%ls%ls", gws[a].base.c_str(), sfx);
                 const int16_t* v = gws[a].v;
                 d.line_x1 = v[0]; d.line_y1 = v[1];
                 d.line_x2 = v[3]; d.line_y2 = v[4];
@@ -11811,10 +11874,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     case LK_EXIT:
                     case LK_EXIT_OK: {
                         std::wstring dn;
+                        bool explored = true;
                         if (li->dest_field >= 0 &&
-                            DestinationName(li->dest_field, dn)) {
+                            DestinationName(li->dest_field, dn, &explored)) {
                             sfx = L", exit to ";
                             sfx += dn;
+                            if (!explored)
+                                sfx += L", unexplored";
                         } else {
                             sfx = L", exit";   // multi/unknown destination
                         }

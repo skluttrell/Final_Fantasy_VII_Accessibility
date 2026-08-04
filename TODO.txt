@@ -5,6 +5,36 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[UNEXPLORED] Unvisited places named + "unexplored" suffix — SHIPPED v2.30.86 (2026-08-04), awaiting play-test
+------------------------------------------------------------------------
+User direction: the internal-map-code fallback for unvisited
+destinations ("To nmkin 2") read as deliberate name-obscuring and was
+a tester nuisance — speak the real place name everywhere, keep the
+visited tracking, append "unexplored" for places not yet visited.
+NEW generated ff7_field_captions.h (612/788 ids) from NEW
+investigate/ff7_mpnam_caption_catalog.py (MPNAM opcode walk + dialog
+table decode, exact DecodeChar mirror, 23-char parity with the live
+learner; vanilla-install learned captions override script-derived ones
+— played evidence wins; see research §8 for the three divergence
+classes). DestinationName gained the harvest layer + explored flag;
+Exits browser, LINE "exit to" suffixes, and journey legs append
+", unexplored" when the visited cache has no entry (suffix after
+dedupe ordinals, outside the dedupe identity). cfg glossary rewritten,
+both installed cfgs spliced.
+VERIFY: (a) exit to a never-visited field speaks real name +
+", unexplored", not a map code; (b) walking through drops the suffix
+and adopts the game's own spelling; (c) visited-place exits unchanged;
+(d) LINE exits say "..., exit to <name>, unexplored"; (e) journey legs
+through unvisited screens carry the suffix; (f) log header v2.30.86.
+RESIDUAL: ~176 caption-less fields (no MPNAM of their own — mostly
+minigame/dev screens plus inheritance cases) still fall back to the
+map code + ", unexplored"; the 2013+7H install speaks VANILLA harvested
+names for unexplored places until visited (7H retranslations only
+enter via the live learner — accepted, honest limitation). Places
+category stays visited-only (journey sources); if testers want to
+browse unexplored destinations game-wide, the harvest now makes that
+possible as a follow-up.
+
 [BATTLEDMG] Battle damage/heal numbers spoken — SHIPPED v2.30.84 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
 User request: speak the sighted player's floating damage number, brevity
@@ -319,8 +349,9 @@ guides onto the lift line and survives whichever floor it goes to; (e)
 a story-locked door says "not available here yet" and keeps the
 journey; (f) ordinary non-journey transitions are unchanged (no new
 chatter). RESIDUALS (accepted v1): story locks invisible to routing;
-world map excluded; places list = visited-only (offline MPNAM caption
-harvest is the upgrade path if testers want unvisited destinations).
+world map excluded; places list = visited-only (the offline MPNAM
+caption harvest shipped in v2.30.86 — see [UNEXPLORED] — so listing
+unvisited destinations is now a possible follow-up if testers ask).
 
 [TRANSIT] Transition tracking + arrival facing — CONFIRMED 2026-08-02 (reactor run, 2013+7H)
 JUMP mailbox live-matched the offline gateway dump; ARRIVE match=1 on

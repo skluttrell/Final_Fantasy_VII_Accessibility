@@ -6172,6 +6172,75 @@ never a number too; (f) multi-hit attacks (e.g. Machine Gun bursts
 within 400ms) speak one summed line, slower multi-hits one line per
 hit; (g) log header v2.30.84.
 
+### v2.30.86 (2026-08-04): unvisited places named, "unexplored" suffix
+
+User direction: the internal-map-code fallback for unvisited
+destinations ("To nmkin 2") read to testers as deliberate spoiler
+protection and was a nuisance -- speak the real place name everywhere,
+keep tracking where the player has been, and append "unexplored" to
+places not yet visited.
+
+WHAT SHIPPED. New generated header ff7_field_captions.h (612/788 field
+ids with friendly captions) from NEW investigate/
+ff7_mpnam_caption_catalog.py: walks every script slot of every entity
+in every field (the proven cebix opcode walker from the line catalog,
+zero walk errors over 702 fields) for reachable MPNAM (0x43) opcodes,
+resolves the one-byte arg against the field's dialog-string table
+(header u16 at script-section +0x04 = table offset; layout = u16 count
+then count u16 offsets relative to the table base -- "layout A" hit
+614/614 fields, the offset-array-first alternative never occurred),
+and decodes with an exact Python mirror of FF7Text::DecodeChar
+(kExtendedChars row-for-row, canonical folding, trim, 23-char
+truncation) so harvested strings are byte-identical to what PlacesLearn
+stores on a real visit -- name identity (exit dedupe ordinals, journey
+comparisons) survives the visit transition.
+
+DestinationName gained the harvest layer between the visited cache and
+the internal-name fallback, plus an explored_out flag; the callers
+(Exits browser, both LINE "exit to X" suffix sites, journey leg names)
+append ", unexplored" when the visited-places cache has no entry. The
+suffix rides AFTER dedupe ordinals ("To Platform 2, unexplored") and
+stays out of the dedupe identity. World-map exits count as explored
+(no per-field visit to track behind "World map"). The visited cache
+keeps both its jobs: explored-tracking, and learned-spelling override
+(text mods and caption inheritance win once the player stands there).
+
+HARVEST VALIDATION LESSONS (first run failed by design, then taught):
+(1) only the places file in the SAME install tree as the parsed
+flevel.lgp is ground truth -- the 2013+7H file learned Echo-S
+retranslations ("Mako Reactor 1" vs vanilla "No.1 Reactor") and
+produced 4 bogus mismatches (the log-environment lesson in offline
+form); (2) three legitimate divergence classes exist between a field's
+own MPNAM and what a visit displays: conditional MPNAM (nmkin_*/smkin_*
+carry both "No.1 Reactor" and "No.5 Reactor" behind a story branch a
+static walk cannot evaluate -- 13 multi-MPNAM fields game-wide),
+runtime caption inheritance (no-MPNAM fields show the previous field's
+caption: ids 134/135 "Sector 8"), and owned-but-never-ran MPNAM (field
+139 owns "Inside Train"; the escape-chapter visit displayed the
+inherited "Last Train from Midgar"). Resolution: played evidence wins
+-- the vanilla-runtime learned captions override the script-derived
+ones in the emitted header (17 exact matches proved the decoder; 10
+overrides applied). A plain equality gate would be unshippable;
+structural checks (walk errors, table failures, zero exact matches)
+are the hard-fail conditions.
+
+cfg glossary paragraph rewritten (exits naming); embed re-ran, both
+installed cfgs spliced in place (CRLF-aware splice; values untouched).
+No new addresses (fully offline feature). Deployed both installs
+(DCDA7121F01B9225), committed locally (push held). Literal checks:
+wide ", unexplored" and "No.1 Reactor" present in the built DLL (one
+occurrence each -- MSVC /GF string pooling).
+
+VERIFY [UNEXPLORED]: (a) from a visited field, an exit to a
+never-visited field speaks its real name + ", unexplored" ("To Sector
+8, unexplored"), not a map code; (b) after walking through, the same
+exit drops the suffix and adopts the game's spelling; (c) exits to
+visited places are unchanged; (d) a LINE exit trigger speaks "...,
+exit to <name>, unexplored" before first visit; (e) journey legs
+through never-visited screens carry the suffix; (f) the ~176
+caption-less fields still speak the map-code fallback + ", unexplored"
+(rare; mostly minigame/dev fields); (g) log header v2.30.86.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
