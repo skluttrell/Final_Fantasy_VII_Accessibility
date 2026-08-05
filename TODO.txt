@@ -607,7 +607,7 @@ entry; cancel re-speaks the command. VERIFY: Attack + Right → "Defend";
 + Left → "Change"; OK executes; Cancel returns voiced. Also worth a
 ReadMe/keys note next release: "On Attack, press Right for Defend."
 
-[MAGICMENU] Magic menu connected — SHIPPED v2.30.48 (2026-08-01), awaiting play-test
+[MAGICMENU] Magic menu connected — SHIPPED v2.30.48, PLAY-CONFIRMED 2026-08-01 (after .52-.54/.59 corrections)
 ------------------------------------------------------------------------
 Last main-menu gap besides PHS. Static session (research §8 v2.30.48):
 table[2]=0x710DFA; spell list = battle's per-slot list (0xDBA5A0 =
@@ -620,6 +620,13 @@ only"; "Empty" cells; character switch (L1/R1?) re-announces; pane-1
 if wrong, log MAGICM pane lines tell). RESIDUALS: I-key descriptions
 (kernel2 magic-desc sig needed), MP cost + current MP, Summon and
 Enemy Skill tabs (their widgets unmapped; watch logs when tabs used).
+RESOLVED 2026-08-01 (doc-synced by audit #4, 2026-08-05): 0x921100 is
+the screen MODE, not a pane flag (-1 entering / 0 tab selector / 2-4 =
+tab+2 lists / 1 = target pane) -- the .48 static reading shipped three
+broken versions until the .54 scoped delta scan measured it; E.Skill =
+a third per-char list base +0x348. Target pane + 0xDD16D4 cursor
+play-confirmed v2.30.59; MP costs v2.30.57, descriptions v2.30.58.
+MAGIC MENU COMPLETE -- USER-CONFIRMED (research section 8 v2.30.54/.59).
 
 [K2SIG] 7th Heaven spell names — SHIPPED v2.30.47 (2026-08-01), awaiting play-test
 ------------------------------------------------------------------------

@@ -18,3 +18,5 @@ investigate/**/*.log
 investigate/venv/
 investigate/__pycache__/
 walkthrough.txt
+Github_releases/*
+!Github_releases/ReadMe-template.txt
