@@ -6330,6 +6330,76 @@ unimplemented.
 
 ---
 
+### v2.30.88 (2026-08-05): layer filter -- Shift+; hides destinations on other levels
+
+The second of the two roadmap filters (accessiblity_keys.txt). The user
+rebound it from the FF4 scheme's Ctrl+\ to **Shift+;** in the keys file
+on 2026-08-05; implemented on that binding (key-parity rule: the keys
+file is the source of truth). VK_OEM_1, SHIFTED ONLY -- unshifted ;
+decodes to no action, so a semicolon in the player's own ff7input.cfg
+or any overlay stays untouched; GetAsyncKeyState is a passive read, so
+the game receives every key regardless. Ctrl still suppresses all
+browser keys (the old Ctrl+\ comment updated), and the F8 settings
+menu / focus gates are inherited from the shared pressed[] mechanism.
+
+DESIGN -- "same layer" is a HEIGHT verdict, not a walkmesh-component
+one: a story-locked door across a flat floor is a different COMPONENT
+but the same LAYER. The path filter owns reachability; the layer
+filter owns geometry; both on = "reachable AND on my level" (they
+compose as independent per-entry predicates, applied path-then-layer
+with separate hidden counters). Gate = |dz| < 150 walkmesh units --
+the SAME constant the journey last-mile completion and level-aware
+save-point hints use (v2.30.69/.73: catwalk-over-pad dz~825,
+same-room well under 150), now named kLayerGate; "on another level"
+means one thing across every feature. The verdict takes the NEARER
+endpoint of the destination's line_z1/z2: ladder LINE zones span
+levels by construction, and a ladder whose foot is on the player's
+level is how the player LEAVES it -- visible from either end; point
+destinations carry equal z so min degenerates to |dz|. Player z and
+all line_z values come from data already read every poll => no
+fail-open branch needed (contrast FilterReachableDests' live mesh
+loads).
+
+Same session-mode contract as the path filter, same identity
+stability (filter AFTER name/ordinal assignment), same CAT_PLACES
+exemption (place entries are whole fields; their line_z is a
+builder-zeroed placeholder). Speech: toggle = "Layer filter on. All.
+N destinations." (joint block with the path toggle -- both keys on
+one 50ms poll announce both states in one utterance instead of the
+second being swallowed by the first's continue); category announces
+append " Layer filter on." only when n_layer_hidden>0, composing
+with " Path filter on."; filtered-empty ladder: "No destinations on
+this level." / "No destinations with a path on this level." (the
+spoken word for a layer stays "level" -- journey/route parity --
+while the feature NAME stays "Layer filter" per the keys file).
+Debug: "NAV layer filter hides '<name>' z=/pz=" per hidden entry;
+the toggle line is now "NAV filters path= layer= shown= path_hidden=
+layer_hidden=" (replaces v2.30.87's "NAV path filter" line).
+
+cfg glossary Shift+; block added under the Shift+\ block (embed
+re-ran with the build; BOTH installed cfgs spliced in place by a
+CRLF-aware idempotent script, values untouched, +629 bytes each).
+Literal check passed (wide "Layer filter "/"No destinations on this
+level."/"No destinations with a path on this level.", narrow "NAV
+layer filter hides"/"NAV filters path="). Deployed both installs,
+hash-verified (7420E25BE1C18A80). No new addresses.
+
+VERIFY [LAYERFILTER]: (a) Shift+; speaks "Layer filter on. All. N
+destinations." and N shrinks on a stacked field (reactor catwalk
+rooms, field 124's save shaft); (b) J/L cycles only same-level
+entries while on; (c) Shift+; again restores ("Layer filter off");
+(d) a ladder to another level STAYS listed from its foot; (e)
+filtered-empty speaks "No destinations on this level."; (f) with
+BOTH filters on, category announces carry both "Path filter on.
+Layer filter on." and empties speak the combined line; (g) unshifted
+; does nothing anywhere; (h) log header v2.30.88. RESIDUAL: the
+150-unit gate treats a long continuous ramp's far end as "another
+level" once it climbs past 150 units -- honest per the height
+definition, revisit only on a play report; Shift+M exit filter
+remains the last unimplemented roadmap key.
+
+---
+
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
 
 ### Overview

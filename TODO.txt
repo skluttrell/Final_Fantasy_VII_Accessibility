@@ -5,6 +5,33 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[LAYERFILTER] Shift+; layer filter — SHIPPED v2.30.88 (2026-08-05), awaiting play-test
+------------------------------------------------------------------------
+accessiblity_keys.txt roadmap item (user rebound it Ctrl+\ → Shift+;
+in the keys file 2026-08-05; implemented on the new binding). Session
+filter (default off, survives field changes, not a cfg key — the
+path-filter contract) hiding destinations not on the player's LEVEL:
+|dz| < 150 vs the NEARER line endpoint (kLayerGate = the shipped
+journey/lastmile level-gate constant; nearer-endpoint rule keeps a
+ladder visible from its foot — it is how you leave the level). Height
+verdict only — story-locked same-floor doors stay listed (the PATH
+filter owns reachability; both on = reachable AND on my level; applied
+path-then-layer, separate hidden counters). Places exempt. Unshifted ;
+decodes to NOTHING (game keys untouched; GetAsyncKeyState is passive).
+Speech: "Layer filter on. All. N destinations."; empty = "No
+destinations on this level." (+ combined "with a path on this level."
+when both filters hid); category announces append "Layer filter on."
+when hiding. cfg glossary spliced both installs (+629 B, CRLF-aware).
+VERIFY: (a) toggle announces on/off + count, count shrinks on stacked
+fields (reactor catwalks, save shaft 124); (b) J/L cycles same-level
+only; (c) toggle off restores; (d) a ladder to another level stays
+listed from its foot; (e) filtered-empty speaks "No destinations on
+this level."; (f) both filters on → both suffixes + combined empty
+line; (g) unshifted ; does nothing; (h) log header v2.30.88.
+RESIDUAL: a continuous ramp's far end past 150 units reads as
+"another level" (honest per the height definition — revisit only on a
+play report); Shift+M exit filter = last unimplemented roadmap key.
+
 [PATHFILTER] Shift+\ path filter — SHIPPED v2.30.87 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
 accessiblity_keys.txt roadmap item: Shift+\ or Shift+P toggles a
@@ -24,8 +51,8 @@ stay listed; (e) filtered-empty category speaks "No destinations with
 a path."; (f) unshifted \ directions unchanged; (g) log header
 v2.30.87.
 RESIDUAL: verdict is a per-keypress snapshot (scripts can lock/unlock
-mid-browse); Shift+M exit filter and Ctrl+\ layer filter still
-unimplemented roadmap items.
+mid-browse); Shift+M exit filter still unimplemented (the layer
+filter shipped v2.30.88 on Shift+; — see [LAYERFILTER]).
 
 [UNEXPLORED] Unvisited places named + "unexplored" suffix — SHIPPED v2.30.86 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------

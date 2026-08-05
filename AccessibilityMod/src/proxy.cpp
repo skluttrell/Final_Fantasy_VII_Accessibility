@@ -7576,9 +7576,10 @@ static DWORD WINAPI DialogToneThread(LPVOID /*unused*/)
 // despawn off-mesh and drop out of the list automatically, which IS the
 // taken/remaining state for them â€” chest open/closed state is a live
 // investigation TODO). Unimplemented FF4 keys
-// (Shift+\ valid-path filter, Ctrl+\ layer filter, Ctrl+arrows teleport,
-// Shift+M exit filter) are silently ignored; listed in TODO.txt for when
-// prerequisites exist.
+// (Ctrl+arrows teleport, Shift+M exit filter) are silently ignored; listed
+// in TODO.txt for when prerequisites exist. (Shift+\ valid-path filter
+// shipped v2.30.87; the layer filter shipped v2.30.88 on Shift+; -- the
+// keys file rebound it from the FF4 scheme's Ctrl+\ on 2026-08-05.)
 //
 // DATA SOURCE (ff7_addresses.h SECTION 1e): the engine's parsed field-file
 // section 8 behind FIELD_TRIGGERS_HEADER_PTR (0xCFF454, resolved statically
@@ -9740,6 +9741,70 @@ static void FilterReachableDests(NavDest* dests, int& n_dests,
 }
 
 // ---------------------------------------------------------------------------
+// Layer filter (v2.30.88, Shift+;): drop every destination that is not on
+// the player's current LEVEL, so J/L on a stacked-walkway field (catwalks
+// over a save room, the reactor ladder shafts) cycles only what is actually
+// around the player, not things a screen-height above or below them.
+//
+// "Same layer" is a HEIGHT verdict, deliberately not a walkmesh-component
+// one: a story-locked door across a flat floor is a different component but
+// the same layer (the PATH filter owns reachability; this filter owns
+// geometry -- the two compose orthogonally, and running both means "things
+// I can reach on my level"). The gate is |dz| < 150 walkmesh units -- the
+// SAME constant the journey last-mile completion and the level-aware
+// save-point hints ship with (v2.30.69/.73: catwalk-over-pad measured
+// dz~825, same-room targets well under 150), so "on another level" means
+// one thing across every feature that says it.
+//
+// The verdict takes the NEARER endpoint of the destination's line segment:
+// ladder LINE zones span levels by construction (their two endpoints ARE
+// the bottom and top of the climb), and a ladder whose foot stands on the
+// player's level is exactly how the player LEAVES that level -- it must
+// stay listed from either end. Point destinations (models, hotspots) carry
+// the same z in both endpoints, so the min degenerates to plain |dz|.
+//
+// Names/ordinals were assigned at build time, BEFORE this pass, so
+// filtering never renumbers anything (the identity-stability rule shared
+// with the path filter). No fail-open branch is needed: line_z1/z2 are
+// filled by every builder from data already read (never a live probe that
+// can transiently fail), and the player z comes from the same model_pos
+// read the whole browser keyed on this poll.
+// ---------------------------------------------------------------------------
+// One meaning of "another level" across the mod -- see the comment above.
+static constexpr float kLayerGate = 150.0f;
+
+static void FilterSameLayerDests(NavDest* dests, int& n_dests,
+                                 float pz, int& out_hidden)
+{
+    out_hidden = 0;
+    int kept = 0;
+    for (int i = 0; i < n_dests; ++i) {
+        const NavDest& d = dests[i];
+        const float dz1 = static_cast<float>(d.line_z1) - pz;
+        const float dz2 = static_cast<float>(d.line_z2) - pz;
+        const float a1 = dz1 < 0.0f ? -dz1 : dz1;
+        const float a2 = dz2 < 0.0f ? -dz2 : dz2;
+        const bool keep = (a1 < kLayerGate) || (a2 < kLayerGate);
+        if (keep) {
+            if (kept != i)
+                dests[kept] = dests[i];
+            ++kept;
+        } else {
+            ++out_hidden;
+            if (Config::Get().debug_log) {
+                char dbg[160];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV layer filter hides '%ls' z=%d/%d pz=%d",
+                    d.name, static_cast<int>(d.line_z1),
+                    static_cast<int>(d.line_z2), static_cast<int>(pz));
+                Log::Write(dbg);
+            }
+        }
+    }
+    n_dests = kept;
+}
+
+// ---------------------------------------------------------------------------
 // Friendly location name (v2.24): the game's own menu caption ("Sector 1
 // Station"), read from the MPNAM buffer â€” full derivation and the live
 // verification at ff7_addresses.h LOCATION_NAME_BUFFER. Returns false when
@@ -10272,9 +10337,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         VK_OEM_5,     // backslash
         VK_OEM_MINUS, // -
         VK_OEM_PLUS,  // =
+        VK_OEM_1,     // ; (v2.30.88 layer filter -- SHIFTED only; plain ;
+                      //    is decoded to no action, so a ; the player's
+                      //    ff7input.cfg might bind stays the game's alone)
     };
     enum { KJ, KL, KK, KP, KM, KLBRACKET, KRBRACKET, KBACKSLASH, KMINUS, KPLUS,
-           KEY_COUNT };
+           KSEMICOLON, KEY_COUNT };
     bool was_down[KEY_COUNT] = {};
 
     // Browser state. Selection and category persist while the player stays
@@ -10332,6 +10400,13 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // a tester can never be confused by a filter they forgot they set
     // last week.
     bool    path_filter  = false;
+    // Layer filter (v2.30.88, Shift+;): when on, the list only shows
+    // destinations on the player's current level (see FilterSameLayerDests
+    // for the height rule). Same session-mode contract as path_filter and
+    // for the same reasons: survives field changes, defaults off each
+    // launch, deliberately not a cfg key. The two filters compose -- both
+    // on means "reachable AND on my level".
+    bool    layer_filter = false;
     // v2.30.60 ladder state: was the player climbing last poll, and which
     // d-pad sector was announced (so a target flip re-announces but a
     // steady climb stays quiet).
@@ -11473,9 +11548,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         if (ctrl)
-            memset(pressed, 0, sizeof(pressed));   // Ctrl+\ (layer filter)
-                // etc. not applicable yet â€” Ctrl suppresses only the KEYS;
-                // a simultaneous stick action is unrelated and proceeds.
+            memset(pressed, 0, sizeof(pressed));   // no browser action uses
+                // Ctrl (the layer filter moved to Shift+; when the keys
+                // file rebound it 2026-08-05), so Ctrl+anything -- incl. a
+                // future Ctrl+arrows teleport -- must never fire one.
+                // Ctrl suppresses only the KEYS; a simultaneous stick
+                // action is unrelated and proceeds.
 
         // Decode key presses into browser actions (accessiblity_keys.txt),
         // then OR in the stick's alternate triggers (v2.21 â€” same actions,
@@ -11485,6 +11563,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         //   K announce selection, Shift+K reset category
         //   \/P directions (unshifted)                 | R3 click
         //   Shift+\/Shift+P toggle path filter (v2.30.87)
+        //   Shift+; toggle layer filter (v2.30.88)
         //   M current map name
         const bool act_prev_dest = (pressed[KJ] && !shift) ||
                                    pressed[KLBRACKET] || pad.prev_dest;
@@ -11501,11 +11580,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             pad.directions;
         const bool act_filter =
             (pressed[KBACKSLASH] || pressed[KP]) && shift;
+        // Shift+; only -- unshifted ; deliberately decodes to NOTHING so a
+        // semicolon the player's own ff7input.cfg (or a chat overlay) uses
+        // never collides with the mod. GetAsyncKeyState is a passive read:
+        // the game still receives every key either way.
+        const bool act_layer_filter = pressed[KSEMICOLON] && shift;
         const bool act_map_name  = pressed[KM] && !shift;
 
         if (!(act_prev_dest || act_next_dest || act_prev_cat || act_next_cat ||
               act_announce || act_reset_cat || act_directions || act_filter ||
-              act_map_name))
+              act_layer_filter || act_map_name))
             continue;
 
         // ---- field name (plain ASCII in the header, not FF7-encoded) -----
@@ -11555,8 +11639,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
         bool announce_cat = false;
         bool announce_filter = false;
+        bool announce_layer = false;
         bool journey_cancelled = false;
-        // Path filter toggle mutates BEFORE the build for the same reason
+        // Filter toggles mutate BEFORE the build for the same reason
         // category changes do (v2.15.2): the announcement must carry the
         // count of the list the player will actually cycle. Selection
         // resets because the filtered list is a different list â€” keeping
@@ -11565,6 +11650,11 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             path_filter = !path_filter;
             selection = 0;
             announce_filter = true;
+        }
+        if (act_layer_filter) {
+            layer_filter = !layer_filter;
+            selection = 0;
+            announce_layer = true;
         }
         if (act_prev_cat || act_next_cat) {
             category += act_next_cat ? 1 : -1;
@@ -12250,24 +12340,44 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                  static_cast<float>(pz),
                                  player_tri, arr, n_hidden);
 
+        // ---- layer filter (v2.30.88, Shift+;) -----------------------------
+        // Runs AFTER the path filter so each counter reports what ITS pass
+        // hid (order does not change the surviving set -- both are pure
+        // per-entry predicates). Same CAT_PLACES exemption: place entries
+        // are whole fields with no height on this screen (their line_z is
+        // a builder-zeroed placeholder, not a position).
+        int n_layer_hidden = 0;
+        if (layer_filter && category != CAT_PLACES && n_dests > 0)
+            FilterSameLayerDests(dests, n_dests,
+                                 static_cast<float>(pz), n_layer_hidden);
+
         if (selection >= n_dests)
             selection = (n_dests > 0) ? n_dests - 1 : 0;
 
         // Announce helpers ---------------------------------------------------
-        // "No destinations with a path." (vs the plain "No destinations.")
-        // tells the player the emptiness is the FILTER's doing, not an
-        // empty room â€” without it, a filtered-empty list is
-        // indistinguishable from a field with nothing in it.
+        // "No destinations with a path." / "on this level." (vs the plain
+        // "No destinations.") tells the player the emptiness is a FILTER's
+        // doing, not an empty room â€” without it, a filtered-empty list is
+        // indistinguishable from a field with nothing in it. ("Level" is
+        // the mod's spoken word for a layer everywhere else -- "on another
+        // level" in journey/route speech -- so the emptiness message uses
+        // it too; "Layer filter" stays the feature's NAME because that is
+        // what the keys file calls it.)
         const auto no_dest_text = [&]() {
+            if (n_hidden > 0 && n_layer_hidden > 0)
+                return L"No destinations with a path on this level.";
+            if (n_layer_hidden > 0)
+                return L"No destinations on this level.";
             return n_hidden > 0 ? L"No destinations with a path."
                                 : L"No destinations.";
         };
         const auto speak_category = [&]() {
-            wchar_t msg[96];
-            _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d %ls.%ls",
+            wchar_t msg[112];
+            _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls. %d %ls.%ls%ls",
                          kCategoryNames[category], n_dests,
                          n_dests == 1 ? L"destination" : L"destinations",
-                         n_hidden > 0 ? L" Path filter on." : L"");
+                         n_hidden > 0 ? L" Path filter on." : L"",
+                         n_layer_hidden > 0 ? L" Layer filter on." : L"");
             TTS::Speak(msg, /*interrupt=*/true);
         };
         const auto speak_selection = [&](bool with_position) {
@@ -12289,22 +12399,38 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 Tones::Play(WANDER_BEEP_HZ, WANDER_BEEP_MS);
         };
 
-        // Path filter toggle: one utterance carrying the new state AND the
+        // Filter toggle: one utterance carrying the new state AND the
         // count under it ("Path filter on. Exits. 2 destinations.") â€” the
-        // count is the immediate proof of what the filter just did.
-        if (announce_filter) {
-            wchar_t msg[96];
+        // count is the immediate proof of what the filter just did. One
+        // block for both filters: Shift+\ and Shift+; landing on the same
+        // 50ms poll is legal input, and two separate early-continue blocks
+        // would silently swallow the second toggle's announcement.
+        if (announce_filter || announce_layer) {
+            wchar_t msg[144];
+            wchar_t states[48] = L"";
+            if (announce_filter)
+                _snwprintf_s(states, _countof(states), _TRUNCATE,
+                             L"Path filter %ls. ",
+                             path_filter ? L"on" : L"off");
+            if (announce_layer)
+                _snwprintf_s(states + wcslen(states),
+                             _countof(states) - wcslen(states), _TRUNCATE,
+                             L"Layer filter %ls. ",
+                             layer_filter ? L"on" : L"off");
             _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                         L"Path filter %ls. %ls. %d %ls.",
-                         path_filter ? L"on" : L"off",
+                         L"%ls%ls. %d %ls.",
+                         states,
                          kCategoryNames[category], n_dests,
                          n_dests == 1 ? L"destination" : L"destinations");
             TTS::Speak(msg, /*interrupt=*/true);
             if (Config::Get().debug_log) {
-                char dbg[96];
+                char dbg[128];
                 _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                    "[FF7Access] NAV path filter %s shown=%d hidden=%d",
-                    path_filter ? "on" : "off", n_dests, n_hidden);
+                    "[FF7Access] NAV filters path=%s layer=%s shown=%d "
+                    "path_hidden=%d layer_hidden=%d",
+                    path_filter ? "on" : "off",
+                    layer_filter ? "on" : "off",
+                    n_dests, n_hidden, n_layer_hidden);
                 Log::Write(dbg);
             }
             continue;
