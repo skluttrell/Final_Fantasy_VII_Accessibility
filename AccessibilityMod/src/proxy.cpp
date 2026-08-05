@@ -6123,6 +6123,63 @@ static DWORD WINAPI BattleMessageThread(LPVOID /*unused*/)
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Battle status-effect names (v2.30.89).
+//
+// Spoken names for the 32 bits of the battle actor-vars statusMask (the
+// word at struct offset 0x00 that the defeat/KO watchers already poll for
+// bit 0x01 Death). Bit order is the kernel's own status order — the same
+// layout the character records, scene.bin immunity masks, and FFNx's
+// battle_actor_vars all share, so no translation table is needed.
+//
+// nullptr = bit deliberately NOT announced here:
+//   bit 0 Death      — the defeat / "is down" watchers own that moment;
+//   bit 1 Near-death — derived from HP crossing max/4, and the damage
+//                      line's ", N left" suffix already covers exactly
+//                      that threshold; announcing the bit too would fire
+//                      a spurious "status" line on ordinary damage.
+// ---------------------------------------------------------------------------
+static const wchar_t* const kBattleStatusName[32] = {
+    /* 0x00000001 */ nullptr,              // Death (defeat watcher owns)
+    /* 0x00000002 */ nullptr,              // Near-death (", N left" owns)
+    /* 0x00000004 */ L"sleep",
+    /* 0x00000008 */ L"poison",
+    /* 0x00000010 */ L"sadness",
+    /* 0x00000020 */ L"fury",
+    /* 0x00000040 */ L"confusion",
+    /* 0x00000080 */ L"silence",
+    /* 0x00000100 */ L"haste",
+    /* 0x00000200 */ L"slow",
+    /* 0x00000400 */ L"stop",
+    /* 0x00000800 */ L"frog",
+    /* 0x00001000 */ L"small",
+    /* 0x00002000 */ L"slow numb",
+    /* 0x00004000 */ L"petrify",
+    /* 0x00008000 */ L"regen",
+    /* 0x00010000 */ L"barrier",
+    /* 0x00020000 */ L"magic barrier",
+    /* 0x00040000 */ L"reflect",
+    /* 0x00080000 */ L"dual",
+    /* 0x00100000 */ L"shield",
+    /* 0x00200000 */ L"death sentence",
+    /* 0x00400000 */ L"manipulated",
+    /* 0x00800000 */ L"berserk",
+    /* 0x01000000 */ L"peerless",
+    /* 0x02000000 */ L"paralyzed",
+    /* 0x04000000 */ L"darkness",
+    /* 0x08000000 */ L"seizure",
+    /* 0x10000000 */ L"death force",
+    /* 0x20000000 */ L"resist",
+    /* 0x40000000 */ L"lucky girl",
+    /* 0x80000000 */ L"imprisoned",
+};
+
+// Bits the status watcher reacts to: everything except Death / Near-death
+// (the two nullptr rows above). Death aside from being owned elsewhere also
+// flaps during battle init; masking both keeps the settle window from
+// restarting on changes nothing here would speak.
+static constexpr uint32_t kBattleStatusTrackedMask = 0xFFFFFFFCu;
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
     uint8_t last_actor_id = 0xFF;   // 0xFF = sentinel; announce on next valid actor change
@@ -6145,17 +6202,21 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     enum class PartyLife : uint8_t { Unseen, Alive, Dead };
     PartyLife party_life[3] = {};
 
-    // v2.30.84: HP-delta damage/heal announcements (user request: the
-    // floating damage number a sighted player sees, spoken, brevity
-    // paramount). No new addresses — the same actor-vars HP pair the
-    // defeat/KO watchers above already poll. Per-slot baseline tracking:
-    // when a slot's currentHP moves and then holds still for
-    // DAMAGE_SETTLE_MS, the accumulated difference from the baseline is
-    // spoken as one line ("Cloud, 96." / "Cloud, plus 200."). The settle
-    // window exists because one game action can write HP more than once
-    // (multi-hit attacks, damage+drain) — announcing per poll would spray
-    // fragments; announcing the settled sum matches what the player needs
-    // ("what did that action cost me") in the fewest words.
+    // v2.30.84: HP-delta damage/heal tracking (user request: the floating
+    // damage number a sighted player sees, spoken). No new addresses — the
+    // same actor-vars the defeat/KO watchers above poll. Per-slot baseline
+    // tracking: when a slot's (currentHP, statusMask) tuple moves and then
+    // holds still for DAMAGE_SETTLE_MS, the accumulated difference from
+    // the baseline is reported once. The settle window exists because one
+    // game action can write HP more than once (multi-hit attacks,
+    // damage+drain) — reporting per poll would spray fragments; the
+    // settled sum matches what the player needs ("what did that action
+    // cost me") in the fewest words.
+    //
+    // v2.30.89 extends the tuple with the statusMask (masked to
+    // kBattleStatusTrackedMask) so inflicted/removed status effects report
+    // through the same window: an attack that writes damage AND poison
+    // settles once and produces one fragment ("Cloud minus 50 HP, poison").
     //
     // base_max is part of the baseline: multi-wave battles REUSE enemy
     // slots for new creatures, and a slot whose maxHP changed is a new
@@ -6163,13 +6224,57 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // seen-alive-first rule above).
     struct HpWatch {
         bool      seen;        // baseline captured (first plausible read is silent)
-        int32_t   base_hp;     // HP at the last announcement (delta reference)
+        int32_t   base_hp;     // HP at the last report (delta reference)
         int32_t   base_max;    // maxHP the baseline was read under (occupant id)
         int32_t   last_hp;     // most recent read
-        ULONGLONG change_tick; // when last_hp last moved; 0 = nothing pending
+        uint32_t  base_status; // statusMask at the last report (tracked bits only)
+        uint32_t  last_status; // most recent read (tracked bits only)
+        ULONGLONG change_tick; // when the tuple last moved; 0 = nothing pending
     };
     HpWatch hp_watch[10] = {};   // indexed by actor slot; 3 is an engine gap
     constexpr ULONGLONG DAMAGE_SETTLE_MS = 400;
+
+    // v2.30.89: the combined ACTION REPORT (user request 2026-08-05:
+    // "[enemy] [attack-type] [character name] minus [amount] hp" — one
+    // line saying what attacked, whom, and what it did, and the same for
+    // healing and status effects). The action announce no longer speaks on
+    // its own: it OPENS a report holding "actor, action" while the effect
+    // watcher below attributes each settled HP/status change to it as a
+    // per-target fragment. The report speaks as ONE utterance once its
+    // effects go quiet:
+    //   "MP 1, Machine Gun, Cloud minus 96 HP."
+    //   "Cloud, Cure, Barret plus 200 HP."
+    //   "MP 1, Bio, Cloud minus 50 HP, poison."
+    //   "MP 1, Machine Gun, Cloud minus 96 HP, Barret minus 80 HP."
+    // Attribution is temporal — changes that settle while the report is
+    // open belong to it — because the engine's damage-display writer was
+    // never located (the same reason misses/crits are invisible to HP
+    // polling). A counter-hit landing inside the window folds into the
+    // attacker's line; accepted, it is the same simultaneity a sighted
+    // player reads off one glance at the battle screen.
+    struct ActionReport {
+        bool         open;
+        bool         bare_spoken;   // no-effect deadline already spoke "actor, action."
+        wchar_t      actor[64];
+        std::wstring action;
+        ULONGLONG    open_tick;
+        ULONGLONG    frag_tick;     // last fragment append; 0 = none yet
+        std::wstring frag[10];      // per-actor-slot accumulated fragment
+        uint8_t      order[10];     // slots in first-fragment order
+        uint8_t      n_frags;
+    };
+    ActionReport report = {};
+    // How long after the LAST settled effect the report waits before
+    // speaking: long enough to collect every slot of a multi-target action
+    // (they settle within a poll or two of each other), short enough that
+    // the line lands while the hit still feels like "just now".
+    constexpr ULONGLONG REPORT_QUIET_MS = 700;
+    // An action that produced no HP/status change by this deadline (miss,
+    // Sense, an untracked buff) speaks bare — "MP 1, Machine Gun." — and
+    // the report then STAYS open so a late effect (summon and limit
+    // animations outlast any reasonable deadline) still speaks as a
+    // grouped fragment line instead of being dropped or misattributed.
+    constexpr ULONGLONG REPORT_NO_EFFECT_MS = 4000;
 
     // v2.12.1: defeats are NOT spoken at detection time. The v2.12 debug log
     // proved the killing blow's tick also fires action announcements (flash
@@ -6216,13 +6321,75 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     ULONGLONG last_announce_tick = 0;
     constexpr ULONGLONG ANNOUNCE_CHAIN_MS = 1500;
 
+    // Speak whatever the action report currently holds and reset it.
+    // Fragments join in first-touch order. When the bare "actor, action."
+    // already went out at the no-effect deadline, only the late fragments
+    // speak — repeating the action would read as a second attack.
+    const auto report_flush = [&](const char* why) {
+        if (!report.open)
+            return;
+        std::wstring text;
+        if (!report.bare_spoken) {
+            text  = report.actor;
+            text += L", ";
+            text += report.action;
+        }
+        for (uint8_t i = 0; i < report.n_frags; ++i) {
+            if (!text.empty())
+                text += L", ";
+            text += report.frag[report.order[i]];
+        }
+        report.open        = false;
+        report.bare_spoken = false;
+        for (auto& f : report.frag)
+            f.clear();
+        report.n_frags   = 0;
+        report.frag_tick = 0;
+        if (text.empty())
+            return;   // bare already spoken and nothing landed after it
+        text += L".";
+        const ULONGLONG now = GetTickCount64();
+        const bool chain = (now - last_announce_tick) < ANNOUNCE_CHAIN_MS;
+        last_announce_tick = now;
+        char dbg[224];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] BATTLE report (%s)%ls => %ls",
+            why, chain ? L" chained" : L"", text.c_str());
+        Log::Write(dbg);
+        TTS::Speak(text, /*interrupt=*/!chain);
+    };
+
     // Announce helper: "[actor], [name-or-generic]".  Written as a lambda so
     // both the immediate path and the deferred flash path share it.
+    //
+    // v2.30.89: with damage or status speech enabled this no longer speaks
+    // — it opens the combined action report (flushing the previous one
+    // first, so no action is ever lost) and lets the effect watcher finish
+    // the sentence. With both toggles off there is nothing to combine and
+    // the original immediate announce is kept.
     const auto announce = [&](const wchar_t* actor_label, uint8_t command_id,
                               const std::wstring* exact_name) {
         wchar_t generic_buf[32];
         const wchar_t* action = exact_name ? exact_name->c_str()
             : GenericActionLabel(command_id, generic_buf, _countof(generic_buf));
+        const bool combine = Config::Get().speak_battle_damage ||
+                             Config::Get().speak_battle_status;
+        if (combine) {
+            report_flush("new action");
+            report.open        = true;
+            report.bare_spoken = false;
+            wcscpy_s(report.actor, actor_label);
+            report.action    = action;
+            report.open_tick = GetTickCount64();
+            report.frag_tick = 0;
+            char dbg[192];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BATTLE cmd=0x%02X %ls report-open => %ls, %ls",
+                static_cast<unsigned>(command_id),
+                exact_name ? L"named" : L"generic", actor_label, action);
+            Log::Write(dbg);
+            return;
+        }
         wchar_t msg[128] = {};
         _snwprintf_s(msg, _countof(msg), _TRUNCATE, L"%ls, %ls", actor_label, action);
         const ULONGLONG now = GetTickCount64();
@@ -6264,6 +6431,10 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
                 party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
                 memset(hp_watch, 0, sizeof(hp_watch));
+                // A report still open at module exit speaks what it has —
+                // normally the quiet timer fired long before, but a
+                // battle-ending action must not swallow its own line.
+                report_flush("battle exit");
             } else {
                 for (uint8_t slot = 4; slot <= 9; ++slot) {
                     const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
@@ -6391,14 +6562,14 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     pending_defeats += msg;
                 }
 
-                // ---- v2.30.84: damage / healing announcements -----------
-                // See hp_watch above. Runs over BOTH sides every poll:
-                // party slots 0-2 speak hits taken (the "how bad was that"
-                // the sighted player reads off the floating number), enemy
-                // slots 4-9 speak the player's own damage dealt (the
-                // number over the enemy — visible to sighted players even
-                // without Sense, so no Sense gate here; enemy REMAINING HP
-                // is what stays hidden and is never spoken).
+                // ---- v2.30.84/.89: damage, healing, status effects ------
+                // See hp_watch / ActionReport above. Runs over BOTH sides
+                // every poll: party slots 0-2 report hits taken (the "how
+                // bad was that" the sighted player reads off the floating
+                // number), enemy slots 4-9 report the player's own damage
+                // dealt (the number over the enemy — visible to sighted
+                // players even without Sense, so no Sense gate here; enemy
+                // REMAINING HP is what stays hidden and is never spoken).
                 for (uint8_t slot = 0; slot <= 9; ++slot) {
                     if (slot == 3)
                         continue;   // engine gap between party and enemies
@@ -6409,6 +6580,11 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                         base + FF7Addr::BAVARS_OFF_CURRENT_HP);
                     const int32_t max = *reinterpret_cast<const volatile int32_t*>(
                         base + FF7Addr::BAVARS_OFF_MAX_HP);
+                    // Tracked status bits only (see kBattleStatusTrackedMask)
+                    // — untracked bits flapping must not restart the settle
+                    // window or diff as phantom changes.
+                    const uint32_t status = kBattleStatusTrackedMask &
+                        *reinterpret_cast<const volatile uint32_t*>(base + 0x00);
 
                     HpWatch& w = hp_watch[slot];
 
@@ -6429,39 +6605,38 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                         w.base_hp     = cur;
                         w.base_max    = max;
                         w.last_hp     = cur;
+                        w.base_status = status;
+                        w.last_status = status;
                         w.change_tick = 0;
                         continue;
                     }
 
                     const ULONGLONG now = GetTickCount64();
-                    if (cur != w.last_hp) {
+                    if (cur != w.last_hp || status != w.last_status) {
                         w.last_hp     = cur;
+                        w.last_status = status;
                         w.change_tick = now;   // (re)start the settle window
                         continue;
                     }
                     if (w.change_tick == 0 || now - w.change_tick < DAMAGE_SETTLE_MS)
                         continue;
 
-                    // HP moved and has now held still: fold the change into
-                    // the baseline FIRST (even when the announce below is
-                    // suppressed) so a later hit never re-reports this one.
-                    const int32_t before = w.base_hp;
-                    const int32_t after  = w.last_hp;
+                    // The tuple moved and has now held still: fold it into
+                    // the baseline FIRST (even when speech below is
+                    // suppressed) so a later change never re-reports this.
+                    const int32_t  before     = w.base_hp;
+                    const int32_t  after      = w.last_hp;
+                    const uint32_t status_was = w.base_status;
+                    const uint32_t status_now = w.last_status;
                     w.base_hp     = after;
+                    w.base_status = status_now;
                     w.change_tick = 0;
 
-                    if (!Config::Get().speak_battle_damage)
-                        continue;   // tracked regardless, so toggling the
+                    const bool want_dmg    = Config::Get().speak_battle_damage;
+                    const bool want_status = Config::Get().speak_battle_status;
+                    if (!want_dmg && !want_status)
+                        continue;   // tracked regardless, so toggling a
                                     // setting mid-battle starts clean
-                    // Killing blows and revivals are owned by the defeat /
-                    // "is down" / "is back up" announcements above — a
-                    // number on top would double the message at the moment
-                    // brevity matters most.
-                    if (before <= 0 || after <= 0)
-                        continue;
-                    const int32_t delta = before - after;   // positive = damage
-                    if (delta == 0)
-                        continue;
 
                     wchar_t who[64];
                     if (slot <= 2) {
@@ -6476,46 +6651,136 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                                          L"enemy %u", static_cast<unsigned>(slot - 3u));
                     }
 
-                    // Phrasing (brevity paramount, user rule): bare number
-                    // = damage, "plus" = healing. Remaining HP is spent
-                    // ONLY when a party member is left at a quarter of max
-                    // or less — the moment the sighted HP readout turns
-                    // yellow and the number becomes urgent.
-                    wchar_t msg[96];
-                    if (delta > 0) {
-                        if (slot <= 2 && after * 4 <= max)
-                            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                                         L"%ls, %ld, %ld left.", who,
-                                         static_cast<long>(delta),
-                                         static_cast<long>(after));
-                        else
-                            _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                                         L"%ls, %ld.", who,
-                                         static_cast<long>(delta));
-                    } else {
-                        _snwprintf_s(msg, _countof(msg), _TRUNCATE,
-                                     L"%ls, plus %ld.", who,
-                                     static_cast<long>(-delta));
+                    // Build this slot's fragment: HP part first, then any
+                    // status changes. v2.30.89 wording (user-specified):
+                    // "minus 96 HP" / "plus 200 HP"; the ", N left" low-HP
+                    // warning survives from v2.30.84 (spoken only when a
+                    // hit leaves a party member at or below a quarter of
+                    // max — the moment the on-screen HP turns yellow).
+                    //
+                    // Killing-blow and revival deltas are INCLUDED now
+                    // (v2.30.84 suppressed them): in the combined line the
+                    // number is part of the action's own sentence, not a
+                    // second utterance racing the defeat/"is down"/"is
+                    // back up" announce — which still follows via the
+                    // quiet-gap buffer and owns the life-change wording.
+                    std::wstring parts;
+                    const bool hp_part = want_dmg && after != before;
+                    if (hp_part) {
+                        const int32_t delta = before - after;   // positive = damage
+                        wchar_t hp_buf[48];
+                        if (delta > 0) {
+                            if (slot <= 2 && after > 0 && after * 4 <= max)
+                                _snwprintf_s(hp_buf, _countof(hp_buf), _TRUNCATE,
+                                             L"minus %ld HP, %ld left",
+                                             static_cast<long>(delta),
+                                             static_cast<long>(after));
+                            else
+                                _snwprintf_s(hp_buf, _countof(hp_buf), _TRUNCATE,
+                                             L"minus %ld HP",
+                                             static_cast<long>(delta));
+                        } else {
+                            _snwprintf_s(hp_buf, _countof(hp_buf), _TRUNCATE,
+                                         L"plus %ld HP",
+                                         static_cast<long>(-delta));
+                        }
+                        parts = hp_buf;
                     }
+                    uint32_t gained = 0, removed = 0;
+                    if (want_status) {
+                        gained  = status_now & ~status_was;
+                        removed = status_was & ~status_now;
+                        for (int b = 0; b < 32; ++b) {
+                            if (!kBattleStatusName[b])
+                                continue;
+                            const uint32_t bit = 1u << b;
+                            if (gained & bit) {
+                                if (!parts.empty()) parts += L", ";
+                                parts += kBattleStatusName[b];
+                            } else if (removed & bit) {
+                                if (!parts.empty()) parts += L", ";
+                                parts += kBattleStatusName[b];
+                                parts += L" removed";
+                            }
+                        }
+                    }
+                    if (parts.empty())
+                        continue;   // e.g. HP moved but damage speech is off
+
+                    // "Cloud minus 96 HP" flows without a comma; a
+                    // status-only fragment reads better with one
+                    // ("Cloud, sleep").
+                    std::wstring fragment = who;
+                    fragment += hp_part ? L" " : L", ";
+                    fragment += parts;
 
                     // Standing rule: every spoken claim ships with a log
                     // line carrying its discriminating inputs.
-                    char dbg[192];
+                    char dbg[224];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] BATTLE dmg slot=%u delta=%ld cur=%ld "
-                        "max=%ld => %ls",
+                        "max=%ld sgain=%08lX sdrop=%08lX report=%d => %ls",
                         static_cast<unsigned>(slot),
-                        static_cast<long>(delta), static_cast<long>(after),
-                        static_cast<long>(max), msg);
+                        static_cast<long>(before - after),
+                        static_cast<long>(after), static_cast<long>(max),
+                        static_cast<unsigned long>(gained),
+                        static_cast<unsigned long>(removed),
+                        report.open ? 1 : 0, fragment.c_str());
                     Log::Write(dbg);
 
-                    // Queue behind the action name that caused this damage
-                    // (interrupt would clip it mid-word), and stamp
-                    // last_announce_tick so the NEXT turn's announce chains
-                    // instead of wiping this line — the v2.12.1 same-tick
-                    // cancellation lesson applied preemptively.
-                    last_announce_tick = now;
-                    TTS::Speak(msg, /*interrupt=*/false);
+                    if (report.open) {
+                        // Attribute to the open action. The same slot
+                        // settling twice under one action (multi-hit
+                        // spanning two windows) extends its fragment
+                        // rather than repeating the name.
+                        std::wstring& f = report.frag[slot];
+                        if (f.empty()) {
+                            report.order[report.n_frags++] = slot;
+                            f = fragment;
+                        } else {
+                            f += L", ";
+                            f += parts;
+                        }
+                        report.frag_tick = now;
+                    } else {
+                        // No action open (poison/regen tick between turns):
+                        // standalone line, queued so it never clips an
+                        // in-flight announce; stamp last_announce_tick so
+                        // the NEXT turn's announce chains instead of
+                        // wiping it (the v2.12.1 same-tick lesson).
+                        std::wstring msg = fragment + L".";
+                        last_announce_tick = now;
+                        TTS::Speak(msg, /*interrupt=*/false);
+                    }
+                }
+
+                // ---- v2.30.89: action-report delivery -------------------
+                // Speak a report whose effects have gone quiet (ONE
+                // utterance per action), or the bare "actor, action." when
+                // nothing landed by the deadline — in that case the report
+                // stays open so a late effect (summon/limit animations)
+                // still speaks attributed instead of being dropped.
+                if (report.open) {
+                    const ULONGLONG now = GetTickCount64();
+                    if (report.frag_tick != 0 &&
+                        now - report.frag_tick >= REPORT_QUIET_MS) {
+                        report_flush("quiet");
+                    } else if (report.frag_tick == 0 && !report.bare_spoken &&
+                               now - report.open_tick >= REPORT_NO_EFFECT_MS) {
+                        std::wstring text = report.actor;
+                        text += L", ";
+                        text += report.action;
+                        text += L".";
+                        const bool chain = (now - last_announce_tick) < ANNOUNCE_CHAIN_MS;
+                        last_announce_tick = now;
+                        char dbg[192];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] BATTLE report (no effect)%ls => %ls",
+                            chain ? L" chained" : L"", text.c_str());
+                        Log::Write(dbg);
+                        TTS::Speak(text, /*interrupt=*/!chain);
+                        report.bare_spoken = true;
+                    }
                 }
             }
 

@@ -5,6 +5,44 @@ These are low-priority items identified during development. Not bugs blocking
 current functionality; noted here for a future cleanup pass.
 
 
+[BATTLELINE] Combined battle report lines + status effects — SHIPPED v2.30.89 (2026-08-05), awaiting play-test
+------------------------------------------------------------------------
+User request: merge the action announce and the damage line into ONE
+utterance — "[attacker], [action], [target] minus [N] HP." — and do
+the same for healing and status effects. The action announce now OPENS
+an "action report" (attacker + action held silently); each HP/status
+change that settles (same 400ms window, statusMask now part of the
+watched tuple) attaches as a per-target fragment; 700ms after the last
+fragment one line speaks: "MP 1, Machine Gun, Cloud minus 96 HP." /
+"Cloud, Cure, Barret plus 200 HP." / multi-target "..., Cloud minus 96
+HP, Barret minus 80 HP." / "MP 1, Bio, Cloud minus 50 HP, poison."
+No effect within 4s (miss, Sense, untracked buff) = bare "MP 1,
+Machine Gun." and the report stays open so late effects (summon/limit
+animations) still speak attributed. Out-of-turn ticks (poison/regen)
+speak standalone "Cloud minus 10 HP." Killing-blow/revival deltas now
+INCLUDED (v2.30.84 suppressed them — in the combined line the number
+is part of the action sentence; defeat/"is down"/"is back up" still
+follow separately). Status names = kernel statusMask bit order (sleep,
+poison, ..., imprisoned); Death/Near-death excluded (owned elsewhere).
+NEW key speak_battle_status (default true, F8 "Battle status speech");
+speak_battle_damage glossary rewritten; both toggles off = pre-.89
+immediate bare announces. No new addresses (statusMask = actor-vars
++0x00, already polled). Both installed cfgs spliced, values kept.
+VERIFY: (a) enemy hit = ONE line "MP 1, <attack>, Cloud minus N HP."
+(no separate bare announce first) + "BATTLE report" log line; (b)
+player attack = "Cloud, Attack, <enemy> minus N HP."; (c) heals =
+"plus N HP"; (d) multi-target lists every target in one line; (e) a
+miss speaks the bare action ~4s later, no phantom number; (f) poison
+from Bio etc. appends "poison" (log sgain=00000008); (g) low-HP hit
+appends ", N left"; (h) killing blow = number AND "defeated"/"is
+down" both spoken; (i) F8 shows "Battle status speech"; (j) log
+header v2.30.89.
+RESIDUAL: attribution is temporal (a counter-hit settling inside an
+open report folds into that line — same simultaneity a sighted player
+sees); crits/misses still invisible to HP polling (needs the
+damage-display writer if testers ask); enemy self-inflicted or scripted
+HP changes during their own turn attribute to that turn's action.
+
 [LAYERFILTER] Shift+; layer filter — SHIPPED v2.30.88 (2026-08-05), awaiting play-test
 ------------------------------------------------------------------------
 accessiblity_keys.txt roadmap item (user rebound it Ctrl+\ → Shift+;
@@ -84,7 +122,7 @@ category stays visited-only (journey sources); if testers want to
 browse unexplored destinations game-wide, the harvest now makes that
 possible as a follow-up.
 
-[BATTLEDMG] Battle damage/heal numbers spoken — SHIPPED v2.30.84 (2026-08-04), awaiting play-test
+[BATTLEDMG] Battle damage/heal numbers spoken — SHIPPED v2.30.84, SUPERSEDED by v2.30.89 (see [BATTLELINE])
 ------------------------------------------------------------------------
 User request: speak the sighted player's floating damage number, brevity
 paramount. HP-delta watcher over the existing BATTLE_ACTOR_VARS reads

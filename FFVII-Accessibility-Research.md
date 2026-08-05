@@ -6398,6 +6398,90 @@ level" once it climbs past 150 units -- honest per the height
 definition, revisit only on a play report; Shift+M exit filter
 remains the last unimplemented roadmap key.
 
+### v2.30.89 (2026-08-05): combined battle report lines + status effects
+
+User request: "[enemy] [attack-type] [character name] minus [amount]
+hp" -- one line so the player knows what attacked and what it did,
+same for healing and status effects. Previously two utterances split
+the story: the action announce at flash time ("MP 1, Machine Gun")
+and the v2.30.84 damage line 400ms+ later ("Cloud, 96.").
+
+DESIGN -- the ACTION REPORT. The action announce (both the flash-
+resolved and the immediate-generic paths through the shared announce
+lambda) no longer speaks: it OPENS a report holding "actor, action".
+The HP watcher attributes every change that settles while the report
+is open to it as a per-target fragment; REPORT_QUIET_MS (700ms) after
+the last fragment, ONE utterance speaks:
+  "MP 1, Machine Gun, Cloud minus 96 HP."
+  "Cloud, Cure, Barret plus 200 HP."
+  "MP 1, Machine Gun, Cloud minus 96 HP, Barret minus 80 HP."
+  "MP 1, Bio, Cloud minus 50 HP, poison."
+Fragments join in first-touch order; a slot settling twice under one
+report (multi-hit spanning two windows) extends its fragment instead
+of repeating the name. The ", N left" low-HP warning (party member
+left at <= max/4) survives unchanged inside the fragment.
+
+Attribution is TEMPORAL -- changes that settle while the report is
+open belong to it -- because the engine's damage-display writer was
+never located (same reason misses/crits are invisible to HP polling).
+A counter-hit inside the window folds into the attacker's line;
+accepted: it is the same simultaneity a sighted player reads off one
+glance. Timing fallbacks: (1) no effect by REPORT_NO_EFFECT_MS (4s)
+-- miss, Sense, untracked buff -- speaks the bare "MP 1, Machine
+Gun." and the report STAYS OPEN so a late effect (summon and limit
+animations outlast any deadline) still speaks as a grouped fragment
+line instead of being dropped; (2) a new action flushes the previous
+report first (nothing is ever lost); (3) battle-module exit flushes
+(a battle-ending action must not swallow its own line); (4) with no
+report open (poison/regen ticks between turns) a fragment speaks
+standalone: "Cloud minus 10 HP." Chain/interrupt semantics inherited:
+report speech uses the ANNOUNCE_CHAIN_MS rule and stamps
+last_announce_tick (v2.12.1 same-tick cancellation lesson).
+
+STATUS EFFECTS (new, user request in the same message): the watched
+tuple is now (currentHP, statusMask & kBattleStatusTrackedMask) --
+statusMask is the actor-vars word at +0x00 the defeat watcher already
+polls, NO new addresses. One settle window covers both, so Bio's
+damage+poison reports once. Bit order = the kernel status layout
+shared by savemap chars/scene.bin/FFNx battle_actor_vars; 30 named
+bits (sleep, poison, sadness, fury, confusion, silence, haste, slow,
+stop, frog, small, slow numb, petrify, regen, barrier, magic barrier,
+reflect, dual, shield, death sentence, manipulated, berserk,
+peerless, paralyzed, darkness, seizure, death force, resist, lucky
+girl, imprisoned); gains speak the name, cures speak "<name>
+removed"; Death and Near-death are masked out (defeat/"is down"
+watchers and the ", N left" rule own those moments; masking also
+keeps init flapping from restarting the settle window).
+
+DECISION REVERSED from v2.30.84: killing-blow and revival deltas are
+now INCLUDED as fragments. The old suppression avoided two adjacent
+number lines; in the combined model the number is part of the
+action's own sentence, and the defeat/"is down"/"is back up" line
+still follows via the unchanged quiet-gap buffer -- so a kill reads
+"Cloud, Attack, MP 1 minus 96 HP." then "MP 1 defeated."
+
+CONFIG: NEW speak_battle_status (default true, F8 "Battle status
+speech"); speak_battle_damage semantics reworked (glossary rewritten
+-- combined line, not a separate number line). Both toggles off =
+the pre-.89 immediate bare announce (announce lambda falls back to
+the original speak path). Debug lines: "BATTLE report-open" on every
+action, "BATTLE dmg slot= delta= cur= max= sgain= sdrop= report= =>"
+per settled fragment, "BATTLE report (quiet|no effect|new
+action|battle exit) =>" on delivery.
+
+Embedded cfg re-ran with the build; BOTH installed cfgs spliced by a
+CRLF-aware idempotent Python script (key line inserted after
+speak_battle_damage, glossary block replaced from the canonical cfg;
+user values untouched -- the 2026 install's speak_enemy_hp_always=
+true survived). Literal checks passed (wide "minus "/"plus "/" HP"/
+" removed"/status names; narrow "BATTLE report ("/"report-open"/
+"sgain="). Deployed both installs, hash-verified (69F56D78BB28CBAD).
+No new addresses.
+
+VERIFY [BATTLELINE]: see TODO.txt items (a)-(j). RESIDUAL: temporal
+attribution (counter-hits fold in); crits/misses still invisible;
+scripted mid-turn HP changes attribute to the open action.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

@@ -19,7 +19,7 @@
 // artifact in a play-test log said WHICH build produced it -- diagnosing the
 // 2026-08-04 station report meant inferring the deployed version from file
 // timestamps. One constant, bumped per release alongside the commit tag.
-#define FF7ACCESS_VERSION "2.30.88"
+#define FF7ACCESS_VERSION "2.30.89"
 
 namespace Config {
 
@@ -48,21 +48,30 @@ struct Settings {
     // spell names, item use text). Default: true.
     bool speak_battle = true;
 
-    // speak_battle_damage: If true, HP changes in battle are spoken as brief
-    // damage/heal lines (v2.30.84, user request). A sighted player gets a
-    // floating number over whoever was struck; this is that number's audio
-    // twin: "Cloud, 96." after a hit, "Cloud, plus 200." after a heal, with
-    // ", N left" appended only when the hit leaves a party member at or
-    // below a quarter of max HP (the moment the sighted HP readout turns
-    // yellow — the one time remaining HP is urgent enough to spend words
-    // on). Deliberately terse because battle messages stack fast; the
-    // attack NAME is already spoken by the action announcer, so this only
-    // adds the outcome. Killing blows say nothing here — the defeat/"is
-    // down" announcements own that moment and a number would double it.
+    // speak_battle_damage: If true, HP changes in battle are spoken
+    // (v2.30.84, user request; v2.30.89 rework, user request). A sighted
+    // player gets a floating number over whoever was struck; this speaks
+    // that number COMBINED with the action that caused it, one line per
+    // action so the player hears what attacked, whom, and the cost
+    // together: "MP 1, Machine Gun, Cloud minus 96 HP." / "Cloud, Cure,
+    // Barret plus 200 HP.", with ", N left" appended only when a hit
+    // leaves a party member at or below a quarter of max HP (the moment
+    // the sighted HP readout turns yellow — the one time remaining HP is
+    // urgent enough to spend words on). Out-of-turn changes (poison and
+    // regen ticks) speak on their own ("Cloud minus 10 HP.").
     // Separate from speak_battle so a player who finds the numbers chatty
-    // can silence just them and keep action names.
+    // can silence just them and keep bare action names.
     // Default: true.
     bool speak_battle_damage = true;
+
+    // speak_battle_status: If true, status effects gained or cured in
+    // battle are spoken by name, riding the same combined action line as
+    // the damage numbers (v2.30.89, user request): "MP 1, Bio, Cloud
+    // minus 50 HP, poison." / "Cloud, Esuna, Barret, poison removed."
+    // Death and near-death are excluded — the defeat/"is down" watcher
+    // and the ", N left" warning own those moments respectively.
+    // Default: true.
+    bool speak_battle_status = true;
 
     // speak_battle_menu: If true, the in-battle command menu is announced as
     // the cursor moves: command names (Attack/Magic/Item/Limit...), magic and
