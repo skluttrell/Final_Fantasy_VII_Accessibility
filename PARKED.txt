@@ -10,6 +10,128 @@ Each entry records enough context to resume cold: what was proposed,
 why it was parked, and anything already learned about feasibility.
 
 
+========================================================================
+Entries [BATTLEJUNK] through [VIRTCURSOR] imported 2026-08-06 from
+bug_report.txt (repo root) at the user's request. Environment for the
+first block: 2013 release through 7th Heaven. Parked as a batch; none
+are to be worked without the user reviving them.
+========================================================================
+
+[BATTLEJUNK] Junk text in battle, repeating "attack"
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+"Still getting junk text in battle including a very startling moment
+where it just keep repeating attack for a second or two." Note: junk
+battle text has prior history — v2.30.76/.77 traced limit-name junk to
+stale kernel2 section copies (body-plausibility check shipped). This
+report may predate or postdate that fix; needs a fresh log with the
+v2.30.77+ STALE lines and version header before diagnosis.
+
+[ITEMASCII] Undefined characters on item pickup
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+"There are some undefined ascii characters when items are picked up."
+Likely a FF7Text decode gap (7H/Echo-S retranslated strings can carry
+byte values vanilla text never uses — cf. the v2.30.86 lesson that
+runtime bytes are the modded truth).
+
+[TEXTBOX] Ground-up re-examination of the text box system
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+Echo-S-voiced story dialogs are still being read aloud by the mod
+(game hints like the run explanation in the first mission briefing,
+first Aeris conversation, soldiers before the train getaway — mostly
+generic/unnamed-character dialogs, but one of Barret's fragments too).
+User wants a complete re-examination, verbatim spec: "I want to
+completely re-examine the text box system from the ground up. Make no
+assumptions from previous code. I want to know 1) what calls text
+boxes, 2) how large they are and how many lines and characters can be
+contained in each one (make no assumptions about all text box
+dimensions being the same), 3) approximately how long it takes to fill
+each one with text since the game seems to fill them
+character-by-character, 4) when exactly a player can press the action
+key to proceed, and 5) how to distinguish story text from any other
+game text like item pick-ups. Check the existing code for any
+opportunity to refactor or improve efficiency."
+
+[DIALOGBEEP] Dialog beeps should follow dialog speech setting
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+"When dialog text is disabled for the screen reader the dialog beeps
+should also be silent with the exception of the double tone when
+choices are available."
+
+[PLATFORM] Moving platform announced as ladder (7th Heaven bar)
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+Descending to the Sector 7 bar basement via the secret entrance speaks
+"on ladder"/"off ladder" though it is an automatic moving platform.
+
+[DOUBLELIST] Pinball machine and save points double-listed
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+In the 7th Heaven bar the pinball machine appears in the character
+list AND the triggers list; save points are double-listed too. "The
+pinball machine isn't a character and should only be listed in the
+triggers list."
+
+[LEVELUP] Level ups still not heard on victory screens
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+"I am still not hearing level ups during victory screens." Note:
+level-up announce shipped v2.30.61 and was play-confirmed once
+(2026-08-02, 6→7 in the reactor run) — so this is either
+environment-specific, a regression, or a specific victory path; needs
+a log before diagnosis.
+
+[TENTHP] Tent HP regain replays at next battle start
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+"If you enter a battle after you've used a tent outside of battle, the
+first thing you hear is the characters regaining hp because of the
+tent use. That is distracting." (Reads like the battle HP watcher
+baselining against pre-tent values — first plausible read should be
+silent, so worth checking whether the baseline survives across
+battles. Diagnosis deferred — parked.)
+
+[SYNCBUTTON] No. 5 Reactor synchronized button press
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
+The timed "press the button together with Tifa and Barret" moment in
+the No. 5 Reactor mission: "We are going to have to figure something
+out there. You can't really fail it, but you could sit there trying to
+get the timing right for a while, and it gets annoying." Needs some
+accessibility affordance (cue tone or timing announce) — design open.
+
+[SHOPCOUNT] Shop purchase highlight speaks inventory count
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; tester report).
+"Materia and items are announcing how much is in inventory not how
+much you own total when highlighted for purchase but I think it does
+that in game, too, so you may want to double check on that." Verify
+against the game's own shop display before changing anything.
+
+[ESKILLLABEL] Enemy Skill materia labeled "Steal" in menu
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; tester update).
+"Enemy Skill materia is being labeled as a Steal materia for some
+reason in the menu. I know for a fact that's not right because you
+don't get Steal until later."
+
+[DIALOGNUM] Numbers sometimes not read in dialog (squats minigame)
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; tester update).
+"Sometimes it's not reading out numbers during dialog. Noticeable
+during squats mini game."
+
+[VIRTCURSOR] Virtual cursor for Status and Materia info screens
+------------------------------------------------------------------------
+Parked: 2026-08-06 (from bug_report.txt; tester suggestion).
+Suggestion: a virtual review cursor on the Status and Materia
+information screens. Tester also sketched the Materia screen layout:
+upper portion = character's materia slots; lower left = highlighted
+materia statistics; lower right = materia list.
+
 [AUDIODESC] Audio description track scripts for video files
 ------------------------------------------------------------------------
 Parked: 2026-08-06 (user: "I will table that for now").
