@@ -6482,6 +6482,40 @@ VERIFY [BATTLELINE]: see TODO.txt items (a)-(j). RESIDUAL: temporal
 attribution (counter-hits fold in); crits/misses still invisible;
 scripted mid-turn HP changes attribute to the open action.
 
+### Log verification 2026-08-06 (three 2026-08-05 v2.30.89 sessions, 2013+7H, NVDA)
+
+User-supplied logs (10:22 / 11:39 / 13:40 starts, Reactor 5 mission
+era, Cloud lv7->10). [BATTLELINE] largely CONFIRMED in play: combined
+lines exactly as designed ("Proto Machinegun, Machine Gun, Cloud
+minus 19 HP." / "Smogger 1, Smog, Cloud minus 14 HP, darkness." /
+"Cloud minus 75 HP, 8 left"), kill number + defeat pairing, generic
+fallback on Tifa's unresolvable limit (flash idx=98 ok=0 -- branch-7
+mapping for Tifa unknown, new corpus point). Filters ([PATHFILTER]/
+[LAYERFILTER]) mechanics confirmed incl. composition; [UNEXPLORED]
+suffix live in journey speech; [MENUAVAIL] masks speaking (vis=FEFF
+dis=0300 era). THREE ROOT CAUSES FOUND (all recorded in PARKED.txt,
+none fixed yet, user directing):
+(1) [LEVELUP] never heard: all 13 LEVEL UP detections fired 150-160ms
+BEFORE "VICTORY window open"; the victory announce's interrupt=true
+cancels the level-up line every time (v2.12.1 class -- the v2.30.61
+"queues behind victory" assumption was inverted: it speaks FIRST).
+(2) [TENTHP]/battle-entry ghosts: at mode->2 the actor-vars still
+hold the previous battle's end values (plausible!), the HP watcher
+baselines on them and speaks the engine's init writes -- "Cloud plus
+117 HP"+2 more in one tick post-rest (log.2 13:09:48), "Smogger 1/2
+plus 90 HP"+"Barret, poison removed" at a rematch (log.3 13:44:03).
+Fix direction: init-grace at mode->2 until first valid turn.
+(3) [BATTLELINE] attribution race: ~28% of dmg lines (92/322) spoke
+report=0 -- enemy/limit damage lands while the announce is still
+pending flash (or after a new-action flush); worst case misattributed
+Tifa's limit damage to "Barret, Attack" (log.3 13:47:30); Beam Gun's
+~4.1s animation outruns the 4s no-effect deadline (log.3 14:01:13).
+Fix direction: open the report at TURN DETECTION with the generic
+label, upgrade the name at flash resolve; retune the deadline.
+Also: no junk strings anywhere (kernel2 defenses held; one clean
+STALE-rescan) -- [BATTLEJUNK]'s "repeating attack" is word pileup
+(BMENU "turn. Attack" + reports + bare "attacks." flushes), not junk.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

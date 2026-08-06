@@ -31,6 +31,17 @@ battle text has prior history — v2.30.76/.77 traced limit-name junk to
 stale kernel2 section copies (body-plausibility check shipped). This
 report may predate or postdate that fix; needs a fresh log with the
 v2.30.77+ STALE lines and version header before diagnosis.
+LOG EVIDENCE 2026-08-06 (2026-08-05 v2.30.89 sessions): NO garbage
+strings anywhere in the spoken lines — the kernel2 defenses held (one
+mid-battle STALE drop at log.3 13:42:32 rescanned cleanly; Tifa's
+unresolvable limit idx=98 fell back to generic "Limit Break", never
+junk). The "repeating attack" experience is likely REAL though, from
+word pileup, not junk: battle-menu "Tifa's turn. Attack" + report
+"Tifa, Attack, ..." + bare "(new action)" flushes "Smogger 2,
+attacks." can put the word "attack" in the air 4-6 times in ~5s
+(log.3 13:44:27-31, 13:47:14-25). The [BATTLELINE] attribution-race
+fixes would remove most of the bare "X, attacks." lines; the BMENU
+"turn. Attack" wording is a separate polish question.
 
 [ITEMASCII] Undefined characters on item pickup
 ------------------------------------------------------------------------
@@ -88,6 +99,11 @@ level-up announce shipped v2.30.61 and was play-confirmed once
 (2026-08-02, 6→7 in the reactor run) — so this is either
 environment-specific, a regression, or a specific victory path; needs
 a log before diagnosis.
+ROOT CAUSE FOUND 2026-08-06 from the user's three 2026-08-05 logs:
+the victory announce's interrupt=true cancels the level-up line that
+speaks ~150ms before it — full analysis under the OTHER [LEVELUP]
+entry (the v2.30.61 feature entry, later in this file). The
+2026-08-02 "confirm" was likely a lucky timing gap or heard mid-wipe.
 
 [TENTHP] Tent HP regain replays at next battle start
 ------------------------------------------------------------------------
@@ -98,6 +114,18 @@ tent use. That is distracting." (Reads like the battle HP watcher
 baselining against pre-tent values — first plausible read should be
 silent, so worth checking whether the baseline survives across
 battles. Diagnosis deferred — parked.)
+ROOT CAUSE FOUND 2026-08-06 (log-proven): the mode!=2 reset works,
+but at BATTLE ENTRY the actor-vars still hold the PREVIOUS battle's
+end values (or partial init) — plausible numbers, so the watcher
+baselines on them, then announces the engine's real init writes as
+changes. log.2 13:09:48: "Cloud plus 117 HP" / "Barret plus 113 HP" /
+"Tifa plus 93 HP" all in one tick at a post-rest battle start = this
+exact report. log.3 13:44:03: "Smogger 1 plus 90 HP" / "Smogger 2
+plus 90 HP" / "Barret, poison removed" at the next battle against the
+same formation — enemy leftovers and a stale status bit produce ghost
+heal/cure speech too (v2.30.89 made the status half newly audible).
+Fix direction: an init-grace window at mode→2 (fold deltas silently
+until first actor turn / commandID validity), not a longer settle.
 
 [SYNCBUTTON] No. 5 Reactor synchronized button press
 ------------------------------------------------------------------------
@@ -201,6 +229,27 @@ open report folds into that line — same simultaneity a sighted player
 sees); crits/misses still invisible to HP polling (needs the
 damage-display writer if testers ask); enemy self-inflicted or scripted
 HP changes during their own turn attribute to that turn's action.
+LOG-VERIFIED 2026-08-06 (three 2026-08-05 v2.30.89 sessions, 2013+7H):
+(a)(b) one combined line confirmed in play ("Proto Machinegun, Machine
+Gun, Cloud minus 19 HP." / "Cloud, Attack, Smogger 1 minus 43 HP.");
+(d) multi-target unobserved; (f) status gains confirmed ("Smogger 1,
+Smog, Cloud minus 14 HP, darkness.", sgain logged); (g) low-HP warning
+confirmed ("Cloud minus 75 HP, 8 left"); (h) kill number + defeat both
+spoken; (j) header v2.30.89. ISSUES FOUND (not yet fixed):
+(1) ATTRIBUTION RACE — 92 of 322 dmg lines (~28%) spoke standalone
+(report=0): enemy actions and limits often deal damage while their
+announce is still PENDING flash resolution, or after a "(new action)"
+flush; worst case MISATTRIBUTES ("Barret, Attack, Smogger 2 minus 49
+HP." was Tifa's limit damage landing after her report's deadline,
+log.3 13:47:30). Candidate fix: open the report at TURN DETECTION
+(phase 1) with the generic label and upgrade the action name when the
+flash resolves. (2) 4s NO-EFFECT DEADLINE too short: Beam Gun ~4.1s,
+limits ~4.5s animations speak "(no effect)" bare then the damage
+arrives 0.1-0.5s later as a separate line (log.3 14:01:13). (3)
+BATTLE-ENTRY GHOST BASELINE — see [TENTHP], root cause found. (4)
+Tifa limit flash idx=98 resolved ok=0 → generic "Limit Break" spoken
+(safe fallback worked; branch-7 idx mapping for Tifa unknown — new
+data point for the v2.30.76 corpus).
 
 [LAYERFILTER] Shift+; layer filter — SHIPPED v2.30.88 (2026-08-05), awaiting play-test
 ------------------------------------------------------------------------
@@ -228,6 +277,12 @@ line; (g) unshifted ; does nothing; (h) log header v2.30.88.
 RESIDUAL: a continuous ramp's far end past 150 units reads as
 "another level" (honest per the height definition — revisit only on a
 play report); Shift+M exit filter = last unimplemented roadmap key.
+LOG-VERIFIED 2026-08-06 (2026-08-05 sessions): toggle mechanics live
+in play — "NAV filters" lines show layer on/off flips, layer_hidden
+counts (e.g. 8 hidden with path off), BOTH filters composing (path=on
+layer=on shown=3 path_hidden=11 layer_hidden=1), per-entry "layer
+filter hides" lines with z=/pz=. Player-experience items (b)-(f) still
+need the tester's ear.
 
 [PATHFILTER] Shift+\ path filter — SHIPPED v2.30.87 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
@@ -250,6 +305,10 @@ v2.30.87.
 RESIDUAL: verdict is a per-keypress snapshot (scripts can lock/unlock
 mid-browse); Shift+M exit filter still unimplemented (the layer
 filter shipped v2.30.88 on Shift+; — see [LAYERFILTER]).
+LOG-VERIFIED 2026-08-06 (2026-08-05 sessions): heavily used in play —
+"NAV filters path=on shown=5 path_hidden=15" style lines throughout
+log.2, counts shrink near locked doors as designed, composes with the
+layer filter. Player-experience items (b)-(f) still need the tester.
 
 [UNEXPLORED] Unvisited places named + "unexplored" suffix — SHIPPED v2.30.86 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
@@ -280,6 +339,11 @@ enter via the live learner — accepted, honest limitation). Places
 category stays visited-only (journey sources); if testers want to
 browse unexplored destinations game-wide, the harvest now makes that
 possible as a follow-up.
+LOG-VERIFIED 2026-08-06 (2026-08-05 sessions): real names + suffix
+live in journey speech ("To Sector 7 Slums, unexplored: on another
+level. First take border 1, ...") — 293 unexplored lines in log.2,
+no map codes observed in spoken lines. Items (b)(c) transitions still
+need the tester's confirmation.
 
 [BLOCKMODEL] Corrected blocking model: characters never block — SHIPPED v2.30.83 (2026-08-04), awaiting play-test
 ------------------------------------------------------------------------
@@ -549,6 +613,19 @@ victory line; save loads and PHS swaps stay silent. RESIDUAL: only the
 new LEVEL is spoken — FF7's level-up screen also shows stat increases;
 add those if a tester asks (savemap record stat bytes +0x02..+0x07,
 already mapped for the status screen).
+ROOT CAUSE FOUND 2026-08-06 (log-proven, 2026-08-05 sessions —
+explains the tester's "still not hearing level ups" report): detection
+fires PERFECTLY (13 "LEVEL UP" log lines across three sessions, e.g.
+"slot=1 char=1 6 -> 7") but EVERY one lands 150-160ms BEFORE the
+"VICTORY window open" line — the savemap level byte is written as the
+results window comes up, so the level-up speaks (interrupt=false) and
+the victory announce ("Victory! Gained N experience...") then fires
+with interrupt=TRUE and cancels it within the same breath, every
+time. The v2.30.61 comment assumed the level line would QUEUE BEHIND
+victory; it actually SPEAKS FIRST and gets wiped. Fix direction:
+buffer detected level-ups and let VictoryThread append them to its
+own utterance (or speak them interrupt=false AFTER the victory line
+goes out) — the v2.12.1 defeat-buffer pattern.
 
 [LADDER] Ladder state + push direction — SHIPPED v2.30.60 (2026-08-02), awaiting play-test
 ------------------------------------------------------------------------
