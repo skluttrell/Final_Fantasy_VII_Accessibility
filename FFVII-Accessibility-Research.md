@@ -6516,6 +6516,71 @@ Also: no junk strings anywhere (kernel2 defenses held; one clean
 STALE-rescan) -- [BATTLEJUNK]'s "repeating attack" is word pileup
 (BMENU "turn. Attack" + reports + bare "attacks." flushes), not junk.
 
+### v2.30.90 (2026-08-06): the three log-proven fixes
+
+Same-day fixes for the three root causes above ("fix the things you
+have solid information for"). No new addresses, no cfg keys.
+
+1. LEVEL-UPS RIDE THE VICTORY LINE. Detections now BUFFER
+(pending_levelups) instead of speaking; the victory announce appends
+the buffer to its own utterance -- "Victory! Gained 100 experience
+and 10 A P. Barret grew to level 7!" -- one speak, nothing for its
+interrupt=true to cancel. Orphan fallback: buffered level-ups with no
+victory window inside 2.5s (scripted EXP, implausible-pool silent
+victories) speak standalone (interrupt=false, "LEVEL UP spoken
+standalone" log line); toggling speak_battle off clears the buffer.
+
+2. BATTLE-ENTRY INIT GRACE. battle_entry_tick stamps the first
+mode==2 poll (cleared when mode leaves 2); settles whose WRITE falls
+inside BATTLE_INIT_GRACE_MS (2500ms) of entry fold into the baseline
+silently ("BATTLE dmg ... grace-suppressed (entry+Nms)" debug line).
+Kills the [TENTHP] ghost class: post-rest "plus 117 HP"x3, rematch
+enemy "plus 90 HP", stale "poison removed" -- all were init writes
+diffed against the previous battle's leftover actor-vars. Real
+damage cannot land that early (first ATB action is seconds out).
+
+3. ATTRIBUTION REWORK -- turn-anchored reports, write-time routing.
+   - Reports OPEN AT TURN DETECTION with the generic label (announce
+     in combine mode); the flash resolution (Phase 2) upgrades
+     report.action IN PLACE via a generation id (pending_gen matches
+     report.gen in either slot; bare-spoken or flushed reports skip
+     the upgrade; ok=0 keeps the generic -- Tifa idx=98 case).
+   - open_tick anchors to turn_start_tick = the RAW G_ACTIVE_ACTOR_ID
+     change, tracked before the commandID==0 gate -- detection lags
+     the engine by up to ~1s waiting for the command write (log.3
+     13:42:36: Cloud's damage observed 100ms before his detection).
+   - A superseded report moves to prev_report and LINGERS 800ms
+     (write-lag window: settle = write+400ms) instead of flushing.
+   - Routing at settle: write_tick >= open_tick+TURN_MIN_DAMAGE_MS
+     (300ms -- no action damages faster than its windup) -> current;
+     else prev if open (the Tifa-limit-as-Barret case, write 40ms
+     into Barret's turn); else current-if-open ("cur-early", first
+     action of a battle); else standalone orphan. Log line now says
+     home=cur/prev/cur-early/orphan (replaces report=0/1).
+   - REPORT_NO_EFFECT_MS 4000 -> 5000 (Beam Gun ~4.1s, Beat Rush
+     ~4.8s outran the old deadline; the earlier turn-anchored open
+     needs the headroom too). Maintenance covers both slots (prev:
+     quiet flush or "linger out"; current: quiet / bare-at-deadline
+     unchanged).
+   Dry-run vs the three logged failure cases: Smog's poison-on-Barret
+   -> report open at Smogger's turn start, fragment routes cur;
+   Tifa's limit kill -> routes prev (Tifa) not Barret; Cloud's
+   fast kill with lagged detection -> routes cur via the raw anchor.
+
+Legacy path (both battle-effect toggles off) keeps the v2.30.88
+announce behavior exactly (deferred flash announce, generic flush).
+Literal checks passed (grace-suppressed/home=%s/name-upgrade/"quiet
+prev"/"linger out"/report-open gen=/LEVEL UP spoken lines). Deployed
+both installs hash-verified (CC8867CCFB3C314B). VERIFY [BATTLE90]:
+(a) level-ups audible at victory ("...A P. X grew to level N!"), log
+"LEVEL UP spoken with victory line"; (b) no ghost "plus N HP"/
+"poison removed" at battle starts (grace-suppressed lines appear in
+debug instead); (c) enemy attacks: one line, correct attacker, log
+home=cur; (d) kill during turn overlap attributes to the actual
+killer (home=prev lines); (e) Beam Gun/limits no longer split into
+"(no effect)" + orphan number; (f) misses still speak bare within
+~5s; (g) log header v2.30.90.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

@@ -5301,6 +5301,22 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
     uint8_t  seen_level[3] = {};
     bool     levels_valid  = false;
 
+    // v2.30.90: detected level-ups are BUFFERED, not spoken at detection.
+    // The 2026-08-05 logs proved the tester's "never hear level ups"
+    // report: all 13 detections that day fired 150-160ms BEFORE the
+    // victory window opened (the engine writes the savemap level as the
+    // results screen comes up), so the level line spoke first and the
+    // victory announce's interrupt=true then cancelled it — every time.
+    // The v2.30.61 interrupt=false was aimed at queuing BEHIND victory,
+    // but the order is the reverse. So: buffer here, and the victory
+    // announce appends the buffer to its own utterance ("Victory! Gained
+    // 100 experience and 10 A P. Barret grew to level 7!") — one speak,
+    // nothing to cancel. Level-ups with no victory window (scripted EXP)
+    // speak standalone after a short wait.
+    std::wstring pending_levelups;
+    ULONGLONG    first_levelup_tick = 0;
+    constexpr ULONGLONG LEVELUP_ORPHAN_MS = 2500;
+
     const auto slot_level = [](uint8_t slot) -> uint8_t {
         const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
             FF7Addr::SAVEMAP_PARTY_IDS + slot);
@@ -5322,6 +5338,7 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
             in_results = false;
             last_mode = 0xFFFF;
             levels_valid = false;   // re-baseline silently when re-enabled
+            pending_levelups.clear();
             continue;
         }
 
@@ -5347,8 +5364,8 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
         //     re-baselines silently — real battle level-ups are +1, and
         //     even a huge EXP haul steps one level at a time through this
         //     150ms poll.
-        // interrupt=false so a level-up queues behind the victory line
-        // instead of clobbering it (the v2.30.51 rule).
+        // Detections are buffered into pending_levelups (see above) — the
+        // victory announce speaks them; never speak directly from here.
         {
             for (uint8_t s = 0; s <= 2; ++s) {
                 const uint8_t char_id = *reinterpret_cast<const volatile uint8_t*>(
@@ -5383,7 +5400,11 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                         "[FF7Access] LEVEL UP slot=%u char=%u %u -> %u",
                         s, char_id, seen_level[s], lv);
                     Log::Write(dbg);
-                    TTS::Speak(msg, /*interrupt=*/false);
+                    if (pending_levelups.empty())
+                        first_levelup_tick = GetTickCount64();
+                    else
+                        pending_levelups += L' ';
+                    pending_levelups += msg;
                 } else if (levels_valid && same_person && lv != seen_level[s] &&
                            Config::Get().debug_log) {
                     char dbg[128];
@@ -5397,6 +5418,21 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                 seen_level[s] = lv;
             }
             levels_valid = true;
+        }
+
+        // Level-ups with no victory window to ride (scripted EXP awards,
+        // or a results window whose pools read implausible and stayed
+        // silent): speak standalone after a short wait. A real victory
+        // consumes the buffer ~150ms after detection, far inside this
+        // window, so the fallback never races it.
+        if (!pending_levelups.empty() &&
+            GetTickCount64() - first_levelup_tick >= LEVELUP_ORPHAN_MS) {
+            char dbg[64];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                        "[FF7Access] LEVEL UP spoken standalone");
+            Log::Write(dbg);
+            TTS::Speak(pending_levelups, /*interrupt=*/false);
+            pending_levelups.clear();
         }
 
         // v2.30.75: the results window is POSITIVELY identified as
@@ -5459,11 +5495,23 @@ static DWORD WINAPI VictoryThread(LPVOID /*unused*/)
                 static_cast<unsigned long>(cap_gil));
             Log::Write(dbg);
             if (cap_exp <= 1000000 && cap_ap <= 1000000) {
-                wchar_t msg[96];
-                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                wchar_t head[96];
+                _snwprintf_s(head, _countof(head), _TRUNCATE,
                     L"Victory! Gained %lu experience and %lu A P",
                     static_cast<unsigned long>(cap_exp),
                     static_cast<unsigned long>(cap_ap));
+                std::wstring msg = head;
+                // v2.30.90: append buffered level-ups so they ride THIS
+                // utterance — the engine writes the savemap level right
+                // before this window opens, and this speak's
+                // interrupt=true was cancelling the separately-spoken
+                // level line every single time (2026-08-05 logs, 13/13).
+                if (!pending_levelups.empty()) {
+                    msg += L". ";
+                    msg += pending_levelups;
+                    pending_levelups.clear();
+                    Log::Write("[FF7Access] LEVEL UP spoken with victory line");
+                }
                 TTS::Speak(msg, /*interrupt=*/true);
             } else {
                 Log::Write("[FF7Access] VICTORY pools implausible â€” silent");
@@ -6255,15 +6303,29 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     struct ActionReport {
         bool         open;
         bool         bare_spoken;   // no-effect deadline already spoke "actor, action."
+        uint32_t     gen;           // identity for late flash-name upgrades (v2.30.90)
         wchar_t      actor[64];
         std::wstring action;
         ULONGLONG    open_tick;
-        ULONGLONG    frag_tick;     // last fragment append; 0 = none yet
-        std::wstring frag[10];      // per-actor-slot accumulated fragment
-        uint8_t      order[10];     // slots in first-fragment order
+        ULONGLONG    frag_tick;       // last fragment append; 0 = none yet
+        ULONGLONG    linger_deadline; // prev-slot TTL; 0 while current (v2.30.90)
+        std::wstring frag[10];        // per-actor-slot accumulated fragment
+        uint8_t      order[10];       // slots in first-fragment order
         uint8_t      n_frags;
     };
-    ActionReport report = {};
+    ActionReport report = {};        // the acting turn's report
+    // v2.30.90: when a new turn opens, the outgoing report is NOT flushed
+    // immediately — it moves here and lingers briefly. The 2026-08-05 logs
+    // showed why: the settle window means a change spoken at T was WRITTEN
+    // at T-400ms, and the engine starts the next actor's turn the moment
+    // damage displays — so the previous action's damage routinely settles
+    // just AFTER the next report opened, and attaching by "whichever
+    // report is open" misattributed it (Tifa's limit damage spoke as
+    // "Barret, Attack, Smogger 2 minus 49 HP", log.3 13:47:30). Fragments
+    // are routed by WRITE time vs open time (see the routing below); the
+    // lingering slot catches everything written under the previous action.
+    ActionReport prev_report = {};
+    uint32_t     report_gen_counter = 0;
     // How long after the LAST settled effect the report waits before
     // speaking: long enough to collect every slot of a multi-target action
     // (they settle within a poll or two of each other), short enough that
@@ -6274,7 +6336,45 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // the report then STAYS open so a late effect (summon and limit
     // animations outlast any reasonable deadline) still speaks as a
     // grouped fragment line instead of being dropped or misattributed.
-    constexpr ULONGLONG REPORT_NO_EFFECT_MS = 4000;
+    // 5000 (was 4000 in v2.30.89): the logs caught Beam Gun's ~4.1s and
+    // Beat Rush-class ~4.8s animations speaking "(no effect)" moments
+    // before their damage settled — and the report now opens at TURN
+    // DETECTION, earlier than the old flash-time open, so the clock needs
+    // the extra second.
+    constexpr ULONGLONG REPORT_NO_EFFECT_MS = 5000;
+    // How long a superseded report lingers for write-lag fragments: a
+    // fragment belonging to the old action settles at most SETTLE(400ms)
+    // after its write, and the write predates the new turn — 800ms covers
+    // it with margin.
+    constexpr ULONGLONG REPORT_PREV_LINGER_MS = 800;
+    // Minimum time from a turn's ENGINE start to its first possible HP
+    // write (windup + swing animation — the fastest observed melee lands
+    // ~900ms in; log.3 13:47:30 showed the previous action's damage being
+    // written 40ms after the next turn began). A change written earlier
+    // than this into the current turn belongs to the PREVIOUS action.
+    constexpr ULONGLONG TURN_MIN_DAMAGE_MS = 300;
+
+    // v2.30.90: the engine-side turn-start anchor. Phase-1 turn DETECTION
+    // waits for the model-state commandID, which the engine can write up
+    // to ~1s after it switches G_ACTIVE_ACTOR_ID (2026-08-05 log.3
+    // 13:42:36: Cloud's damage was OBSERVED 100ms before his turn's
+    // detection) — so reports are anchored to the moment the actor id
+    // itself changed, tracked here independent of the command gate.
+    uint8_t   raw_last_actor  = 0xFF;
+    ULONGLONG turn_start_tick = 0;
+
+    // v2.30.90: battle-entry grace. At mode->2 the actor-vars still hold
+    // the PREVIOUS battle's end values (or partial init) — plausible
+    // numbers, so the v2.30.84 "first plausible read is silent" rule
+    // baselined on them and then spoke the engine's real init writes as
+    // events: "Cloud plus 117 HP"×3 in one tick after a tent (the
+    // [TENTHP] tester report, log.2 13:09:48), ghost enemy heals and a
+    // ghost "poison removed" at a rematch (log.3 13:44:03). During the
+    // grace window settles still FOLD into the baseline — they just don't
+    // speak. Real damage can't land this early: the first ATB action is
+    // several seconds out.
+    ULONGLONG battle_entry_tick = 0;
+    constexpr ULONGLONG BATTLE_INIT_GRACE_MS = 2500;
 
     // v2.12.1: defeats are NOT spoken at detection time. The v2.12 debug log
     // proved the killing blow's tick also fires action announcements (flash
@@ -6300,11 +6400,17 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     ULONGLONG next_scan_tick = 0;
 
     // Pending flash-message wait state (see ANNOUNCE TIMING above).
+    // v2.30.90, combine mode: pending no longer defers the ANNOUNCE (the
+    // report opens at turn detection with the generic label) — it defers
+    // the NAME: when the flash resolves, the report whose gen matches
+    // pending_gen gets its action upgraded in place, wherever it now
+    // lives (current or linger slot), as long as it hasn't spoken yet.
     bool      pending           = false;
     uint8_t   pending_cmd       = 0;      // model-state commandID of the pending turn
     uint32_t  pending_s0_cmd    = 0;      // struct snapshot at turn start
     uint32_t  pending_s0_idx    = 0;
     ULONGLONG pending_deadline  = 0;
+    uint32_t  pending_gen       = 0;      // report to name-upgrade (combine mode)
     wchar_t   pending_actor[64] = {};   // 64: fits a 32-char enemy name + " A" suffix
 
     // v2.13: announces that land close together must CHAIN, not clobber.
@@ -6321,30 +6427,31 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     ULONGLONG last_announce_tick = 0;
     constexpr ULONGLONG ANNOUNCE_CHAIN_MS = 1500;
 
-    // Speak whatever the action report currently holds and reset it.
+    // Speak whatever the given report currently holds and reset it.
     // Fragments join in first-touch order. When the bare "actor, action."
     // already went out at the no-effect deadline, only the late fragments
     // speak — repeating the action would read as a second attack.
-    const auto report_flush = [&](const char* why) {
-        if (!report.open)
+    const auto report_flush = [&](ActionReport& r, const char* why) {
+        if (!r.open)
             return;
         std::wstring text;
-        if (!report.bare_spoken) {
-            text  = report.actor;
+        if (!r.bare_spoken) {
+            text  = r.actor;
             text += L", ";
-            text += report.action;
+            text += r.action;
         }
-        for (uint8_t i = 0; i < report.n_frags; ++i) {
+        for (uint8_t i = 0; i < r.n_frags; ++i) {
             if (!text.empty())
                 text += L", ";
-            text += report.frag[report.order[i]];
+            text += r.frag[r.order[i]];
         }
-        report.open        = false;
-        report.bare_spoken = false;
-        for (auto& f : report.frag)
+        r.open        = false;
+        r.bare_spoken = false;
+        for (auto& f : r.frag)
             f.clear();
-        report.n_frags   = 0;
-        report.frag_tick = 0;
+        r.n_frags         = 0;
+        r.frag_tick       = 0;
+        r.linger_deadline = 0;
         if (text.empty())
             return;   // bare already spoken and nothing landed after it
         text += L".";
@@ -6363,10 +6470,12 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     // both the immediate path and the deferred flash path share it.
     //
     // v2.30.89: with damage or status speech enabled this no longer speaks
-    // — it opens the combined action report (flushing the previous one
-    // first, so no action is ever lost) and lets the effect watcher finish
-    // the sentence. With both toggles off there is nothing to combine and
-    // the original immediate announce is kept.
+    // — it opens the combined action report and lets the effect watcher
+    // finish the sentence. v2.30.90: the outgoing report moves to the
+    // linger slot instead of flushing (write-lag fragments still find it;
+    // see prev_report above); a report already TWO turns old flushes now.
+    // With both toggles off there is nothing to combine and the original
+    // immediate announce is kept.
     const auto announce = [&](const wchar_t* actor_label, uint8_t command_id,
                               const std::wstring* exact_name) {
         wchar_t generic_buf[32];
@@ -6375,18 +6484,32 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         const bool combine = Config::Get().speak_battle_damage ||
                              Config::Get().speak_battle_status;
         if (combine) {
-            report_flush("new action");
+            if (report.open) {
+                report_flush(prev_report, "superseded");
+                prev_report = report;
+                prev_report.linger_deadline =
+                    GetTickCount64() + REPORT_PREV_LINGER_MS;
+                report = ActionReport{};
+            }
             report.open        = true;
             report.bare_spoken = false;
+            report.gen         = ++report_gen_counter;
             wcscpy_s(report.actor, actor_label);
-            report.action    = action;
-            report.open_tick = GetTickCount64();
-            report.frag_tick = 0;
+            report.action          = action;
+            // Anchor to the engine's turn start (raw actor-id change),
+            // not to detection time — detection can lag the engine by up
+            // to ~1s waiting for the commandID write, and the routing
+            // below compares HP-write times against this anchor.
+            report.open_tick       = turn_start_tick ? turn_start_tick
+                                                     : GetTickCount64();
+            report.frag_tick       = 0;
+            report.linger_deadline = 0;
             char dbg[192];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                "[FF7Access] BATTLE cmd=0x%02X %ls report-open => %ls, %ls",
+                "[FF7Access] BATTLE cmd=0x%02X %ls report-open gen=%lu => %ls, %ls",
                 static_cast<unsigned>(command_id),
-                exact_name ? L"named" : L"generic", actor_label, action);
+                exact_name ? L"named" : L"generic",
+                static_cast<unsigned long>(report.gen), actor_label, action);
             Log::Write(dbg);
             return;
         }
@@ -6431,11 +6554,17 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
                 party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
                 memset(hp_watch, 0, sizeof(hp_watch));
-                // A report still open at module exit speaks what it has —
+                battle_entry_tick = 0;   // re-arm the init grace (v2.30.90)
+                // Reports still open at module exit speak what they have —
                 // normally the quiet timer fired long before, but a
                 // battle-ending action must not swallow its own line.
-                report_flush("battle exit");
+                report_flush(prev_report, "battle exit");
+                report_flush(report, "battle exit");
             } else {
+                // First poll of a new battle: stamp the entry for the
+                // init-grace window (cleared to 0 whenever mode leaves 2).
+                if (battle_entry_tick == 0)
+                    battle_entry_tick = GetTickCount64();
                 for (uint8_t slot = 4; slot <= 9; ++slot) {
                     const uint32_t base = FF7Addr::BATTLE_ACTOR_VARS +
                         static_cast<uint32_t>(slot) * FF7Addr::BATTLE_ACTOR_VARS_STRIDE;
@@ -6624,13 +6753,36 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     // The tuple moved and has now held still: fold it into
                     // the baseline FIRST (even when speech below is
                     // suppressed) so a later change never re-reports this.
-                    const int32_t  before     = w.base_hp;
-                    const int32_t  after      = w.last_hp;
-                    const uint32_t status_was = w.base_status;
-                    const uint32_t status_now = w.last_status;
+                    // write_tick is captured before the reset — it is the
+                    // moment of the ENGINE'S last write, which is what
+                    // fragment routing compares against report open times
+                    // (a change written before this turn opened belongs to
+                    // the previous action).
+                    const int32_t   before     = w.base_hp;
+                    const int32_t   after      = w.last_hp;
+                    const uint32_t  status_was = w.base_status;
+                    const uint32_t  status_now = w.last_status;
+                    const ULONGLONG write_tick = w.change_tick;
                     w.base_hp     = after;
                     w.base_status = status_now;
                     w.change_tick = 0;
+
+                    // v2.30.90 battle-entry grace: init writes fold into
+                    // the baseline silently (see battle_entry_tick above —
+                    // the [TENTHP] ghost-heal class).
+                    if (write_tick - battle_entry_tick < BATTLE_INIT_GRACE_MS) {
+                        if (Config::Get().debug_log) {
+                            char dbg[128];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] BATTLE dmg slot=%u delta=%ld "
+                                "grace-suppressed (entry+%lums)",
+                                static_cast<unsigned>(slot),
+                                static_cast<long>(before - after),
+                                static_cast<unsigned long>(write_tick - battle_entry_tick));
+                            Log::Write(dbg);
+                        }
+                        continue;
+                    }
 
                     const bool want_dmg    = Config::Get().speak_battle_damage;
                     const bool want_status = Config::Get().speak_battle_status;
@@ -6714,39 +6866,61 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     fragment += hp_part ? L" " : L", ";
                     fragment += parts;
 
+                    // v2.30.90 routing: attribute by WRITE time against
+                    // the turn-start anchor, not by "whichever report is
+                    // open". A change written at least TURN_MIN_DAMAGE_MS
+                    // into the current turn belongs to it (no action can
+                    // deal damage faster than its windup); anything
+                    // earlier belongs to the lingering previous action —
+                    // the misattribution class the 2026-08-05 logs caught
+                    // (Tifa's limit damage written 40ms into Barret's
+                    // turn spoke as Barret's). No previous report and the
+                    // current one open = attach to current (first action
+                    // of a battle; the init grace already filtered entry
+                    // ghosts). Neither = orphan tick, spoken standalone.
+                    ActionReport* home = nullptr;
+                    const char*   home_tag = "orphan";
+                    if (report.open &&
+                        write_tick >= report.open_tick + TURN_MIN_DAMAGE_MS) {
+                        home = &report;      home_tag = "cur";
+                    } else if (prev_report.open) {
+                        home = &prev_report; home_tag = "prev";
+                    } else if (report.open) {
+                        home = &report;      home_tag = "cur-early";
+                    }
+
                     // Standing rule: every spoken claim ships with a log
                     // line carrying its discriminating inputs.
                     char dbg[224];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] BATTLE dmg slot=%u delta=%ld cur=%ld "
-                        "max=%ld sgain=%08lX sdrop=%08lX report=%d => %ls",
+                        "max=%ld sgain=%08lX sdrop=%08lX home=%s => %ls",
                         static_cast<unsigned>(slot),
                         static_cast<long>(before - after),
                         static_cast<long>(after), static_cast<long>(max),
                         static_cast<unsigned long>(gained),
                         static_cast<unsigned long>(removed),
-                        report.open ? 1 : 0, fragment.c_str());
+                        home_tag, fragment.c_str());
                     Log::Write(dbg);
 
-                    if (report.open) {
-                        // Attribute to the open action. The same slot
-                        // settling twice under one action (multi-hit
-                        // spanning two windows) extends its fragment
-                        // rather than repeating the name.
-                        std::wstring& f = report.frag[slot];
+                    if (home) {
+                        // The same slot settling twice under one action
+                        // (multi-hit spanning two windows) extends its
+                        // fragment rather than repeating the name.
+                        std::wstring& f = home->frag[slot];
                         if (f.empty()) {
-                            report.order[report.n_frags++] = slot;
+                            home->order[home->n_frags++] = slot;
                             f = fragment;
                         } else {
                             f += L", ";
                             f += parts;
                         }
-                        report.frag_tick = now;
+                        home->frag_tick = now;
                     } else {
-                        // No action open (poison/regen tick between turns):
-                        // standalone line, queued so it never clips an
-                        // in-flight announce; stamp last_announce_tick so
-                        // the NEXT turn's announce chains instead of
+                        // No action owns it (poison/regen tick between
+                        // turns): standalone line, queued so it never clips
+                        // an in-flight announce; stamp last_announce_tick
+                        // so the NEXT turn's announce chains instead of
                         // wiping it (the v2.12.1 same-tick lesson).
                         std::wstring msg = fragment + L".";
                         last_announce_tick = now;
@@ -6754,32 +6928,43 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                     }
                 }
 
-                // ---- v2.30.89: action-report delivery -------------------
-                // Speak a report whose effects have gone quiet (ONE
-                // utterance per action), or the bare "actor, action." when
-                // nothing landed by the deadline — in that case the report
-                // stays open so a late effect (summon/limit animations)
-                // still speaks attributed instead of being dropped.
-                if (report.open) {
+                // ---- v2.30.89/.90: action-report delivery ---------------
+                // The lingering previous report speaks once its write-lag
+                // fragments settle and go quiet, or closes at its TTL
+                // (silently when it already spoke bare and nothing more
+                // came). The current report speaks at its quiet timer, or
+                // speaks bare at the no-effect deadline and stays open for
+                // late effects (summon/limit animations).
+                {
                     const ULONGLONG now = GetTickCount64();
-                    if (report.frag_tick != 0 &&
-                        now - report.frag_tick >= REPORT_QUIET_MS) {
-                        report_flush("quiet");
-                    } else if (report.frag_tick == 0 && !report.bare_spoken &&
-                               now - report.open_tick >= REPORT_NO_EFFECT_MS) {
-                        std::wstring text = report.actor;
-                        text += L", ";
-                        text += report.action;
-                        text += L".";
-                        const bool chain = (now - last_announce_tick) < ANNOUNCE_CHAIN_MS;
-                        last_announce_tick = now;
-                        char dbg[192];
-                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-                            "[FF7Access] BATTLE report (no effect)%ls => %ls",
-                            chain ? L" chained" : L"", text.c_str());
-                        Log::Write(dbg);
-                        TTS::Speak(text, /*interrupt=*/!chain);
-                        report.bare_spoken = true;
+                    if (prev_report.open) {
+                        if (prev_report.frag_tick != 0 &&
+                            now - prev_report.frag_tick >= REPORT_QUIET_MS)
+                            report_flush(prev_report, "quiet prev");
+                        else if (prev_report.frag_tick == 0 &&
+                                 now >= prev_report.linger_deadline)
+                            report_flush(prev_report, "linger out");
+                    }
+                    if (report.open) {
+                        if (report.frag_tick != 0 &&
+                            now - report.frag_tick >= REPORT_QUIET_MS) {
+                            report_flush(report, "quiet");
+                        } else if (report.frag_tick == 0 && !report.bare_spoken &&
+                                   now - report.open_tick >= REPORT_NO_EFFECT_MS) {
+                            std::wstring text = report.actor;
+                            text += L", ";
+                            text += report.action;
+                            text += L".";
+                            const bool chain = (now - last_announce_tick) < ANNOUNCE_CHAIN_MS;
+                            last_announce_tick = now;
+                            char dbg[192];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] BATTLE report (no effect)%ls => %ls",
+                                chain ? L" chained" : L"", text.c_str());
+                            Log::Write(dbg);
+                            TTS::Speak(text, /*interrupt=*/!chain);
+                            report.bare_spoken = true;
+                        }
                     }
                 }
             }
@@ -6817,6 +7002,16 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         // means the battle module is not active.
         const bool is_party = (actor_id <= 2);
         const bool is_enemy = (actor_id >= 4 && actor_id <= 9);
+
+        // v2.30.90: stamp the engine turn start on the RAW actor change,
+        // before the commandID gate below can delay detection (see
+        // turn_start_tick above). Only a change TO a valid actor is a
+        // turn start; changes to idle values just reset the tracker.
+        if (actor_id != raw_last_actor) {
+            raw_last_actor = actor_id;
+            if (is_party || is_enemy)
+                turn_start_tick = GetTickCount64();
+        }
         if (!is_party && !is_enemy) {
             last_actor_id = 0xFF;
             pending = false;
@@ -6867,16 +7062,42 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                         ok ? 1 : 0);
                     Log::Write(fdbg);
                 }
-                announce(pending_actor, pending_cmd, ok ? &name : nullptr);
+                const bool combine = Config::Get().speak_battle_damage ||
+                                     Config::Get().speak_battle_status;
+                if (combine) {
+                    // v2.30.90: the report already opened at turn detection
+                    // with the generic label — upgrade its action name in
+                    // place if it hasn't spoken yet. An unresolvable flash
+                    // (ok=0, e.g. Tifa's limit idx=98) keeps the generic.
+                    ActionReport* tgt = nullptr;
+                    if (report.open && report.gen == pending_gen)
+                        tgt = &report;
+                    else if (prev_report.open && prev_report.gen == pending_gen)
+                        tgt = &prev_report;
+                    if (ok && tgt && !tgt->bare_spoken) {
+                        tgt->action = name;
+                        char udbg[160];
+                        _snprintf_s(udbg, sizeof(udbg), _TRUNCATE,
+                            "[FF7Access] BATTLE report name-upgrade gen=%lu => %ls",
+                            static_cast<unsigned long>(pending_gen), name.c_str());
+                        Log::Write(udbg);
+                    }
+                } else {
+                    announce(pending_actor, pending_cmd, ok ? &name : nullptr);
+                }
                 pending = false;
             } else if (timed_out) {
                 // No flash and the struct still describes something else:
-                // fall back to the generic label rather than risk a wrong name.
-                announce(pending_actor, pending_cmd, nullptr);
+                // fall back to the generic label rather than risk a wrong
+                // name. In combine mode the report already carries the
+                // generic label — nothing to do.
+                if (!(Config::Get().speak_battle_damage ||
+                      Config::Get().speak_battle_status))
+                    announce(pending_actor, pending_cmd, nullptr);
                 pending = false;
             }
             // While pending and not resolved, fall through only to detect a
-            // NEW actor turn below (which flushes the pending announce).
+            // NEW actor turn below (which resolves the pending state).
         }
 
         // â”€â”€ Phase 1: new turn detection â”€â”€
@@ -6885,9 +7106,14 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         last_actor_id = actor_id;
 
         // A newer turn started while the previous one was still waiting for
-        // its flash: announce the old one generically now so it isn't lost.
+        // its flash. Combine mode: that report is already open with its
+        // generic label and will move to the linger slot when the new one
+        // opens — only the name upgrade is abandoned. Legacy mode: announce
+        // the old turn generically now so it isn't lost.
         if (pending) {
-            announce(pending_actor, pending_cmd, nullptr);
+            if (!(Config::Get().speak_battle_damage ||
+                  Config::Get().speak_battle_status))
+                announce(pending_actor, pending_cmd, nullptr);
             pending = false;
         }
 
@@ -6920,8 +7146,8 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         }
 
         // Does this command have flash text at all?  Branch 9 commands
-        // (plain Attack, Steal, â€¦) never write the flash struct â€” announce
-        // their generic label immediately with no wait.
+        // (plain Attack, Steal, â€¦) never write the flash struct â€” they
+        // carry their generic label with no wait.
         uint8_t branch = 9;
         if (command_id <= FF7Addr::BATTLE_DISPATCH_MAX_CMD)
             branch = *reinterpret_cast<const uint8_t*>(
@@ -6929,17 +7155,32 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         const bool name_possible = (branch != 9) &&
             (g_k2.magic != nullptr || branch == 8 || branch == 4);
 
+        // v2.30.90, combine mode: the report opens NOW, at turn detection,
+        // with the generic label — the 2026-08-05 logs showed enemy and
+        // limit damage routinely settling while the old flash-time open
+        // was still waiting, which orphaned ~28% of all fragments (and
+        // misattributed some). The flash, when it resolves in Phase 2,
+        // upgrades the name in place; until then "MP 1, attacks" /
+        // "Tifa, Limit Break" is both honest and correctly attributed.
+        const bool combine = Config::Get().speak_battle_damage ||
+                             Config::Get().speak_battle_status;
+        if (combine)
+            announce(actor_label, command_id, nullptr);   // opens the report
+
         if (!name_possible) {
-            announce(actor_label, command_id, nullptr);
+            if (!combine)
+                announce(actor_label, command_id, nullptr);
             continue;
         }
 
-        // Defer the announce until the flash text appears (Phase 2 above).
+        // Arm Phase 2: legacy mode defers the announce until the flash
+        // text appears; combine mode defers only the NAME upgrade.
         pending          = true;
         pending_cmd      = command_id;
         pending_s0_cmd   = flash_cmd;
         pending_s0_idx   = flash_idx;
         pending_deadline = GetTickCount64() + 2500;
+        pending_gen      = report.gen;
         wcscpy_s(pending_actor, actor_label);
     }
 

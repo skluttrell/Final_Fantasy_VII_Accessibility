@@ -104,6 +104,9 @@ the victory announce's interrupt=true cancels the level-up line that
 speaks ~150ms before it — full analysis under the OTHER [LEVELUP]
 entry (the v2.30.61 feature entry, later in this file). The
 2026-08-02 "confirm" was likely a lucky timing gap or heard mid-wipe.
+FIXED v2.30.90 (2026-08-06): level-ups now buffer and ride the
+victory utterance itself ("...and 10 A P. Barret grew to level 7!").
+Awaiting play-test — verify [BATTLE90] (a) in research §8.
 
 [TENTHP] Tent HP regain replays at next battle start
 ------------------------------------------------------------------------
@@ -126,6 +129,10 @@ same formation — enemy leftovers and a stale status bit produce ghost
 heal/cure speech too (v2.30.89 made the status half newly audible).
 Fix direction: an init-grace window at mode→2 (fold deltas silently
 until first actor turn / commandID validity), not a longer settle.
+FIXED v2.30.90 (2026-08-06): 2500ms init grace from the first mode==2
+poll — settles written inside it fold silently ("grace-suppressed"
+debug lines). Awaiting play-test — verify [BATTLE90] (b): use a tent,
+enter a battle, no "plus N HP" chorus.
 
 [SYNCBUTTON] No. 5 Reactor synchronized button press
 ------------------------------------------------------------------------
@@ -250,6 +257,15 @@ BATTLE-ENTRY GHOST BASELINE — see [TENTHP], root cause found. (4)
 Tifa limit flash idx=98 resolved ok=0 → generic "Limit Break" spoken
 (safe fallback worked; branch-7 idx mapping for Tifa unknown — new
 data point for the v2.30.76 corpus).
+ISSUES (1)(2)(3) FIXED v2.30.90 (2026-08-06): reports open at turn
+detection (generic label, flash upgrades the name in place via gen
+id), anchored to the raw actor-id change; superseded reports linger
+800ms; fragments route by write-time vs turn anchor + 300ms minimum
+damage delay (home=cur/prev/cur-early/orphan in the log); no-effect
+deadline 5000ms; battle-entry grace kills the ghosts. Full design in
+research §8 v2.30.90. Awaiting play-test — verify [BATTLE90] (c)-(f).
+Issue (4) stays open (harmless generic fallback; needs one more limit
+log to map Tifa's idx space).
 
 [LAYERFILTER] Shift+; layer filter — SHIPPED v2.30.88 (2026-08-05), awaiting play-test
 ------------------------------------------------------------------------
@@ -626,6 +642,10 @@ victory; it actually SPEAKS FIRST and gets wiped. Fix direction:
 buffer detected level-ups and let VictoryThread append them to its
 own utterance (or speak them interrupt=false AFTER the victory line
 goes out) — the v2.12.1 defeat-buffer pattern.
+FIXED v2.30.90 (2026-08-06) exactly that way: pending_levelups buffer
+appended to the victory utterance; 2.5s standalone fallback for
+scripted EXP / silent victories; buffer cleared on speak_battle off.
+Awaiting play-test ([BATTLE90] (a)).
 
 [LADDER] Ladder state + push direction — SHIPPED v2.30.60 (2026-08-02), awaiting play-test
 ------------------------------------------------------------------------
