@@ -1,0 +1,27 @@
+FF7 Accessibility Mod — PARKED JOBS
+====================================
+
+Ideas and features the user has explicitly tabled. NOT a backlog and NOT
+a to-do list: nothing here is to be worked on, investigated, or "gotten
+started early" without the user asking for it by name. (TODO.txt is the
+live backlog; this file is the freezer.)
+
+Each entry records enough context to resume cold: what was proposed,
+why it was parked, and anything already learned about feasibility.
+
+
+[AUDIODESC] Audio description track scripts for video files
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user: "I will table that for now").
+Proposal: generate timestamped audio-description scripts for video —
+likely candidates are the FF7 FMV cutscenes in the game data folders.
+Feasibility already assessed: no direct video perception; workflow is
+ffmpeg frame extraction (scene-change or 1-2s interval, timestamp-named)
+→ frame-sequence visual analysis → dialog-gap mapping (needs subtitle
+file or local Whisper transcript; no native audio transcription) →
+timestamped script (plain text / WebVTT / in-out table). Limitations:
+motion between frames is inferred (fast action needs denser sampling,
+trading context budget); timing precision = sampling interval; final
+dialog-collision check needs a human listener. FF7 FMVs are a favorable
+case: short, mostly dialog-free. Nothing built, ffmpeg availability
+never checked.
