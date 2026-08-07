@@ -305,6 +305,21 @@ chatty). No new addresses. Deployed both (43DE215962FE409E), NOT
 released. Awaiting play-test — verify [VERYCLOSE95] (a)-(f) in
 research §8 (walk-in entry phrase, homing words converging, center
 phrase on \, disarm gestures, wandering target, header v2.30.95).
+PLAY-VERIFIED 2026-08-07 (log.9, first v2.30.95 session — Wall
+Market save-point walk): (a) PASS — four \ presses at 853/383/301/86
+units spoke normal routes (86 > reach 80, correctly still outside),
+then crossing to 78 fired the autonomous entry announce "Save point:
+very close to the down and right." (dz=0, sector matches the pad's
+true offset) with NO keypress; (d) PARTIAL PASS — stepping onto the
+pad popped the save-point tutorial dialog 180ms later and homing
+disarmed itself ("NAV homing done (dialog)"), zero homing chatter
+anywhere else in the log; (f) PASS — header v2.30.95. Boundary
+behavior clean on both sides of the 80-unit circle. NOT YET
+EXERCISED: (b) mid-circle sector-change updates (the player walked
+straight in — no overshoot occurred, which is the point), (c) \
+pressed while inside ("NAV veryclose center" never fired), (e)
+wandering-NPC target, and the J/L / Shift+K disarm gestures. These
+ride the next ordinary play session.
 
 [DIALOGCHARS] More strange characters in dialog: "Ø" before Aerith line
 ------------------------------------------------------------------------
@@ -465,6 +480,17 @@ edge resets the announce flag (the inn never fires a WSPCL close, so
 a same-field re-open would have skipped its starting value).
 Remaining ear-check: decline the inn, ask again — starting value
 must re-speak ([NUMSEL93] (c)).
+LOG NOTE 2026-08-07 (log.9, v2.30.95 session): the v2.30.94
+change-only WNUMB logging is confirmed in play — one inn visit, ~17
+WNUMB lines over 29s, every one a real value change (wrap 1↔10
+tracked, 10→9→8 held presses too), vs the ~30/s redraw spam of
+log.8. Countdown machinery stayed silent on the type-2 window. (c)
+STILL unexercised, and the user established WHY the obvious retest
+path doesn't exist: once "stay" is chosen, the hour selector CANNOT
+be backed out of with the cancel button — natural game behavior, not
+a mod issue. The (c) re-open path is therefore: answer "Don't stay"
+at the Stay/Don't-stay choice, then talk to the innkeeper again —
+that second selector arm must re-speak its starting value.
 
 [AERITH] Game says her name is "Aerith" — 7H retranslation or read bug?
 ------------------------------------------------------------------------
@@ -799,6 +825,14 @@ the other half; (e) Save row wording at/away from save points — if
 vanilla grays Save somewhere and the masks stay clear there, that
 gray is driven by something else and needs a fresh look (log the
 vis=/dis= values from that field).
+(d) CONFIRMED 2026-08-07 (log.9, v2.30.95, Wall Market inn interior
+field 199): first live nonzero locking mask — "MENU cursor=0 (Item)
+vis=FEFF dis=0300" — bits 8+9 set (PHS + Save locked; vis bit 8 also
+clear, so PHS is hidden AND locked there). The field-script-driven
+locking-mask half of the v2.30.78 two-mask model is now sighted in
+play. Spoken ", not available" on those rows still unheard (the
+player went straight to Quit), but the mask propagation the speech
+reads from is proven live.
 
 [K2BODY] Kernel2 stale-copy junk — ROOT CAUSE CLOSED v2.30.77 (2026-08-04), body check live
 ------------------------------------------------------------------------

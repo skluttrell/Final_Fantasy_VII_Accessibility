@@ -6950,6 +6950,34 @@ to the thing stops the updates; leaving the circle and coming back
 re-speaks the full phrase; (e) a wandering NPC target: updates track
 the moving center; (f) log header v2.30.95.
 
+LOG-VERIFIED 2026-08-07 (log.9, first v2.30.95 session, 2013+7H --
+a targeted Wall Market verify run: save-point homing walk + one inn
+visit, then quit). [VERYCLOSE95] (a) PASS: four \ presses on the
+field-195 save point at 853/383/301/86 units each spoke a normal
+route ("up and right 5 seconds" ... "down and right 1 second" --
+86 > reach 80 correctly stayed OUTSIDE the pre-empt), then the
+50ms poll caught the circle crossing at 78 units and fired the
+autonomous entry announce ("NAV homing enter slot=11 dist=78
+reach=80 dz=0 sector=3" = "Save point: very close to the down and
+right.") with no keypress; the player stepped onto the pad, the
+save-point tutorial dialog opened 180ms later, and homing disarmed
+itself ("NAV homing done (dialog)") -- the (d) dialog-disarm arm of
+the design, and ZERO homing chatter anywhere else in the session.
+(f) header v2.30.95. Not yet exercised: (b) mid-circle sector
+updates (the player walked straight in -- no overshoot happened),
+(c) \ inside the circle ("NAV veryclose center" never fired), (e)
+wandering targets, J/L / Shift+K disarms. BONUS CONFIRMATIONS in
+the same log: [NUMSEL93]/v2.30.94 change-only WNUMB logging live
+(~17 lines/29s, all real changes, wrap 1<->10 and held-press runs
+tracked; countdown stayed silent on the type-2 window); [MENUAVAIL]
+(d) FIRST LIVE nonzero locking mask -- inn interior field 199 shows
+"vis=FEFF dis=0300" (PHS hidden+locked, Save locked; the
+field-script mask half of the v2.30.78 model now sighted in play).
+USER GAME-BEHAVIOR NOTE recorded in PARKED [INNSTAY]: the inn hour
+selector cannot be backed out of with cancel once "stay" is chosen
+(natural game behavior), so the [NUMSEL93] (c) re-announce retest
+path is decline at the ASK, then talk again.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
