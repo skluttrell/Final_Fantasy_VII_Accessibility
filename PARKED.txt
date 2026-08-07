@@ -58,6 +58,16 @@ now drops behind a word-boundary space in decode_walk (dialog path
 only — DecodeChar/caption-harvest parity untouched). Same build also
 made 0xFE a real escape (see [DIALOGCHARS]). Verify [TEXT91] (b) in
 research §8: pickups speak "Obtained Key Item Member's Card!" clean.
+PLAY-VERIFIED 2026-08-07 (log.7, first v2.30.91 session — the user's
+squats retest): 'Obtained Key Item Silk Dress !' and 'Obtained Key
+Item Blonde Wig !' both spoke clean, and the ENTIRE session log has
+zero stray/undefined characters ([TEXT91] (b) and (d) pass). Still
+unexercised in .7: (a) speaker-name lines (no FE D6 dialog occurred —
+Aerith waited outside the gym) and (c) the fw/fm rename (the
+Member's Card man is script-hidden once the card is taken: vis=0,
+parked at origin — correctly not listed). Squats result still says
+"He did  many squats..." — that is the parked [DIALOGNUM] FE DE
+work, not a regression.
 
 [TEXTBOX] Ground-up re-examination of the text box system
 ------------------------------------------------------------------------
