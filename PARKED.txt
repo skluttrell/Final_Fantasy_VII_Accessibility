@@ -221,6 +221,11 @@ Offline dry-run vs all logged raw dumps passed, incl. the two-number
 final score mapping to slots 0/1. Awaiting play-test — verify
 [MSGNUM92] (a)/(b)/(d)/(e) in research §8 (replay the squats
 contest; numbers must match the sighted screen).
+PLAY-VERIFIED 2026-08-07 (log.8): (b) the squats final score spoke
+BOTH numbers — "He did 16 many squats, and you did 18 that many."
+(the "16 many" wording is Echo-S's own grammar); (c) inn price
+spoke (see [INNGIL]); (d) ordinary dialogs clean all session.
+The FE DE mechanism is confirmed working in play.
 
 [VIRTCURSOR] Virtual cursor for Status and Materia info screens
 ------------------------------------------------------------------------
@@ -380,6 +385,8 @@ FIXED v2.30.92 (2026-08-07) together with [DIALOGNUM] — the shared
 FE DE resolver ships; the inn greeting should now speak the actual
 price. Awaiting play-test — verify [MSGNUM92] (c): talk to the Wall
 Market innkeeper, "It's N gil a night." with N matching the screen.
+PLAY-VERIFIED 2026-08-07 (log.8 12:07:17): "Welcome. It's 10 gil a
+night." — the price speaks. RESOLVED.
 
 [INNSTAY] Inn "how long to stay" prompt — no selection speech, no cue
 ------------------------------------------------------------------------
@@ -421,6 +428,18 @@ machinery, [TIMERLOAD]'s stale class); Uninstall's missing WSPCL
 restore added (asymmetric since v2.30.56, benign at teardown).
 Awaiting play-test — verify [NUMSEL93] (a)-(e) in research §8 (visit
 the inn: cue + starting value + Up/Down tracking vs the screen).
+PLAY-VERIFIED 2026-08-07 (log.8, first v2.30.93 session): armed with
+cue, starting "1" spoke after the question, every press tracked
+(1→2→3→2→1→10 wrap), squats countdown unaffected, stay completed.
+Same session play-verified [MSGNUM92]: "It's 10 gil a night." and
+the squats final score "He did 16 … you did 18" both spoke — the
+whole FE DE family is now confirmed in play. Two polish items
+shipped v2.30.94 (BBDB3BA4E0FF351D): WNUMB log now change-only (the
+inn redraw loop wrote ~30 identical lines/s), and the type-2 ARM
+edge resets the announce flag (the inn never fires a WSPCL close, so
+a same-field re-open would have skipped its starting value).
+Remaining ear-check: decline the inn, ask again — starting value
+must re-speak ([NUMSEL93] (c)).
 
 [AERITH] Game says her name is "Aerith" — 7H retranslation or read bug?
 ------------------------------------------------------------------------

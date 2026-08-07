@@ -6834,6 +6834,36 @@ header v2.30.93. RESIDUAL: spoken form is the bare number (no
 "nights" unit -- the unit lives in the question dialog; revisit on
 play report); Gold Saucer GP / Fort Condor numeric windows inherit
 this for free when reached -- first sighting worth an ear-check.
+PLAY-VERIFIED same day (log.8, 12:03-12:10): (a) armed 12:07:24 with
+cue, starting "1" after 'Sleep for how long?'; (b) every press
+logged/spoken 1->2->3->2->1->10(wrap)->...; (d) squats round at
+12:09:30 still type=1 "countdown clock armed"; (e) header v2.30.93.
+SAME SESSION also play-verified [MSGNUM92]: (b) "He did 16 many
+squats, and you did 18 that many." -- both numbers spoken (the "16
+many" grammar is Echo-S's own); (c) "Welcome. It's 10 gil a night."
+TWO POLISH FINDINGS -> v2.30.94 (next entry): WNUMB redraw-loop log
+spam and a missing selector re-announce path.
+
+### v2.30.94 (2026-08-07): WNUMB polish -- change-only logging, re-arm re-announce
+
+Two findings from log.8 (the [NUMSEL93] verify session), same-day fix:
+(1) LOG SPAM: the inn script re-fires WNUMB with the SAME value every
+frame while the selector is open -- a redraw loop, ~30 lines/s of
+"(unchanged)" (299 WNUMB lines for a ~23s stay). The log line now
+fires only on a value CHANGE or a fire that produces speech (the
+condition mirrors the speech gate exactly, so "if it was spoken it is
+in the log" holds line-for-line; a plain !announced clause would
+re-spam on unarmed windows, whose flag never sets).
+(2) NO CLOSE EDGE: the inn script never fires WSPCL type=0 for the
+selector (window torn down by other means -- "Thank you very much"
+followed with no close in log.8), so announced/has_value persisted
+and a SAME-FIELD re-open would have skipped its starting announce.
+The type-2 ARM edge now resets announced unconditionally -- every arm
+is a fresh selector; field changes still clear everything else.
+Deployed both installs hash-verified (BBDB3BA4E0FF351D). VERIFY
+[NUMSEL93] (c) specifically on the next inn visit: decline, re-ask,
+the starting value must speak again; plus a quiet log around the
+selector (WNUMB lines only on presses).
 
 ---
 

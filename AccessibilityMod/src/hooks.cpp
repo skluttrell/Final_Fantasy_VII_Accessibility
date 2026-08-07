@@ -2158,9 +2158,16 @@ static int __cdecl hook_wspcl()
         // Numeric selector arming: cue it like a choice (the double-tone
         // consumer thread applies its own debounce), and if this
         // window's WNUMB already fired, speak the starting value.
+        // v2.30.94: the arm edge RESETS the announced flag first — the
+        // inn script never fires a WSPCL type=0 close for the selector
+        // (log.8: window closed by other means, "Thank you very much"
+        // followed with no close edge), so a same-field re-open would
+        // otherwise skip its starting announce. Every arm = a fresh
+        // selector as far as speech is concerned.
+        s_numwin_announced[win_id] = false;
         if (Config::Get().dialog_choice_tone)
             InterlockedExchange(&s_dialog_choice_pending, 1);
-        if (s_numwin_has_value[win_id] && !s_numwin_announced[win_id])
+        if (s_numwin_has_value[win_id])
             numwin_speak(win_id, /*first=*/true);
     }
     if (type == 0 && win_id < 8) {
@@ -2213,12 +2220,21 @@ static int __cdecl hook_wnumb()
         s_numwin_value[win_id]     = value;
         s_numwin_has_value[win_id] = true;
 
-        char dbg[128];
-        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
-            "[FF7Access] WNUMB win=%u value=%lu digits=%u type=%u%s",
-            win_id, static_cast<unsigned long>(value), digits, type,
-            changed ? "" : " (unchanged)");
-        Log::Write(dbg);
+        // v2.30.94: log CHANGES only (plus any fire that will produce
+        // speech). The inn script re-fires WNUMB with the same value
+        // EVERY FRAME while the selector is open (log.8: 299 WNUMB lines
+        // for a ~23s stay, ~30/s of "(unchanged)") — a redraw loop, not
+        // information. The second clause matches the speech condition
+        // below exactly, so "if it was spoken it is in the log" holds
+        // line-for-line; a plain `!announced` here would re-spam on
+        // unarmed windows, whose announced flag never sets.
+        if (changed || (type == 2 && !s_numwin_announced[win_id])) {
+            char dbg[128];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] WNUMB win=%u value=%lu digits=%u type=%u",
+                win_id, static_cast<unsigned long>(value), digits, type);
+            Log::Write(dbg);
+        }
 
         // Speak only while the numeric window is actually armed (type 2)
         // and only on a real change — scripts may re-fire WNUMB with the
