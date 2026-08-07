@@ -280,6 +280,31 @@ Related prior work: v2.30.73 made "very close" use the first walkable
 leg rather than the net bearing, and v2.30.71/.72 always append a
 direction unless standing exactly on the target — this report says
 that's still not enough for the last meter.
+FIXED v2.30.95 (2026-08-07, user revived this entry). Mechanism was
+threefold (code-read; the route AIM point was always the model
+center — the phrase derivation and the lack of updates were the
+bugs): the v2.30.73 first-leg rule + sub-step leg folding biased the
+spoken word near the target ("up" when the thing sits up-and-right),
+8-sector quantization is ±22.5°, and the phrase was a one-shot
+snapshot with nothing re-measuring mid-walk. Shipped exactly what
+this entry asked: (1) \ inside the interaction circle (dist <=
+ModelTargetReach, |dz| < 150) speaks the straight player→CENTER
+bearing and skips the route machinery (the through-wall concern that
+motivated first-leg doesn't exist inside the circle; outside it the
+v2.30.73 rule still owns the phrase; lines/exits unaffected);
+(2) NEW center-homing poll: a \ request on a model dest arms the
+slot, and while the player is inside its circle the mod re-measures
+from the LIVE center every poll — full phrase on circle entry
+(queued), bare sector word on every bearing change (interrupt, ≥600ms
+apart), quiet within one step of center; leave + return re-announces.
+Disarms on field change, J/L/category/filter/Shift+K, \ at a line
+target, model hidden, journey completion, or dialog while inside
+(= interacted). No cfg key by design (speaks only after an explicit
+directions request; escape hatch documented if testers find it
+chatty). No new addresses. Deployed both (43DE215962FE409E), NOT
+released. Awaiting play-test — verify [VERYCLOSE95] (a)-(f) in
+research §8 (walk-in entry phrase, homing words converging, center
+phrase on \, disarm gestures, wandering target, header v2.30.95).
 
 [DIALOGCHARS] More strange characters in dialog: "Ø" before Aerith line
 ------------------------------------------------------------------------

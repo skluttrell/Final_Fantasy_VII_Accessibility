@@ -6865,6 +6865,91 @@ Deployed both installs hash-verified (BBDB3BA4E0FF351D). VERIFY
 the starting value must speak again; plus a quiet log around the
 selector (WNUMB lines only on presses).
 
+### v2.30.95 (2026-08-07): [VERYCLOSE] center-measured "very close" + homing updates
+
+User report (parked 2026-08-06, revived by the user): "it will tell me
+'very close to the up and right' ... but when I head that direction I
+tend to overshoot the entity" -- inside an object's detection radius
+the direction should measure from the OBJECT'S CENTER and keep
+updating so the final approach homes in.
+
+MECHANISM (code-read, no new investigation needed): three compounding
+causes in the near-target phrase. (1) The v2.30.73 "first walkable
+leg" rule plus RouteToSpeech's kMinSegLen sub-step folding can bias
+the spoken word off the true bearing exactly at short range: a route
+"up 60, right 50" folds its sub-120-unit legs together and speaks
+"very close to the up" while the item sits up-AND-RIGHT -- heading
+"up" walks past it. (2) 8-sector quantization is +/-22.5 degrees;
+over the last ~80 units that lateral error is comparable to the
+interaction radius itself. (3) The phrase was a one-shot snapshot:
+nothing re-measured as the player walked, so the bearing swinging
+sideways/behind went unannounced -- the overshoot proper. (Note the
+route target was NEVER wrong: model dests are degenerate point lines
+AT the model center since v2.22 -- the phrase derivation and the lack
+of updates were the problems, not the aim point.)
+
+FIX 1 -- center-measured phrase on \ (proxy.cpp directions handler):
+when the target is a MODEL dest (person/item/save/device) and the
+player stands INSIDE its interaction circle (dist <= ModelTargetReach,
+the same talk/contact circle the route builder stops at and the prox
+chirp fires on) on the same level (|dz| < 150 -- the v2.30.73 "never
+a 2D direction across a layer gap" rule), the announce speaks the
+straight player->center bearing ("X: very close to the up and
+right.") and SKIPS the route machinery entirely. Inside the circle
+there is no wall between (interaction works from here), so the
+v2.30.73 through-wall concern that motivated the first-leg rule does
+not apply; the first-leg rule still owns the "very close" band
+OUTSIDE the circle. Lines/exits are unaffected (reach 0, no center).
+Log line "NAV veryclose center slot= dist= reach= dz= dir=" carries
+the discriminating inputs (the v2.30.81 standing rule).
+
+FIX 2 -- center homing while inside the circle (new per-poll block in
+FieldNavThread, after the prox block): a \-directions request on a
+model dest ARMS a homing target (slot + spoken name). While armed and
+the player is inside the model's interaction circle, every 50ms poll
+re-measures the offset from the model's LIVE center (a wandering
+NPC's circle moves with them) and speaks:
+  - circle ENTRY: the full phrase ("Save point: very close to the up
+    and left."), interrupt=false so it queues AFTER the v2.30.62
+    walk-into announce naming the thing;
+  - sector CHANGE while inside: the bare sector word ("down and
+    left."), interrupt=true (a stale direction is worse than a
+    clipped one; the only thing it can clip is our own previous word
+    -- dialog/uc_lock are gated), rate-limited to one per 600ms;
+  - within one step of the center (< 20 units) the sector is numeric
+    noise: hold the last word rather than flutter.
+Leaving the circle (+ the prox block's 25-unit re-arm slack, same
+hysteresis) silently re-arms the entry announce, so an
+overshoot-and-return speaks a fresh full phrase -- the homing loop
+the user asked for. DISARMS: field change (slots are per-field), any
+browser mutation (J/L, category, filters, Shift+K -- the intent
+moved), \ at a LINE target (ditto), model hidden (item picked up),
+journey lastmile completion (its "Arrived" owns that poll), and
+dialog activity while inside (the player interacted -- guidance did
+its job; log "NAV homing done (dialog)"). Transient read misses keep
+the target and retry. The \ arm seeds last-sector/inside from what
+that announce just said, so the poll never repeats it on the next
+tick. Log lines "NAV homing arm/enter/update".
+
+DELIBERATELY NOT a cfg key: homing only ever speaks after the player
+explicitly asked for directions to this exact thing, and it stops the
+moment the intent visibly moves on -- if testers still find it chatty,
+a cfg key is the documented escape hatch. No new addresses (model
+center/VISI/talk radius all long-mapped; ModelTargetReach reused).
+Deployed both installs hash-verified (43DE215962FE409E).
+
+VERIFY [VERYCLOSE95]: (a) select an item/save point/person with \,
+walk toward it: on entering its circle the mod speaks "X: very close
+to the <dir>" BY ITSELF (no keypress), after the walk-into announce
+if both fire; (b) keep walking across the circle: short sector words
+follow the swinging bearing, and following the LATEST word converges
+on the entity -- the reported overshoot gone; (c) \ pressed while
+inside the circle speaks the center bearing (log "NAV veryclose
+center"), never a route first-leg word; (d) J/L, Shift+K, or talking
+to the thing stops the updates; leaving the circle and coming back
+re-speaks the full phrase; (e) a wandering NPC target: updates track
+the moving center; (f) log header v2.30.95.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

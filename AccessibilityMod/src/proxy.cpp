@@ -10929,6 +10929,29 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
     // steady climb stays quiet).
     bool    ladder_was_on  = false;
     int     ladder_last_dir = -1;
+    // v2.30.95 [VERYCLOSE] center-homing state (user report: "very close
+    // to the up and right ... I tend to overshoot the entity"). A
+    // \-directions request on a MODEL destination (a person/item/save/
+    // device -- something with a center and an interaction radius) arms
+    // this; while armed, the per-poll homing block below re-measures the
+    // player's offset FROM THE OBJECT'S CENTER whenever the player is
+    // inside the model's interaction radius (ModelTargetReach -- the
+    // same circle the route builder stops at and the prox chirp fires
+    // on) and speaks the center-relative d-pad sector as it changes, so
+    // the final approach homes in instead of running past on one stale
+    // snapshot. Disarmed by: field change (slots are per-field), any
+    // browser mutation (J/L/category/filter/Shift+K -- the intent moved),
+    // a directions request at a LINE target (ditto), the model going
+    // hidden (picked up), journey completion, or dialog activity while
+    // inside the circle (the player interacted -- guidance did its job).
+    // Deliberately NOT a cfg key: it only ever speaks after the player
+    // explicitly asked for directions to this exact thing, and it stops
+    // the moment the intent visibly moves on.
+    int       homing_slot        = -1;   // armed model slot, -1 = off
+    wchar_t   homing_name[48]    = {};   // spoken name at arm time
+    bool      homing_inside      = false; // currently inside the circle
+    int       homing_last_sector = -1;   // last spoken sector (dedupe)
+    ULONGLONG homing_last_speak  = 0;    // rate limiter
 
     // Screen-change announcement tracker (v2.23) â€” separate from
     // nav_field_id, which only updates on the KEYPRESS path; this one runs
@@ -11219,6 +11242,9 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                       // save icon if THIS is the target
             journey_lastmile_tries = 0;   // ...and the retry window is
                                           // re-armed by the target branch
+            homing_slot        = -1;  // [VERYCLOSE] homing target is a
+            homing_inside      = false; // per-field slot too -- a screen
+            homing_last_sector = -1;    // change always disarms it
 
             // ---- arrival facing (v2.30.64) ----------------------------
             // The arrival routine wrote the jump mailbox's direction into
@@ -11684,6 +11710,12 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                             }
                             journey_active    = false;
                             journey_save_slot = -1;
+                            // [VERYCLOSE] the pad is reached and said so
+                            // -- a homing entry announce on the same poll
+                            // would just repeat it.
+                            homing_slot        = -1;
+                            homing_inside      = false;
+                            homing_last_sector = -1;
                         }
                     }
                 }
@@ -11997,6 +12029,113 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             }
         }
 
+        // ---- [VERYCLOSE] center homing (v2.30.95, every poll) -------------
+        // The overshoot fix's second half. A single "very close to the up
+        // and right" is a snapshot: the player turns (imprecisely), walks,
+        // and sails past the entity with nothing telling them the bearing
+        // has swung behind them. While a \-directions target is armed and
+        // the player is INSIDE its interaction circle, this block
+        // re-measures the offset from the model's live CENTER each poll
+        // (live read -- a wandering NPC's circle moves with them) and
+        // speaks the center-relative sector whenever it changes:
+        //   - entering the circle: full phrase ("Save point: very close
+        //     to the up and left."), queued (interrupt=false) so it reads
+        //     AFTER the v2.30.62 walk-into announce naming the thing;
+        //   - sector change while inside: just the sector word
+        //     ("down and left."), interrupt=true -- a stale direction is
+        //     worse than a clipped one, and the only thing it can clip
+        //     is our own previous homing word (dialog is gated below);
+        //   - within one step of the center (< 20 units) the sector is
+        //     numeric noise -- hold the last word rather than flutter.
+        // Leaving the circle (plus the prox block's re-arm slack, same
+        // hysteresis constant) silently re-arms the entry announce, so an
+        // overshoot-and-return speaks a fresh full phrase.
+        if (homing_slot >= 0) {
+            bool drop = false;
+            const uint8_t* hme = reinterpret_cast<const uint8_t*>(
+                arr + homing_slot * FF7Addr::FIELD_EVENT_DATA_STRIDE);
+            if (homing_slot >= static_cast<int>(nmod) ||
+                homing_slot == static_cast<int>(pmid)) {
+                drop = true;              // model table shrank under us
+            } else if (!IsReadableSpan(hme,
+                                       FF7Addr::FIELD_EVENT_DATA_STRIDE)) {
+                // transient read miss: keep the target, try next poll
+            } else if (*reinterpret_cast<const uint8_t*>(
+                           hme + FF7Addr::FIELD_EVENT_VISIBLE) == 0) {
+                drop = true;              // script hid it (item picked up)
+            } else {
+                const int32_t* hmp = reinterpret_cast<const int32_t*>(
+                    hme + FF7Addr::FIELD_EVENT_MODEL_POS);
+                const float hdx = static_cast<float>((hmp[0] >> 12) - px);
+                const float hdy = static_cast<float>((hmp[1] >> 12) - py);
+                const float hdist = sqrtf(hdx * hdx + hdy * hdy);
+                const int32_t hdz = (hmp[2] >> 12) - pz;
+                const float hreach = ModelTargetReach(arr, homing_slot);
+                const bool inside = hdist <= hreach &&
+                                    hdz > -PROX_Z_GATE && hdz < PROX_Z_GATE;
+                const uint8_t huc =
+                    *reinterpret_cast<const volatile uint8_t*>(
+                        FF7Addr::FIELD_UC_LOCK);
+                const bool hdialog =
+                    (GetTickCount() - Hooks::LastDialogActivityTick()) < 500;
+                if (inside && hdialog) {
+                    // Dialog while at the target = the player interacted
+                    // (or a scene owns the moment): guidance is done.
+                    drop = true;
+                    if (Config::Get().debug_log)
+                        Log::Write("[FF7Access] NAV homing done (dialog)");
+                } else if (inside && huc == 0) {
+                    const ULONGLONG hnow = GetTickCount64();
+                    int hsec = -1;
+                    if (hdist >= 20.0f)   // sub-step offset = sector noise
+                        hsec = DpadSectorIndex(
+                            atan2f(hdx, hdy) * (180.0f / 3.14159265f)
+                            + control_deg - 180.0f);
+                    const bool entering = !homing_inside;
+                    if (entering ||
+                        (hsec >= 0 && hsec != homing_last_sector &&
+                         hnow - homing_last_speak >= 600)) {
+                        homing_inside      = true;
+                        homing_last_sector = hsec;
+                        homing_last_speak  = hnow;
+                        std::wstring hmsg;
+                        if (entering) {
+                            hmsg  = homing_name;
+                            hmsg += L": very close";
+                            if (hsec >= 0) {
+                                hmsg += L" to the ";
+                                hmsg += kDpadSectors[hsec];
+                            }
+                            hmsg += L'.';
+                        } else {
+                            hmsg  = kDpadSectors[hsec];
+                            hmsg += L'.';
+                        }
+                        TTS::Speak(hmsg, /*interrupt=*/!entering);
+                        if (Config::Get().debug_log) {
+                            char dbg[160];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] NAV homing %s slot=%d "
+                                "dist=%.0f reach=%.0f dz=%d sector=%d",
+                                entering ? "enter" : "update",
+                                homing_slot, hdist, hreach,
+                                static_cast<int>(hdz), hsec);
+                            Log::Write(dbg);
+                        }
+                    }
+                } else if (!inside &&
+                           hdist > hreach + PROX_REARM_SLACK) {
+                    homing_inside      = false;  // left the circle: re-arm
+                    homing_last_sector = -1;     // the entry announce
+                }
+            }
+            if (drop) {
+                homing_slot        = -1;
+                homing_inside      = false;
+                homing_last_sector = -1;
+            }
+        }
+
         // ---- direction calibration logging (debug_log only) -------------
         // While a direction is held and the player moves, log the held bits
         // against the world motion angle once per second. One walkabout
@@ -12158,6 +12297,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
         bool announce_filter = false;
         bool announce_layer = false;
         bool journey_cancelled = false;
+        // [VERYCLOSE] any browsing mutation moves the intent off the armed
+        // homing target -- J/L picked something else, a category or filter
+        // change rebuilt the list, Shift+K is the explicit "stop guiding
+        // me". K (announce) and M (map name) read state without moving it,
+        // so they keep homing alive; \ re-arms it below.
+        if (act_prev_dest || act_next_dest || act_prev_cat || act_next_cat ||
+            act_reset_cat || act_filter || act_layer_filter) {
+            homing_slot        = -1;
+            homing_inside      = false;
+            homing_last_sector = -1;
+        }
         // Filter toggles mutate BEFORE the build for the same reason
         // category changes do (v2.15.2): the announcement must carry the
         // count of the list the player will actually cycle. Selection
@@ -13167,7 +13317,51 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
 
         const wchar_t* fallback_prefix = L"";
         bool spoke_route = false;
-        if (Config::Get().turn_by_turn) {
+
+        // ---- [VERYCLOSE] inside the interaction radius: measure from the
+        // object's CENTER (v2.30.95, user report). The v2.30.73 rule --
+        // "very close" speaks the route's first WALKABLE leg -- is right
+        // when a wall separates player and target, but inside the
+        // interaction circle there is no wall (interaction works from
+        // here), and the funnel's first leg plus the sub-step fold can
+        // bias the spoken word off the true bearing ("up" when the thing
+        // sits up-and-right): the player heads that way and overshoots.
+        // Here the honest answer is the straight offset player->center
+        // (for a model dest the nearest-point math above degenerates to
+        // exactly that -- dist/input_deg are already center-relative), so
+        // speak it and skip the route machinery. Level gate: never a 2D
+        // direction across a layer gap (the v2.30.73 rule) -- a target
+        // a floor away falls through to the route/journey path, which
+        // says "on another level". Lines/exits keep reach 0 and are
+        // unaffected: those must be stepped on, and their nearest point
+        // is not a "center".
+        const float center_dz =
+            static_cast<float>(d.line_z1 + t * (d.line_z2 - d.line_z1))
+            - static_cast<float>(pz);
+        if (d.model_slot >= 0 && dist <= target_reach &&
+            center_dz > -150.0f && center_dz < 150.0f) {
+            wchar_t msg[192];
+            if (dist < 1.0f)
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                             L"%ls: very close.", d.name);
+            else
+                _snwprintf_s(msg, _countof(msg), _TRUNCATE,
+                             L"%ls: very close to the %ls.",
+                             d.name, DpadSectorName(input_deg));
+            TTS::Speak(msg, /*interrupt=*/true);
+            spoke_route = true;
+            if (Config::Get().debug_log) {
+                char dbg[160];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV veryclose center slot=%d dist=%.0f "
+                    "reach=%.0f dz=%.0f dir=%ls",
+                    d.model_slot, dist, target_reach, center_dz,
+                    dist < 1.0f ? L"-" : DpadSectorName(input_deg));
+                Log::Write(dbg);
+            }
+        }
+
+        if (!spoke_route && Config::Get().turn_by_turn) {
             const float fpx = static_cast<float>(px);
             const float fpy = static_cast<float>(py);
             const float fpz = static_cast<float>(pz);
@@ -13276,6 +13470,38 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // characters do not block the player.)
             TTS::Speak(msg, /*interrupt=*/true);
         }
+        // [VERYCLOSE] arm (or refresh) the center-homing target: from now
+        // until the intent visibly moves on, the per-poll homing block
+        // keeps re-measuring from this model's center whenever the player
+        // is inside its interaction circle. Seeding last_sector/inside
+        // with what THIS announce just said prevents the poll from
+        // repeating it on the very next tick. A LINE target (exit,
+        // trigger) disarms instead: lines have no center to home on and
+        // asking for one is the "stop homing on the old thing" signal.
+        if (d.model_slot >= 0) {
+            homing_slot = d.model_slot;
+            wcsncpy_s(homing_name, d.name, _TRUNCATE);
+            homing_inside = (dist <= target_reach &&
+                             center_dz > -150.0f && center_dz < 150.0f);
+            homing_last_sector =
+                (homing_inside && dist >= 20.0f)
+                    ? DpadSectorIndex(input_deg) : -1;
+            homing_last_speak = GetTickCount64();
+            if (Config::Get().debug_log) {
+                char dbg[128];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] NAV homing arm slot=%d dist=%.0f "
+                    "reach=%.0f inside=%d",
+                    homing_slot, dist, target_reach,
+                    homing_inside ? 1 : 0);
+                Log::Write(dbg);
+            }
+        } else {
+            homing_slot        = -1;
+            homing_inside      = false;
+            homing_last_sector = -1;
+        }
+
         // Wandering cue on the directions query too â€” a moving target's
         // direction is a snapshot, and the beep says exactly that.
         if (is_wandering(d.model_slot))
