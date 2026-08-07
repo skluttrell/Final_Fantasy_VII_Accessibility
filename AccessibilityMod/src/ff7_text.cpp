@@ -56,6 +56,30 @@ void SetNameProvider(NameProviderFn fn)
     g_name_provider = fn;
 }
 
+// In-dialog number provider + decode context (v2.30.92) — see ff7_text.h.
+// Same plain-pointer registration rule as the name provider. The context
+// pair is set/cleared by hooks.cpp around each dialog decode; -1 = no
+// context = number codes stay a silent word-boundary gap.
+static NumberProviderFn g_number_provider = nullptr;
+static int g_num_ctx_window    = -1;
+static int g_num_ctx_slot_base = 0;
+
+void SetNumberProvider(NumberProviderFn fn)
+{
+    g_number_provider = fn;
+}
+
+void BeginNumberContext(int window_id, int slot_base)
+{
+    g_num_ctx_window    = window_id;
+    g_num_ctx_slot_base = slot_base;
+}
+
+void EndNumberContext()
+{
+    g_num_ctx_window = -1;
+}
+
 const wchar_t* DefaultCharName(int char_id)
 {
     return (char_id >= 0 && char_id < kCharNameCount) ? kCharNames[char_id]
@@ -202,6 +226,11 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
     const uint8_t* const p_base = reinterpret_cast<const uint8_t*>(encoded_text);
     const uint8_t* p   = p_base;
     bool at_start       = true; // true until the first visible content byte is consumed
+    int  numbers_seen   = 0;    // v2.30.92: FE DE/DF/E1 occurrence counter for
+                                // this walk — mirrors the engine's per-window
+                                // counter 0xCC0EC0 (reset per dialog, +1 per
+                                // number code), so occurrence N maps to
+                                // parameter slot g_num_ctx_slot_base + N.
 
     // Safety cap: no real FF7 dialog string approaches 4096 bytes.
     // Prevents runaway reads from stale or garbage pointers.
@@ -280,25 +309,48 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
         // Consume the escape AND its sub-code as one unit so no future
         // font-table change can turn a function code into spoken junk.
         //
-        // FE DE (number insert) keeps the guard_space so the words around
-        // the still-unspoken number don't fuse. Speaking the actual VALUE
-        // needs the engine's message-variable source (set by the field
-        // script, not present in the text bytes) -- see PARKED [DIALOGNUM]/
-        // [INNGIL]: root cause is now proven, the value read is future work.
+        // FE DE / FE DF / FE E1 are the NUMBER-INSERT codes (v2.30.92,
+        // engine ground truth in investigate/ff7_msgnum_static*.py: the
+        // typewriter's sub-code dispatch at 0x6324E5 compares exactly
+        // these three and routes them to the digit formatters). When
+        // hooks.cpp has armed a number context for this decode, resolve
+        // the value the engine itself would render (occurrence order =
+        // parameter slot order, the 0xCC0EC0 counter rule) and speak its
+        // decimal digits in place. No context / provider says no value =
+        // the pre-v2.30.92 behavior: a silent word-boundary gap. FE DF is
+        // the engine's HEX formatter, but the spoken form stays decimal —
+        // a screen reader reading "1F40" as a word helps nobody, and no
+        // story dialog is known to use it (corpus: FE DE only).
         //
-        // Sub-codes with argument bytes (e.g. a timed-pause variant) would
-        // leave their args to decode as stray visible characters in the
-        // debug log -- deliberate: today's whole live corpus (FE D6/D7/D9/
-        // DE) is argless, and a visible-junk log line is evidence for the
-        // next table entry, strictly better than silently eating bytes on
-        // an undocumented guess (same policy as the v2.30.17 name-token
-        // rework).
+        // Other sub-codes with argument bytes (e.g. a timed-pause variant)
+        // would leave their args to decode as stray visible characters in
+        // the debug log -- deliberate: today's whole live corpus (FE D6/
+        // D7/D9/DE) is argless, and a visible-junk log line is evidence
+        // for the next table entry, strictly better than silently eating
+        // bytes on an undocumented guess (same policy as the v2.30.17
+        // name-token rework).
         else if (byte == 0xFE) {
-            guard_space(result);
+            const uint8_t sub = (p + 1 < p_end) ? p[1] : 0xFF;
+            if (sub == 0xDE || sub == 0xDF || sub == 0xE1) {
+                const int slot = g_num_ctx_slot_base + numbers_seen;
+                ++numbers_seen;   // every number code advances the engine's
+                                  // counter, resolved or not — keep parity.
+                unsigned long value = 0;
+                if (g_num_ctx_window >= 0 && g_number_provider &&
+                    g_number_provider(g_num_ctx_window, slot, value)) {
+                    guard_space(result);
+                    result += std::to_wstring(value);
+                    at_start = false;      // a number IS spoken content
+                } else {
+                    guard_space(result);
+                }
+            } else {
+                guard_space(result);
+            }
             // Consume the sub-code too, unless it is the 0xFF terminator
             // (a truncated trailing escape must still stop the walk).
             p += (p + 1 < p_end && p[1] != 0xFF) ? 2 : 1;
-            // Do not clear at_start -- function codes precede content.
+            // at_start otherwise untouched -- function codes precede content.
         }
         // ── Echo-S marker glyphs 0x8F / 0xB8 (v2.30.91) ──────────────────────
         // In ff7tk's vanilla table these are the Latin glyphs 0x8F='Ø' and

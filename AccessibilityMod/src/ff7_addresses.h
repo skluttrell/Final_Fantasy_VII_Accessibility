@@ -99,6 +99,45 @@ constexpr uint32_t BUILD_DIALOG_WINDOW = 0x6E97E0;
 // Source: ff7_externals.current_dialog_string_pointer // 0xCBF578 in ff7.h
 constexpr uint32_t DIALOG_TEXT_PTRS = 0xCBF578;
 
+// ---------------------------------------------------------------------------
+// In-dialog NUMBER mechanism (v2.30.92) — the FE DE/DF/E1 function codes.
+// Static derivation investigate/ff7_msgnum_static.py/_static2/_static3
+// (2026-08-07, research §8 v2.30.92; PARKED [DIALOGNUM]/[INNGIL]):
+//
+//   WRITE side — MPARA (opcode 0x41, handler 0x61F2B0) and MPRA2 (0x42,
+//   0x61F377) store a per-window parameter:
+//     u8  [MSG_NUM_BANKS  + win*8  + slot] = the script BANK nibble
+//     u16 [MSG_NUM_PARAMS + win*16 + slot*2] = the value (bank 0) or the
+//         script-variable ADDRESS (bank != 0)
+//
+//   READ side — the typewriter's sub-code dispatch (0x6324E5 in the
+//   window update loop) routes FE DE (decimal) / FE DF (hex) / FE E1
+//   (padded decimal) to digit formatters (0x633433/0x6335D3/0x6334F0)
+//   fed by value helper 0x632FFB, which resolves parameter slot
+//   [0xCC0EC0 + win*2] — a per-window OCCURRENCE COUNTER reset to 0 at
+//   dialog init (0x63176D) and incremented once per completed number
+//   (0x63255D). Hence: the Nth number code in text order reads slot N.
+//
+//   Value helper bank dispatch (jump table 0x6333F3, 16 entries):
+//     0            = the parameter word itself (immediate)
+//     1/2          = u8/u16 [SCRIPT_VAR_BASE + addr]          (region 0)
+//     3/4          = u8/u16 [SCRIPT_VAR_BASE + addr + 0x100]  (region 1)
+//     B/C          = u8/u16 [SCRIPT_VAR_BASE + addr + 0x200]  (region 2)
+//     D/E          = u8/u16 [SCRIPT_VAR_BASE + addr + 0x300]  (region 3)
+//     F/7          = u8/u16 [SCRIPT_VAR_BASE + addr + 0x400]  (region 4)
+//     5/6          = u8/u16 [SCRIPT_TEMP_BASE + addr]         (temp bank)
+//     8/9/A        = engine default: value 0
+//
+// SCRIPT_VAR_BASE 0xDC08DC doubles as STORY_PROGRESS (bank 1 address 0
+// IS the main plot variable — first mapped v2.30.66); SCRIPT_TEMP_BASE
+// 0xCC14D0 is the temp bank whose +1 was the v2.30.12-demoted
+// ASKMENU_OPTION 0xCC14D1 (one dialog's output variable) — both prior
+// findings slot into the bank map exactly.
+constexpr uint32_t MSG_NUM_PARAMS  = 0xCC08A0;  // u16 [win*16 + slot*2]
+constexpr uint32_t MSG_NUM_BANKS   = 0xCBFBE0;  // u8  [win*8  + slot]
+constexpr uint32_t SCRIPT_VAR_BASE = 0xDC08DC;  // field script memory regions
+constexpr uint32_t SCRIPT_TEMP_BASE = 0xCC14D0; // field script temp bank
+
 // ASK (choice-menu) cursor -- the FULL story (finalized v2.30.12):
 //
 // The live selection is a STACK LOCAL in the ASK handler (0x618E83),

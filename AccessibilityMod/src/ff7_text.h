@@ -171,4 +171,53 @@ void SetNameProvider(NameProviderFn fn);
  */
 const wchar_t* DefaultCharName(int char_id);
 
+/*
+ * Live in-dialog NUMBER provider (v2.30.92) — the FE DE mechanism.
+ *
+ * Field text inserts numbers with the function codes FE DE (decimal),
+ * FE DF (hex) and FE E1 (padded decimal): the VALUE is never in the text
+ * bytes. Engine ground truth (investigate/ff7_msgnum_static*.py,
+ * 2026-08-07, research §8 v2.30.92): the typewriter keeps a per-window
+ * occurrence counter (0xCC0EC0 + win*2, reset to 0 at dialog init at
+ * 0x63176D, incremented after each completed number at 0x63255D) and
+ * value helper 0x632FFB resolves occurrence N from the MPARA/MPRA2
+ * parameter arrays — bank byte [0xCBFBE0 + win*8 + N] selects immediate
+ * vs a live script-variable read, value/address word at
+ * [0xCC08A0 + win*16 + N*2]. So the Nth number code IN TEXT ORDER reads
+ * parameter slot N — which is exactly how the decoder maps occurrences.
+ *
+ * The decoder itself stays free of game-memory knowledge (same rule as
+ * the name provider above): hooks.cpp registers a resolver that mirrors
+ * 0x632FFB, and brackets each dialog decode with the window context.
+ *
+ * fn(window_id, slot, out): fills `out` with the value the engine would
+ * render for that window's parameter slot; false = speak nothing (the
+ * pre-v2.30.92 silent-gap behavior). Values are read at decode time —
+ * a bank-bound variable that changes WHILE the dialog is on screen
+ * (live HP displays) speaks its value as of window open; accepted, the
+ * number is right when the line is first heard.
+ */
+typedef bool (*NumberProviderFn)(int window_id, int slot, unsigned long& out);
+void SetNumberProvider(NumberProviderFn fn);
+
+/*
+ * BeginNumberContext / EndNumberContext: arm the number provider for the
+ * decode calls between them. window_id = the dialog window whose
+ * parameter arrays apply; slot_base = the occurrence index the decode's
+ * FIRST number code corresponds to — nonzero only when decoding a text
+ * SUFFIX (hook_ask's choice-page decode starts at the last page break,
+ * so codes consumed by earlier pages must still count; the caller counts
+ * them in the raw prefix). Outside a context (the default), number codes
+ * decode to the silent word-boundary gap exactly as before v2.30.92 —
+ * menu/kernel text callers are unaffected.
+ *
+ * Not reentrant; dialog decodes all happen on the game's field thread
+ * (the MESSAGE/ASK opcode hooks), which is the only place contexts are
+ * used. A concurrent menu-thread Decode() of kernel text while a context
+ * is armed would in principle misattribute — harmless in practice, since
+ * English kernel text never carries FE-prefixed codes.
+ */
+void BeginNumberContext(int window_id, int slot_base);
+void EndNumberContext();
+
 } // namespace FF7Text

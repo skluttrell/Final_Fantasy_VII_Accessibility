@@ -207,6 +207,20 @@ family) — one static session when revived. Note the squats COUNTDOWN
 is separate and already tracked (STTIM/WSPCL type=1 armed, TIMER
 ticks logged both rounds); the live squat COUNTER during the 30s has
 no window at all in the logs — nothing to hook there yet.
+FIXED v2.30.92 (2026-08-07): that static session ran (user: "Run the
+investigation"). Full mechanism in research §8 v2.30.92 — MPARA/MPRA2
+park per-window numeric params (value word 0xCC08A0, bank byte
+0xCBFBE0), the typewriter's FE DE/DF/E1 dispatch (0x6324E5) resolves
+them via helper 0x632FFB with the occurrence-counter slot rule
+(0xCC0EC0: Nth number code in the message = param slot N) and the
+16-way bank map (immediate / script regions off 0xDC08DC / temp bank
+0xCC14D0). The mod now mirrors exactly that at decode time
+(FF7Text number provider + per-decode occurrence counting; hooks.cpp
+ResolveMsgNumber): "Here's the squats you managed 6." speaks the 6.
+Offline dry-run vs all logged raw dumps passed, incl. the two-number
+final score mapping to slots 0/1. Awaiting play-test — verify
+[MSGNUM92] (a)/(b)/(d)/(e) in research §8 (replay the squats
+contest; numbers must match the sighted screen).
 
 [VIRTCURSOR] Virtual cursor for Status and Materia info screens
 ------------------------------------------------------------------------
@@ -362,6 +376,10 @@ that entry for the fix path; the amount never touches the dialog
 bytes). The suspicion above is confirmed in the "variable" form, not
 the separate-window form — the ASK pair ('Stay'/'Don't stay') spoke
 fine.
+FIXED v2.30.92 (2026-08-07) together with [DIALOGNUM] — the shared
+FE DE resolver ships; the inn greeting should now speak the actual
+price. Awaiting play-test — verify [MSGNUM92] (c): talk to the Wall
+Market innkeeper, "It's N gil a night." with N matching the screen.
 
 [INNSTAY] Inn "how long to stay" prompt — no selection speech, no cue
 ------------------------------------------------------------------------

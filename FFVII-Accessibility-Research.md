@@ -118,6 +118,10 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `current_dialog_string_pointer` (DIALOG_TEXT_PTRS) | `0xCBF578` | `ff7.h` |
 | `ASKMENU_OPTION` | `0x00CC14D1` | âš  **DEMOTED v2.30.12 â€” NOT a cursor global, DO NOT read.** It is the ASK opcode's per-DIALOG script OUTPUT VARIABLE (the bank/address named in the opcode's own first params): the handler 0x618E83 reads it into a stack local (helper 0x60F750), the update loop 0x6310A1 moves/clamps THAT, and it's written back on exit (0x60FA7D). The 2026-07-20 live scan simply found the variable of the dialog it scanned â€” Aeris-field choices shared it (tracked fine), the soldier fight-or-flee dialog did not (frozen at 0, log-proven 2026-07-22). Replaced by ASK_CURSOR_PIXEL_Y below |
 | `ASK_CURSOR_PIXEL_Y` | `0x00CFF5DE` | **The dialog-independent ASK cursor readout (v2.30.12)**: u16 at +window_idÂ·0x30, rewritten by the update loop EVERY frame the choice accepts input (disasm 0x631384â€“0x63139C, ff7_ask_lines_static log 20260720_171327): `lineÂ·16 + 6` â€” the highlight's pixel Y inside the window (16 px/line, 6 px top margin). Decode: `line = (yâˆ’6)>>4`, valid only when yâ‰¥6 and (yâˆ’6)%16==0 (else skip the frame). Part of the ASK per-window struct family, stride 0x30: byte 0xCFF5D2+nÂ·0x30 input-armed flag, u16 0xCFF5DC+nÂ·0x30 = 5 while choosing, u16 0xCFF5E4+nÂ·0x30 = 7 on confirm, u16 0xCFF5E6+nÂ·0x30 state-flag word (bit 0 gates the input branch) |
+| `MSG_NUM_PARAMS` | `0x00CC08A0` | **In-dialog number parameters (v2.30.92** static, investigate/ff7_msgnum_static*.py): u16 value-or-address per window/slot at `+ win*16 + slot*2`, written by MPARA (opcode 0x41, handler 0x61F2B0) / MPRA2 (0x42, 0x61F377), read by the typewriter's value helper 0x632FFB when a FE DE/DF/E1 code renders. Slot rule: the Nth number code in the message reads slot N (occurrence counter 0xCC0EC0 + win*2, reset at dialog init 0x63176D, +1 per completed number 0x63255D). Companion internals, doc-only: digit buffer 0xCBFBA0 + win*16 (0xFF-terminated), emit index s16 0xCBFC00 + win*2 (−1 idle), rendered-text buffer 0xCC0428 + win*256, formatters 0x633433 (DE decimal) / 0x6335D3 (DF hex) / 0x6334F0 (E1 padded), sub-code dispatch 0x6324E5 |
+| `MSG_NUM_BANKS` | `0x00CBFBE0` | u8 bank nibble per window/slot at `+ win*8 + slot` (same writers/reader as MSG_NUM_PARAMS): 0 = the param word is the value itself; else a live script-variable read via the bank map (jump table 0x6333F3): 1/2 = u8/u16 `SCRIPT_VAR_BASE + addr`, 3/4 = `+0x100`, B/C = `+0x200`, D/E = `+0x300`, F/7 = `+0x400` (u8/u16), 5/6 = u8/u16 `SCRIPT_TEMP_BASE + addr`, 8/9/A = constant 0 |
+| `SCRIPT_VAR_BASE` | `0x00DC08DC` | Field-script memory base (v2.30.92): the five 0x100-byte variable regions the dialog bank map indexes. Region 0 address 0 IS `STORY_PROGRESS` (0xDC08DC, first mapped v2.30.66) — the aliasing cross-confirms the base |
+| `SCRIPT_TEMP_BASE` | `0x00CC14D0` | Field-script TEMP bank base (v2.30.92): dialog banks 5/6 read here. The v2.30.12-demoted `ASKMENU_OPTION` 0xCC14D1 = temp+1 — exactly why it was one dialog's output variable and not a global |
 | `field_file_buffer` | `0xCFF594` | `externals_102_us.h` |
 | `field_script_ptr` | `0xCBF5E8` | `externals_102_us.h` |
 | `field_curr_script_position` | `0xCC0CF8` | `ff7_data.h` |
@@ -6682,6 +6686,83 @@ street speaks "woman" near the Honey Bee approach (J/L People list
 and proximity agree); (d) no new stray glyphs in dialog (an FE
 sub-code with args would show as fresh junk -- report it with the
 log); (e) log header v2.30.91.
+LOG-VERIFIED same day (log.7, the user's squats retest, first
+v2.30.91 session): (b) PASS -- "Obtained Key Item Silk Dress !" and
+"Blonde Wig !" spoke clean; (d) PASS -- zero stray characters in the
+whole session. (a)/(c) not exercised (no named-speaker dialog
+occurred; the fm man is script-hidden once the Member's Card is
+taken -- vis=0 parked at origin, correctly unlisted).
+
+### v2.30.92 (2026-08-07): in-dialog numbers SPOKEN -- the FE DE mechanism decoded
+
+User: "Run the investigation" (the [DIALOGNUM]/[INNGIL] number-source
+hunt the v2.30.91 root cause called for). One static session, exe on
+disk, zero live interaction -- THREE scripts building on a July
+finding: the 2026-07-16 mpnam session had already disassembled MPARA/
+MPRA2 as neighbor context; nobody knew it then, but the write side of
+this bug sat in that log for three weeks.
+
+ENGINE GROUND TRUTH (investigate/ff7_msgnum_static.py /_static2.py
+/_static3.py, logs msgnum_static*_20260807_*):
+  - WRITE: MPARA (table[0x41] @0x61F2B0) / MPRA2 (table[0x42]
+    @0x61F377) store per-window numeric parameters: bank nibble ->
+    u8[0xCBFBE0 + win*8 + slot], value/address word ->
+    u16[0xCC08A0 + win*16 + slot*2]. NO other .text code references
+    either base as an imm32 (part-1 sweep, 1600 hits all neighbors) --
+    which is why part 2 re-anchored on DIALOG_TEXT_PTRS 0xCBF578.
+  - READ: the typewriter's function-code path (window update loop; the
+    same 0x631xxx-0x632xxx complex as the v2.30.12 ASK machinery)
+    dispatches sub-codes at 0x6324E5: FE DE -> decimal formatter
+    0x633433, FE DF -> hex 0x6335D3, FE E1 -> padded 0x6334F0, all fed
+    by value helper 0x632FFB(win). Digits go to buffer 0xCBFBA0+win*16
+    (0xFF-terminated), typed one per frame into the rendered-text
+    buffer 0xCC0428+win*256 via emit index 0xCBFC00+win*2 (-1 idle).
+  - SLOT RULE (the "which number goes where" question): 0x632FFB
+    indexes the param/bank arrays with 0xCC0EC0+win*2 -- reset to 0 in
+    the dialog-init block 0x63176D, incremented once per COMPLETED
+    number at 0x63255D. So the Nth number code in text order reads
+    parameter slot N, counted per dialog open (NOT per page).
+  - BANK MAP (jump table 0x6333F3, 16 entries, disasm-proven): 0 =
+    param word is the value; 1/2 = u8/u16 [0xDC08DC+addr]; 3/4 =
+    +0x100; B/C = +0x200; D/E = +0x300; F/7 = u8/u16 +0x400; 5/6 =
+    u8/u16 [0xCC14D0+addr] (temp bank); 8/9/A = constant 0. Two prior
+    findings cross-confirm the bases: STORY_PROGRESS 0xDC08DC IS bank
+    1 address 0, and the v2.30.12-demoted ASKMENU_OPTION 0xCC14D1 is
+    temp-bank+1.
+
+SHIPPED (v2.30.92, no cfg keys, 4 new Section-4/14 addresses):
+  - FF7Text::SetNumberProvider + BeginNumberContext(win, slot_base)/
+    EndNumberContext (ff7_text.h/cpp) -- the decoder counts FE DE/DF/
+    E1 occurrences per walk and asks the provider for slot_base+N;
+    resolved values speak as decimal digits in place ("Here's the
+    squats you managed 6."), unresolved keep the v2.30.91 silent gap.
+    FE DF is the engine's hex formatter but speaks decimal
+    (screen-reader sanity; no story dialog is known to use it).
+  - hooks.cpp ResolveMsgNumber = exact 0x632FFB mirror (bank dispatch
+    above); registered at hook install. Contexts bracket all three
+    dialog decode sites: hook_message PENDING (slot_base 0),
+    hook_ask choice page (slot_base = CountNumberCodes(prefix) -- the
+    engine's counter ran over the skipped lead-in pages), hook_ask
+    lead-in (slot_base 0). Menu/kernel decodes run without a context
+    and are untouched.
+  - Values snapshot at decode (window open); a live-bound variable
+    that changes while displayed (HP readouts) speaks its open-time
+    value -- accepted, right when first heard.
+OFFLINE DRY-RUN (cl harness, 12 checks, all logged raw dumps): squats
+practice line speaks "you managed 6.", the two-number final score
+maps occurrences to slots 0/1 ("He did 6 many squats, and you did 15
+that many."), slot-base offsetting works, no-context behavior
+byte-identical to v2.30.91, inn price speaks. Deployed both installs
+hash-verified (86F5643640083966).
+VERIFY [MSGNUM92]: (a) squats practice round speaks the real count
+("...you managed N."); (b) final score speaks BOTH numbers and they
+match the sighted screen; (c) inn says "It's 200 gil a night." (or
+whatever the sighted price is -- cross-check); (d) ordinary dialogs
+unchanged; (e) log header v2.30.92. RESIDUAL: [INNSTAY]'s
+hour-selector WSPCL type=2 window is a separate feature (selection
+speech), still parked; the rendered-text buffer 0xCC0428 is now
+mapped if a future consumer ever wants post-substitution text
+wholesale.
 
 ---
 
@@ -7156,15 +7237,22 @@ and the Limit-replaces-Attack row-0 swap all spoken correctly in real time).
 | `0xCBF600` | FIELD_ENTITY_LINE_SLOT | u8 per entity â†’ line index (v2.17); sits right after the script pointer |
 | `0xCBFB70` | FIELD_ENTITY_MODEL_MAP | u8 per entity â†’ model slot (0xFF = no model); read by the TLKON handler (2026-07-16). Unused by the mod so far â€” the natural anchor whenever an entity-keyed fact needs its model |
 | `0xCBF9D8` | field_global_object_ptr | â†’ modules_global_object |
+| `0xCBFBA0` | dialog number DIGIT BUFFER | u8[16] per window (`+ win*16`), 0xFF-terminated; the FE DE/DF/E1 formatters (0x633433/0x6335D3/0x6334F0) write the rendered digits here, the typewriter feeds them to the window one per frame (v2.30.92 static; doc-only, mod resolves values directly) |
+| `0xCBFBE0` | MSG_NUM_BANKS | u8 per window/slot (`+ win*8 + slot`), MPARA/MPRA2 bank nibble — see Â§4 row for the full bank map (v2.30.92, READ BY MOD) |
+| `0xCBFC00` | dialog number EMIT INDEX | s16 per window (`+ win*2`), âˆ’1 = not emitting, else index into the digit buffer; doubles as the "currently inside a number" flag (v2.30.92 static; doc-only) |
 | `0xCC0418` | current_dialog_message_speed | from ff7.h comment (unused by us so far) |
+| `0xCC0428` | dialog RENDERED-TEXT buffer | u8[256] per window (`+ win*256`); 0x6316A5 seeds it (first byte 0xFF) and stores its address into the window struct +0xCFF5B8; the typewriter appends each displayed byte INCLUDING substituted digits — the only place the post-substitution text exists (v2.30.92 static; doc-only, a future consumer could diff it instead of re-deriving values) |
 | `0xCC0870` | LINE_CROSS_RESULT | written per movement step by the player-only LINE crossing test 0x637ABB (skipped while UC-locked); v2.30.83 ground truth. Not consumed by the mod |
 | `0xCC088C` | FIELD_LINE_COUNT | u16, LINE zones on this field (v2.17) |
+| `0xCC08A0` | MSG_NUM_PARAMS | u16 per window/slot (`+ win*16 + slot*2`), MPARA/MPRA2 value-or-address words consumed by value helper 0x632FFB — see Â§4 row (v2.30.92, READ BY MOD) |
 | `0xCC08E8` | FIELD_TEXT_BLOCK_PTR | â†’ field dialog-text block (u16 offset table at +2); the MPNAM callee's text source (2026-07-16). 0x5C past FIELD_LINE_COUNT â€” the cluster rule again |
 | `0xCC0960` | field_entity_id_list | |
 | `0xCC0964` | current_entity_id | |
 | `0xCC0B60` | field_event_data_ptr | â†’ 0xCC1670 (observed) |
 | `0xCC0CF8` | field_curr_script_position | WORD per entity |
 | `0xCC0D88` | **modules_global_object struct** | spans â‰ˆ0x138 bytes â†’ 0xCC0EC0 (PSX-decomp estimate; see sub-map below). âš  note on the +0xB2 lock bitfield: is_triangle_locked()'s FWMESH_MAX_TRIS=4096 guard would in theory allow reads to +0x2B1, past this span â€” but the guard is unreachable in practice: callers pass tri < the field's ntris, and the game-wide max is 496 triangles (bitfield ends +0xF0; ff7_walkmesh_max_tris.py 2026-07-23), so real reads always stay inside the struct |
+| `0xCC0EC0` | dialog number OCCURRENCE COUNTER | u16 per window (`+ win*2`): reset to 0 by dialog init (0x63176D, the same block that seeds the typewriter pointer), +1 after each completed number (0x63255D), read by value helper 0x632FFB as the PARAM/BANK slot index => the Nth FE DE/DF/E1 in a message reads slot N (v2.30.92 static; the mod mirrors the rule by counting occurrences at decode time instead of reading this live). Sits exactly at the modules_global_object span end (0xCC0D88+0x138) -- outside the struct |
+| `0xCC14D0` | SCRIPT_TEMP_BASE | field-script TEMP bank base (v2.30.92): dialog number banks 5/6 read u8/u16 here; +1 is the demoted ASKMENU_OPTION below -- its per-dialog output variable lived in the temp bank all along (READ BY MOD via the number resolver) |
 | `0xCC14D1` | ASKMENU_OPTION | âš  demoted v2.30.12: the ASK opcode's per-DIALOG script output variable, NOT a cursor global â€” frozen for any dialog whose bank/address params name a different variable (soldier fight-or-flee, log 2026-07-22). Cursor now read from 0xCFF5DE (below). Kept as provenance only |
 | `0xCC15D0` | FIELD_ID | does NOT zero in battle |
 | `0xCC162C` | FIELD_PLAYER_MODEL_ID | |
@@ -7254,7 +7342,7 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC08BC` | COUNTDOWN_TIMER_SECONDS | u32 seconds, timed-escape clock (savemap+0xB84, STTIM-written; v2.34 announcer + Shift+T freeze). +0x4 = ms accumulator 0xDC08C0 |
 | `0xDC08CE` | SAVEMAP_CONTINUE_FIELD | u16 saved field id (savemap+0xB96) - the save-load field entry 0x63CCBA copies it to the module field-id 0xCC0DEC (audit 2026-08-02; static disasm same day) |
 | `0xDC08D2â€“0xDC08DA` | SAVEMAP_CONTINUE_POS | saved re-entry position (savemap+0xB9A..): u16 X 0xDC08D2, Y 0xDC08D4, walkmesh triangle 0xDC08D6, u8 arrival DIRECTION 0xDC08D8, u8 pair 0xDC08D9/DA -> module 0xCC165C/0xCC1660 (unnamed). Loading a save feeds these into FIELD_JUMP_INTERFACE - the same arrival path as MAPJUMP/gateways (2026-08-02) |
-| `0xDC08DC` | STORY_PROGRESS (PPV) | s16 story counter (7thHeaven.var); logged as ppv= per arrival since v2.30.66 ([STORYNAV] pipeline) |
+| `0xDC08DC` | STORY_PROGRESS (PPV) / SCRIPT_VAR_BASE | s16 story counter (7thHeaven.var); logged as ppv= per arrival since v2.30.66 ([STORYNAV] pipeline). ALSO the field-script variable-region base (v2.30.92): the dialog number bank map indexes five 0x100-byte regions from here (bank 1/2 addr 0 = this very variable) -- see the Section 4 SCRIPT_VAR_BASE row |
 | `0xDC08F8` | SAVEMAP_MENU_VISIBLE | u16 "menu visible/enabled" mask (savemap+0xBC0), bit N SET = main-menu row N available (0=Item..9=Save; bit 10 Quit is PC-only, forced on by the menu build, not stored). Pre-hideout save = 0x02FB (Materia+PHS clear). Source of MENU_VISIBLE_ROWS 0xDC111C (v2.30.78) |
 | `0xDC08FA` | SAVEMAP_MENU_LOCKED | u16 "menu locking" mask (savemap+0xBC2), bit N SET = row N locked. Source of MENU_DISABLED_ROWS 0xDC1130 (AND 0xFBFF). All-zero in the early save â€” story locks live in the VISIBLE mask instead (v2.30.78) |
 | `0xDC09E5` | PARTY_LEADER | u8 leader character ID (7thHeaven.var; live-proven by battle labels since v2.7) |

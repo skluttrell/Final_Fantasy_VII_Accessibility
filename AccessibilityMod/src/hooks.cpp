@@ -373,6 +373,79 @@ static bool LooksLikeCharacterSpeech(const char* raw_text,
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// ResolveMsgNumber (v2.30.92): the number provider registered with
+// FF7Text::SetNumberProvider — an exact mirror of the engine's value
+// helper 0x632FFB, so the decoder can speak the number a FE DE/DF/E1
+// code renders. Full derivation: ff7_addresses.h MSG_NUM_* block +
+// research §8 v2.30.92 (investigate/ff7_msgnum_static*.py).
+//
+// window_id/slot bounds mirror the engine's own storage: MPARA writes 8
+// bank bytes per window, and dialogs realistically carry 1-2 numbers
+// (squats final score = the 2-number maximum observed). Out-of-range =
+// false = the decoder keeps the silent gap. All reads are fixed statics
+// (always mapped in-process), same access pattern as every other
+// FF7Addr consumer.
+static bool ResolveMsgNumber(int window_id, int slot, unsigned long& out)
+{
+    if (window_id < 0 || window_id > 7 || slot < 0 || slot > 7)
+        return false;
+    const uint8_t bank = *reinterpret_cast<const uint8_t*>(
+        FF7Addr::MSG_NUM_BANKS + window_id * 8 + slot);
+    const uint16_t par = *reinterpret_cast<const uint16_t*>(
+        FF7Addr::MSG_NUM_PARAMS + window_id * 16 + slot * 2);
+    // Bank dispatch — 1:1 with the engine's jump table 0x6333F3. The
+    // region pairing (8-bit odd / 16-bit even code, +0x100 per region)
+    // is the standard field-script memory-bank scheme; SCRIPT_VAR_BASE
+    // region 0 address 0 is STORY_PROGRESS, which is how the base was
+    // cross-confirmed.
+    auto var8  = [](uint32_t base, uint32_t off) -> unsigned long {
+        return *reinterpret_cast<const uint8_t*>(base + off);
+    };
+    auto var16 = [](uint32_t base, uint32_t off) -> unsigned long {
+        return *reinterpret_cast<const uint16_t*>(base + off);
+    };
+    switch (bank & 0xF) {
+    case 0x0: out = par;                                              return true;
+    case 0x1: out = var8 (FF7Addr::SCRIPT_VAR_BASE,  par);            return true;
+    case 0x2: out = var16(FF7Addr::SCRIPT_VAR_BASE,  par);            return true;
+    case 0x3: out = var8 (FF7Addr::SCRIPT_VAR_BASE,  par + 0x100u);   return true;
+    case 0x4: out = var16(FF7Addr::SCRIPT_VAR_BASE,  par + 0x100u);   return true;
+    case 0xB: out = var8 (FF7Addr::SCRIPT_VAR_BASE,  par + 0x200u);   return true;
+    case 0xC: out = var16(FF7Addr::SCRIPT_VAR_BASE,  par + 0x200u);   return true;
+    case 0xD: out = var8 (FF7Addr::SCRIPT_VAR_BASE,  par + 0x300u);   return true;
+    case 0xE: out = var16(FF7Addr::SCRIPT_VAR_BASE,  par + 0x300u);   return true;
+    case 0xF: out = var8 (FF7Addr::SCRIPT_VAR_BASE,  par + 0x400u);   return true;
+    case 0x7: out = var16(FF7Addr::SCRIPT_VAR_BASE,  par + 0x400u);   return true;
+    case 0x5: out = var8 (FF7Addr::SCRIPT_TEMP_BASE, par);            return true;
+    case 0x6: out = var16(FF7Addr::SCRIPT_TEMP_BASE, par);            return true;
+    default:  out = 0;                                                return true;
+    // default (banks 8/9/A): the engine's own jump table routes these to
+    // "value 0" — render a 0 rather than a gap, exactly what the sighted
+    // player would see.
+    }
+}
+
+// Count the FE DE/DF/E1 number codes in a raw byte prefix — the slot
+// base for a decode that starts mid-message (hook_ask decodes the choice
+// page from the last page break, but the engine's occurrence counter ran
+// over the earlier pages too). Same byte-pair scan the typewriter does.
+static int CountNumberCodes(const char* raw, size_t len)
+{
+    if (!raw)
+        return 0;
+    const uint8_t* q = reinterpret_cast<const uint8_t*>(raw);
+    int n = 0;
+    for (size_t i = 0; i + 1 < len && q[i] != 0xFF; ++i) {
+        if (q[i] == 0xFE) {
+            if (q[i + 1] == 0xDE || q[i + 1] == 0xDF || q[i + 1] == 0xE1)
+                ++n;
+            ++i;   // FE consumes its sub-code byte
+        }
+    }
+    return n;
+}
+
 struct WindowState {
     // State byte from the previous frame. Used to detect state machine transitions
     // (starting, paging, closing) by comparing last vs. current each frame.
@@ -1143,11 +1216,18 @@ static int __cdecl hook_message()
                 // classification needs the pages even with speak_dialog
                 // off, because SYSTEM messages (pick-ups) speak in every
                 // configuration. Decode cost is per-dialog noise.
+                // v2.30.92: number context armed for the whole decode +
+                // classification block — both decode from the message
+                // start, so slot_base 0. This is what turns FE DE codes
+                // into the values MPARA parked for this window ("Here's
+                // the squats you managed 6.").
+                FF7Text::BeginNumberContext(window_id, 0);
                 s_window[window_id].pages = FF7Text::DecodeMessagePages(
                     raw_text, &s_window[window_id].page_offsets);
                 s_window[window_id].is_system_msg =
                     !LooksLikeCharacterSpeech(raw_text,
                                               s_window[window_id].pages);
+                FF7Text::EndNumberContext();
                 if (Config::Get().speak_dialog ||
                     s_window[window_id].is_system_msg) {
                     char dbg[96];
@@ -1681,8 +1761,15 @@ static int __cdecl hook_ask(int unk)
                 // own FIRST_LINE/LAST_LINE clamp AND the per-window pixel
                 // mirror (which is also page-relative — it's the highlight
                 // Y inside the displayed window).
+                // v2.30.92: this decode starts at the choice page, but the
+                // engine's number-occurrence counter ran over the earlier
+                // pages too — count the number codes in the skipped prefix
+                // so choice-page numbers still read their correct slots.
+                FF7Text::BeginNumberContext(
+                    window_id, CountNumberCodes(raw_text, last_break));
                 s_window[window_id].ask_lines =
                     FF7Text::DecodeLines(raw_text + last_break);
+                FF7Text::EndNumberContext();
                 const uint8_t first_line = FF7Addr::get_opcode_param_byte(3);
                 const uint8_t last_line  = FF7Addr::get_opcode_param_byte(4);
                 s_window[window_id].ask_first_line = first_line;
@@ -1735,7 +1822,11 @@ static int __cdecl hook_ask(int unk)
                     // terminate the prefix explicitly.
                     std::string prefix(raw_text, raw_text + last_break);
                     prefix.push_back(static_cast<char>(0xFF));
+                    // v2.30.92: lead-in decodes from the message start —
+                    // slot base 0.
+                    FF7Text::BeginNumberContext(window_id, 0);
                     const std::wstring lead_in = FF7Text::Decode(prefix.c_str());
+                    FF7Text::EndNumberContext();
                     char dbg[112];
                     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                         "[FF7Access] ASK win=%u id=%u [PENDING] multi-page: "
@@ -2112,6 +2203,11 @@ bool Install()
     s_old_tutor = reinterpret_cast<int (__cdecl*)()>(
         *reinterpret_cast<uint32_t*>(tutor_entry_addr));
     patch_dword(tutor_entry_addr, reinterpret_cast<uint32_t>(&hook_tutor));
+
+    // v2.30.92: register the in-dialog number resolver (FE DE/DF/E1 —
+    // the MPARA parameter mirror; see ResolveMsgNumber above). Same
+    // registration pattern as proxy.cpp's name provider.
+    FF7Text::SetNumberProvider(&ResolveMsgNumber);
 
     s_installed = true;
     Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM+WSPCL+TUTOR opcode table).");
