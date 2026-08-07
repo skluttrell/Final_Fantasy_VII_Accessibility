@@ -122,6 +122,9 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `MSG_NUM_BANKS` | `0x00CBFBE0` | u8 bank nibble per window/slot at `+ win*8 + slot` (same writers/reader as MSG_NUM_PARAMS): 0 = the param word is the value itself; else a live script-variable read via the bank map (jump table 0x6333F3): 1/2 = u8/u16 `SCRIPT_VAR_BASE + addr`, 3/4 = `+0x100`, B/C = `+0x200`, D/E = `+0x300`, F/7 = `+0x400` (u8/u16), 5/6 = u8/u16 `SCRIPT_TEMP_BASE + addr`, 8/9/A = constant 0 |
 | `SCRIPT_VAR_BASE` | `0x00DC08DC` | Field-script memory base (v2.30.92): the five 0x100-byte variable regions the dialog bank map indexes. Region 0 address 0 IS `STORY_PROGRESS` (0xDC08DC, first mapped v2.30.66) — the aliasing cross-confirms the base |
 | `SCRIPT_TEMP_BASE` | `0x00CC14D0` | Field-script TEMP bank base (v2.30.92): dialog banks 5/6 read here. The v2.30.12-demoted `ASKMENU_OPTION` 0xCC14D1 = temp+1 — exactly why it was one dialog's output variable and not a global |
+| `SPECIAL_WIN_TYPE` | `0x00CFF5D3` | u8 + win*0x30 (the ASK/window struct family): the WSPCL handler 0x61FD5C stores its type argument here (first mapped v2.30.56). Type semantics SETTLED v2.30.93 (investigate/ff7_wnumb_static.py + both 2026-08-06 live sightings): **1 = countdown clock** (renders the game timer — escape sequences, squats rounds), **2 = NUMERIC display** (renders WNUMB's value — the inn stay-length selector), 0 = closed. ⚠ v2.30.56's countdown arming on type 1 OR 2 was therefore a false positive on 2 — an inn visit armed the countdown machinery against stale savemap timer values; v2.30.93 arms on 1 only |
+| `WNUMB_WIN_VALUE` | `0x00CFF5D8` | u32 + win*0x30: the value a type-2 window displays. ONLY .text writer = the WNUMB handler (opcode 0x37 @ 0x61FE26, store at 0x61FE81) — ⚠ WNUMB is EIGHT script bytes ([37][bank-pair][win][lo16][hi16][digits]), not the community table's 7 (handler advances PC by 8); operands resolve through the engine's general script-arg resolver 0x60FD6C (bank 0 = literal halfwords, banks 1-15 = the same 0xDC08DC-region/temp-bank map as the FE DE value helper). Renderer reads via computed struct pointer (no absolute-disp reader). Mod hooks table[0x37] (v2.30.93) and reads this back post-chain — the engine does its own bank resolution first |
+| `WNUMB_WIN_DIGITS` | `0x00CFF5D5` | u8 + win*0x30: digit count for the type-2 display (WNUMB script byte +7, store 0x61FEA7); window-create seeds 6 (0x630AAC field / 0x768DAC world twin) |
 | `field_file_buffer` | `0xCFF594` | `externals_102_us.h` |
 | `field_script_ptr` | `0xCBF5E8` | `externals_102_us.h` |
 | `field_curr_script_position` | `0xCC0CF8` | `ff7_data.h` |
@@ -6764,6 +6767,74 @@ speech), still parked; the rendered-text buffer 0xCC0428 is now
 mapped if a future consumer ever wants post-substitution text
 wholesale.
 
+### v2.30.93 (2026-08-07): inn stay-length selector spoken -- WNUMB decoded
+
+Same-day follow-on (user: "Let's begin the investigation" on the
+[INNSTAY] plan). ONE static script (investigate/ff7_wnumb_static.py,
+log wnumb_static_20260807_111345) answered everything; the sweep step
+drowned in 0xCC0CF8 script-position refs but the handler disasm alone
+carried the derivation.
+
+ENGINE GROUND TRUTH:
+  - WNUMB = table[0x37] @ 0x61FE26 (cross-checks: table[0x36] ==
+    0x61FD5C the known WSPCL handler, MESSAGE/ASK anchors OK).
+    Script layout is EIGHT bytes -- [37][bank-pair][win][val lo16]
+    [val hi16][digits] -- the handler advances the PC by 8; the cebix
+    community table says 7 (engine truth wins, catalog scripts using
+    that table would mis-walk any field containing WNUMB by one byte;
+    none of the shipped catalogs walk 0x37-bearing paths incorrectly
+    enough to have mattered yet).
+  - Operands resolve through the engine's GENERAL script-arg resolver
+    0x60FD6C (mode arg selects the bank nibble, offset arg the operand
+    byte): bank 0 = the literal halfwords, banks 1-15 = the identical
+    region map the FE DE value helper uses (0xDC08DC regions, 0xCC14D0
+    temp bank -- 0x60FF2D reads 0xDC08DC in the dump).
+  - The resolved u32 SNAPSHOTS into the window struct:
+    [0xCFF5D8 + win*0x30] (store 0x61FE81), digits byte +7 ->
+    [0xCFF5D5 + win*0x30] (0x61FEA7). That store is the ONLY absolute
+    writer of the value field in .text (window-create seeds digits=6
+    at 0x630AAC / world twin 0x768DAC); the type-2 renderer reads via
+    a computed struct pointer. Consequence: a CHANGING on-screen
+    number means the field script re-fires WNUMB per change -- hooking
+    table[0x37] sees every edge, no polling needed.
+  - TYPE SEMANTICS SETTLED: type 1 = countdown clock (game timer;
+    squats/escape -- live 2026-08-06), type 2 = NUMERIC display
+    (WNUMB's value; the inn selector -- live 2026-08-06). The
+    v2.30.56 countdown arming on type 1 OR 2 was therefore a false
+    positive on 2: an inn visit armed the countdown machinery against
+    whatever stale timer value the savemap held ([TIMERLOAD]'s exact
+    stale class, latent until now).
+
+SHIPPED (v2.30.93, no new cfg keys):
+  - hook_wnumb (table[0x37], same patch pattern as the five existing
+    opcode hooks; WSPCL restore added to Uninstall -- it had been
+    MISSING since v2.30.56, benign at teardown but asymmetric):
+    chains FIRST, reads the value back from the struct (the engine
+    already did the bank resolution), logs "WNUMB win= value= digits=
+    type=" every fire, speaks on change while the window's type
+    byte == 2.
+  - Announce contract (ASK-option parity): choice DOUBLE-TONE when a
+    type-2 window arms (same s_dialog_choice_pending flag +
+    dialog_choice_tone gate -- the [INNSTAY] "no cue" ask); FIRST
+    value queues interrupt=false behind the question dialog; later
+    changes interrupt; value speech gates on speak_choices. Script
+    order WNUMB-vs-WSPCL covered both ways (whichever completes the
+    pair speaks); WSPCL type=0 close and field changes reset the
+    per-window state.
+  - hook_wspcl countdown arming narrowed to type==1; type==2 logs
+    "numeric selector".
+Deployed both installs hash-verified (9920926F059CE4CC).
+VERIFY [NUMSEL93]: (a) inn "Sleep for how long?" -- double-tone +
+the starting value speaks after the question; (b) Up/Down speaks
+each value crisply, matches the screen; (c) OK proceeds normally,
+next arming re-announces; (d) squats countdown unaffected (type 1;
+"countdown clock armed" still logged there and NOT at the inn);
+(e) log shows "WNUMB win= value=" lines tracking the presses +
+header v2.30.93. RESIDUAL: spoken form is the bare number (no
+"nights" unit -- the unit lives in the question dialog; revisit on
+play report); Gold Saucer GP / Fort Condor numeric windows inherit
+this for free when reached -- first sighting worth an ear-check.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -7138,7 +7209,7 @@ Proven payoffs of cluster reasoning so far:
 | `0x63640x` | TALK-TARGET selector | per-model angular-offset table; picks the model with minimum angular distance from facing (window 0x40) among those within **talk_radius(+0x74) + player_radius(+0x72)** â€” the engine's own talk-reach formula, matching the mod's chirp/reach behavioral derivation (v2.30.83) |
 | `0x60C327` / `0x60C880`-region | field model init / unbind | init block writes the flag-byte DEFAULTS (+0x5E=0, +0x5F=0 solid, +0x60=0, +0x61=0 talkable, climb words 0) before the scale-based radii (see 0x60C3A8 row); the unbind loop (entityâ†’model map 0xCBFB70 := 0xFF) writes +0x62=0 hidden, **+0x5F=1**, +0x61=1 â€” polarity proof for both TLKON-convention bytes (ff7_solid_consumer_static.py 2026-08-04) |
 | `0x633FBC` | field-ARRIVAL player init | v2.30.83 bonus decode: on every field entry rewrites the PLAYER's +0x72 collision radius := **34*scale>>9** (why the station reads col=30 and the double-scale street col=60; distinct from the generic model-init default 30*scale>>9 at 0x60C3A8) and +0x76 speed := scale<<10>>9 (ff7_player_blocking_ground_truth.py) |
-| `0x61FD5C` | opcode WSPCL handler (table[0x36]) | writes its window-TYPE arg to byte [0xCFF5D3 + win*0x30] (types 1/2 = the countdown-clock family) and position to +0xE0/+0xE2 of the same stride-0x30 window struct -- the v2.30.56 second timer-arming signal (ff7_timer_window_static.py) |
+| `0x61FD5C` | opcode WSPCL handler (table[0x36]) | writes its window-TYPE arg to byte [0xCFF5D3 + win*0x30] (v2.30.93 correction: type 1 = countdown clock, type 2 = NUMERIC display -- the v2.30.56 arming on 1/2 falsely armed on the inn selector; arming is type-1-only since v2.30.93) and position to +0xE0/+0xE2 of the same stride-0x30 window struct -- the v2.30.56 second timer-arming signal (ff7_timer_window_static.py) |
 | `0x40AB81` / `0x40AC3C` / `0x40AC56` | global tick / countdown decrement / count-up increment | the per-second countdown decrement lives in the GLOBAL tick, gated ONLY by two pause bytes (0xDC0E6C/0xDC0E70) and count-up flag 0xDC093B & 2 -- **no "timer active" flag exists in the engine**, so a leftover savemap value ticks invisibly forever; the WSPCL clock window is the only honest liveness signal (v2.30.56) |
 
 Pattern: field module code sits in 0x60xxxxâ€“0x6Exxxx, world map in
@@ -7296,7 +7367,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | `0xCFF3F8` | font tables cluster | the only exe-static pointers into the kernel2 heap text block (v2.7 finding) |
 | `0xCFF434` | WALKMESH_PTR | engine's parsed walkmesh: [ptr] = u16 nTriangles, +4 = triangle pool (arrival-init disasm 0x63C116, 2026-08-02; Â§4 row) |
 | `0xCFF454` | FIELD_TRIGGERS_HEADER_PTR | â†’ field_trigger_header (field name, control_direction, gateways[12]) â€” the v2.14 pathfinder source; see Â§4. control_direction = world bearing of screen-DOWN (live-calibrated 2026-07-13); screen angle = world + ctrl âˆ’ 180 |
-| `0xCFF5D2â€“0xCFF74F` | ASK per-window struct array | 8 windows Ã— stride 0x30 (v2.30.12 disasm consolidation): byte 0xCFF5D2+nÂ·0x30 input-armed flag, u16 0xCFF5DC+nÂ·0x30 = 5 while choosing, **u16 0xCFF5DE+nÂ·0x30 = ASK_CURSOR_PIXEL_Y (highlight pixel Y = lineÂ·16+6 â€” the mod's cursor source)**, u16 0xCFF5E4+nÂ·0x30 = 7 on confirm, u16 0xCFF5E6+nÂ·0x30 state-flag word (bit 0 gates input); byte 0xCFF5D3+n*0x30 = the window TYPE the WSPCL handler 0x61FD5C writes (1/2 = countdown clock -- v2.30.56). Sits between the triggers-header ptr 0xCFF454 and the field model globals 0xCFF73x â€” same field-module BSS cluster |
+| `0xCFF5D2â€“0xCFF74F` | ASK per-window struct array | 8 windows Ã— stride 0x30 (v2.30.12 disasm consolidation): byte 0xCFF5D2+nÂ·0x30 input-armed flag, u16 0xCFF5DC+nÂ·0x30 = 5 while choosing, **u16 0xCFF5DE+nÂ·0x30 = ASK_CURSOR_PIXEL_Y (highlight pixel Y = lineÂ·16+6 â€” the mod's cursor source)**, u16 0xCFF5E4+nÂ·0x30 = 7 on confirm, u16 0xCFF5E6+nÂ·0x30 state-flag word (bit 0 gates input); byte 0xCFF5D3+n*0x30 = the window TYPE the WSPCL handler 0x61FD5C writes -- semantics settled v2.30.93: 1 = countdown clock, 2 = NUMERIC display (inn stay-length selector), 0 = closed; u8 0xCFF5D5+n*0x30 = numeric digit count (window-create seeds 6); u32 0xCFF5D8+n*0x30 = the NUMERIC VALUE, only writer = WNUMB handler 0x61FE26 (8-byte opcode, PC+8; operands via the general script-arg resolver 0x60FD6C -- same bank map as FE DE); mod hooks table[0x37] and reads the value back post-chain (v2.30.93 [INNSTAY]). Sits between the triggers-header ptr 0xCFF454 and the field model globals 0xCFF73x â€” same field-module BSS cluster |
 | `0xCFF594` | FIELD_FILE_BUFFER | pointer to raw field file â€” dialog text (Â§5), model labels (v2.16), and since v2.22 the WALKMESH (section index 4: triangles + adjacency, the turn-by-turn/journey data source; Â§4 *(walkmesh section)* row) |
 | `0xCFF738` | FIELD_ANIM_DATA_PTR | â†’ field_animation_data array, stride 0x190 per model (kawai_opcode u8 at +0x21). Doubly confirmed 2026-07-14: FFNx ff7.h names it with the address in a comment AND our LADER-handler disasm reads it with the same stride (v2.18.1 chest-state work) |
 | `0xCFF73E` | FIELD_N_MODELS | u16 model count |

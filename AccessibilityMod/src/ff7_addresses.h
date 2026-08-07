@@ -138,6 +138,36 @@ constexpr uint32_t MSG_NUM_BANKS   = 0xCBFBE0;  // u8  [win*8  + slot]
 constexpr uint32_t SCRIPT_VAR_BASE = 0xDC08DC;  // field script memory regions
 constexpr uint32_t SCRIPT_TEMP_BASE = 0xCC14D0; // field script temp bank
 
+// ---------------------------------------------------------------------------
+// Special-window struct fields (stride 0x30 per window — the same struct
+// family as ASK_CURSOR_PIXEL_Y above). The TYPE byte was mapped v2.30.56
+// (WSPCL handler 0x61FD5C stores its type argument there); the VALUE and
+// DIGITS fields are the v2.30.93 [INNSTAY] derivation
+// (investigate/ff7_wnumb_static.py, research §8 v2.30.93):
+//
+//   WNUMB (opcode 0x37, handler 0x61FE26; ⚠ EIGHT script bytes, not the
+//   community table's 7 — the handler advances the PC by 8) resolves its
+//   32-bit operand through the engine's general script-operand resolver
+//   0x60FD6C (bank nibble 0 = the literal halfwords at offsets +3/+5;
+//   banks 1-15 = the SAME region map as the FE DE value helper — the
+//   0xDC08DC regions / 0xCC14D0 temp bank) and SNAPSHOTS it:
+//     u32 [WNUMB_WIN_VALUE  + win*0x30] = resolved value  (0x61FE81)
+//     u8  [WNUMB_WIN_DIGITS + win*0x30] = script byte +7  (0x61FEA7)
+//   The type-2 renderer reads the struct through a computed pointer (no
+//   absolute-disp reader exists), and WNUMB's store at 0x61FE81 is the
+//   ONLY writer of the value field in .text — so a changing on-screen
+//   number (the inn's stay-length selector) means the field script
+//   re-fires WNUMB per change: hooking table[0x37] sees every edge.
+//   Window-create seeds digits=6 (0x630AAC field / 0x768DAC world).
+//
+// SPECIAL_WIN_TYPE values (both live-observed 2026-08-06): 1 = countdown
+// clock (renders the game timer; squats/escape sequences), 2 = NUMERIC
+// display (renders WNUMB's value; the inn stay-length selector). 0 =
+// window closed/none (the close edge WSPCL itself writes).
+constexpr uint32_t SPECIAL_WIN_TYPE = 0xCFF5D3;  // u8  + win*0x30
+constexpr uint32_t WNUMB_WIN_DIGITS = 0xCFF5D5;  // u8  + win*0x30
+constexpr uint32_t WNUMB_WIN_VALUE  = 0xCFF5D8;  // u32 + win*0x30
+
 // ASK (choice-menu) cursor -- the FULL story (finalized v2.30.12):
 //
 // The live selection is a STACK LOCAL in the ASK handler (0x618E83),

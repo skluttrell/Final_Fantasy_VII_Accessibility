@@ -234,9 +234,21 @@ static int (__cdecl* s_old_sttim)() = nullptr;
 // convention as STTIM.
 static int (__cdecl* s_old_wspcl)() = nullptr;
 
+// Saved opcode table entry for WNUMB (0x37, "window number" — writes the
+// value a WSPCL type-2 NUMERIC window displays; v2.30.93 [INNSTAY]).
+// Same convention as WSPCL/STTIM.
+static int (__cdecl* s_old_wnumb)() = nullptr;
+
 // Saved opcode table entry for TUTOR (0x21, "play menu tutorial" --
 // v2.30.27). Same convention as MESSAGE/STTIM.
 static int (__cdecl* s_old_tutor)() = nullptr;
+
+// v2.30.93 numeric-selector tracking (WSPCL type-2 windows, [INNSTAY]) --
+// declared this early because reset_windows_if_field_changed() clears
+// them; the announce logic lives with hook_wspcl/hook_wnumb below.
+static uint32_t s_numwin_value[8]     = {};   // last value seen per window
+static bool     s_numwin_has_value[8] = {};   // a WNUMB fired since close
+static bool     s_numwin_announced[8] = {};   // first announce done
 
 // v2.30.27: nonzero while a menu tutorial is (believed) running -- set
 // when TUTOR fires, cleared by MenuCursorThread when MENU_OPEN returns
@@ -682,6 +694,14 @@ static void reset_windows_if_field_changed()
     const bool first_ever = (s_last_field_buf == nullptr);
     s_last_field_buf = buf;
     if (first_ever) return;   // process start: slots are already pristine
+
+    // v2.30.93: numeric-selector tracking resets with the field too — a
+    // transition that skips the WSPCL type=0 close (battle, script jump)
+    // must not leave a stale first-announce state for the next selector.
+    for (int i = 0; i < 8; ++i) {
+        s_numwin_has_value[i] = false;
+        s_numwin_announced[i] = false;
+    }
 
     for (WindowState& w : s_window) {
         w.last_opcode     = 0;
@@ -2081,23 +2101,136 @@ static int __cdecl hook_sttim()
 // clock family and LOG the raw arguments, so a report from a field whose
 // type byte differs is self-diagnosing rather than silent.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Numeric-selector state (v2.30.93, PARKED [INNSTAY]): per-window tracking
+// for WSPCL type-2 NUMERIC windows — the inn's "Sleep for how long?"
+// amount selector is the first live sighting. The value lives in the
+// special-window struct (FF7Addr::WNUMB_WIN_VALUE + win*0x30), written
+// ONLY by the WNUMB opcode, so hook_wnumb below sees every change edge.
+//
+// Announce contract (mirrors the ASK option pattern):
+//   - the choice double-tone fires when a type-2 window ARMS (the
+//     [INNSTAY] report: no cue marked the selector as an interactive
+//     choice) — same s_dialog_choice_pending flag / same config gate as
+//     ASK choices;
+//   - the FIRST value QUEUES (interrupt=false) so it plays after the
+//     accompanying question dialog ("Sleep for how long?" ... "1");
+//   - every later change INTERRUPTS (snappy while the player spins);
+//   - value speech gates on speak_choices — the selector IS the choice
+//     mechanism here, just numeric instead of a text list.
+//
+// Script order is not guaranteed (WNUMB may fire before or after the
+// WSPCL that arms the window), so both hooks can produce the first
+// announce: whichever runs second with both conditions true speaks.
+// (State arrays s_numwin_* are declared at the top of the file so the
+// field-change reset can clear them.)
+
+static uint8_t special_win_type(int win)
+{
+    return *reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::SPECIAL_WIN_TYPE + win * 0x30);
+}
+
+static void numwin_speak(int win, bool first)
+{
+    if (!Config::Get().speak_choices)
+        return;
+    TTS::Speak(std::to_wstring(s_numwin_value[win]), /*interrupt=*/!first);
+    s_numwin_announced[win] = true;
+}
+
 static int __cdecl hook_wspcl()
 {
     const uint8_t win_id = FF7Addr::get_opcode_param_byte(0);
     const uint8_t type   = FF7Addr::get_opcode_param_byte(1);
-    // Types 1 and 2 are the numeric/clock special windows (the countdown
-    // clock and the timer-style counters); type 0 is the plain numeric
-    // display. Arming on 1/2 keeps a pure number window from counting as
-    // a countdown while still covering the clock variants.
-    if (type == 1 || type == 2)
+    // Type 1 is the countdown CLOCK (renders the game timer — the escape
+    // sequences and the squats rounds, both live-observed 2026-08-06).
+    // v2.30.56 armed on 1 AND 2 while the type semantics were unknown;
+    // the 2026-08-07 WNUMB derivation settled type 2 as the plain
+    // NUMERIC display (renders WNUMB's value — the inn's stay-length
+    // selector, no countdown anywhere near it), so arming on it was a
+    // false positive: an inn visit left the countdown machinery armed
+    // against whatever stale timer value the savemap held ([TIMERLOAD]'s
+    // exact stale class). Clock family = type 1 only.
+    if (type == 1)
         s_sttim_seen = 1;
+    if (type == 2 && win_id < 8) {
+        // Numeric selector arming: cue it like a choice (the double-tone
+        // consumer thread applies its own debounce), and if this
+        // window's WNUMB already fired, speak the starting value.
+        if (Config::Get().dialog_choice_tone)
+            InterlockedExchange(&s_dialog_choice_pending, 1);
+        if (s_numwin_has_value[win_id] && !s_numwin_announced[win_id])
+            numwin_speak(win_id, /*first=*/true);
+    }
+    if (type == 0 && win_id < 8) {
+        // Close edge: reset so the next arming re-announces from scratch.
+        s_numwin_has_value[win_id] = false;
+        s_numwin_announced[win_id] = false;
+    }
     char dbg[128];
     _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
         "[FF7Access] WSPCL special window: id=%u type=%u%s",
         win_id, type,
-        (type == 1 || type == 2) ? " -- countdown clock armed" : "");
+        (type == 1) ? " -- countdown clock armed"
+                    : (type == 2) ? " -- numeric selector" : "");
     Log::Write(dbg);
     return s_old_wspcl();
+}
+
+// ---------------------------------------------------------------------------
+// Hook: WNUMB opcode (0x37) — "window number" (v2.30.93, [INNSTAY])
+//
+// Writes the value a WSPCL type-2 window displays. Engine ground truth
+// (investigate/ff7_wnumb_static.py, research §8 v2.30.93): the handler
+// (0x61FE26) resolves a possibly bank-bound 32-bit operand through the
+// engine's general script-operand resolver (same region map as the
+// v2.30.92 FE DE banks) and snapshots it into the window struct
+// (WNUMB_WIN_VALUE + win*0x30) plus a digit count (script byte +7 →
+// WNUMB_WIN_DIGITS). That store is the ONLY writer of the value field,
+// so the inn selector's Up/Down changes each arrive as a WNUMB fire.
+//
+// We chain to the original handler FIRST and then read the value BACK
+// from the struct — reusing the engine's own bank resolution instead of
+// reimplementing it (the FE DE resolver mirrors the same map, but here
+// the engine has already done the work by the time we speak).
+// ---------------------------------------------------------------------------
+static int __cdecl hook_wnumb()
+{
+    // Script layout (8 bytes, handler-proven): [0x37][bank-pair][window]
+    // [value lo16][value hi16][digits] — window = param byte index 1.
+    const uint8_t win_id = FF7Addr::get_opcode_param_byte(1);
+    const int ret = s_old_wnumb();
+
+    if (win_id < 8) {
+        const uint32_t value = *reinterpret_cast<const volatile uint32_t*>(
+            FF7Addr::WNUMB_WIN_VALUE + win_id * 0x30);
+        const uint8_t digits = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::WNUMB_WIN_DIGITS + win_id * 0x30);
+        const uint8_t type = special_win_type(win_id);
+        const bool changed = !s_numwin_has_value[win_id] ||
+                             value != s_numwin_value[win_id];
+        s_numwin_value[win_id]     = value;
+        s_numwin_has_value[win_id] = true;
+
+        char dbg[128];
+        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+            "[FF7Access] WNUMB win=%u value=%lu digits=%u type=%u%s",
+            win_id, static_cast<unsigned long>(value), digits, type,
+            changed ? "" : " (unchanged)");
+        Log::Write(dbg);
+
+        // Speak only while the numeric window is actually armed (type 2)
+        // and only on a real change — scripts may re-fire WNUMB with the
+        // same value on redraw loops. If the window isn't armed yet
+        // (WNUMB-before-WSPCL script order), hook_wspcl speaks the
+        // starting value at the arming edge instead.
+        if (type == 2 && (changed || !s_numwin_announced[win_id]))
+            numwin_speak(win_id, /*first=*/!s_numwin_announced[win_id]);
+    } else {
+        Log::Write("[FF7Access] WNUMB fired with out-of-range window id.");
+    }
+    return ret;
 }
 
 // ---------------------------------------------------------------------------
@@ -2192,6 +2325,18 @@ bool Install()
         *reinterpret_cast<uint32_t*>(wspcl_entry_addr));
     patch_dword(wspcl_entry_addr, reinterpret_cast<uint32_t>(&hook_wspcl));
 
+    // --- WNUMB hook (opcode 0x37, v2.30.93) ---
+    //
+    // The numeric-window value writer — every change of a WSPCL type-2
+    // display (the inn's stay-length selector) arrives here. See
+    // hook_wnumb.
+    const uint32_t wnumb_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x37 * sizeof(uint32_t);
+
+    s_old_wnumb = reinterpret_cast<int (__cdecl*)()>(
+        *reinterpret_cast<uint32_t*>(wnumb_entry_addr));
+    patch_dword(wnumb_entry_addr, reinterpret_cast<uint32_t>(&hook_wnumb));
+
     // --- TUTOR hook (opcode 0x21, v2.30.27) ---
     //
     // Same pattern. Speaks menu-tutorial text (a script system the
@@ -2210,7 +2355,7 @@ bool Install()
     FF7Text::SetNumberProvider(&ResolveMsgNumber);
 
     s_installed = true;
-    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM+WSPCL+TUTOR opcode table).");
+    Log::Write("[FF7Access] Hooks installed (MESSAGE+ASK+STTIM+WSPCL+WNUMB+TUTOR opcode table).");
     return true;
 }
 
@@ -2238,6 +2383,22 @@ void Uninstall()
         reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x38 * sizeof(uint32_t);
     if (s_old_sttim) {
         patch_dword(sttim_entry_addr, reinterpret_cast<uint32_t>(s_old_sttim));
+    }
+
+    // Restore WSPCL entry. (v2.30.93: this restore was MISSING since the
+    // v2.30.56 hook shipped — benign in practice because Uninstall only
+    // runs at process teardown, but the pattern demands symmetry.)
+    const uint32_t wspcl_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x36 * sizeof(uint32_t);
+    if (s_old_wspcl) {
+        patch_dword(wspcl_entry_addr, reinterpret_cast<uint32_t>(s_old_wspcl));
+    }
+
+    // Restore WNUMB entry.
+    const uint32_t wnumb_entry_addr =
+        reinterpret_cast<uint32_t>(FF7Addr::execute_opcode_table) + 0x37 * sizeof(uint32_t);
+    if (s_old_wnumb) {
+        patch_dword(wnumb_entry_addr, reinterpret_cast<uint32_t>(s_old_wnumb));
     }
 
     // Restore TUTOR entry.

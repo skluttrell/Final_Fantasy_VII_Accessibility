@@ -403,6 +403,24 @@ dialog side decoded EMPTY (raw E7 E0 E1 → ''). So the hour/amount
 display is a WSPCL type=2 window: the v2.30.56 WSPCL hook already
 sees it arm — reading its live value + wiring the choice cue is the
 remaining work when revived.
+FIXED v2.30.93 (2026-08-07, user: "Let's begin the investigation"):
+one static session (investigate/ff7_wnumb_static.py) decoded WNUMB
+(opcode 0x37 — ⚠ 8 script bytes, not the community table's 7): it
+resolves a possibly bank-bound u32 (same bank map as FE DE) and
+snapshots it into the window struct (value u32 0xCFF5D8+win*0x30,
+digits u8 0xCFF5D5) — the ONLY writer, so every selector change =
+a WNUMB fire. Shipped: hook on table[0x37] (chains first, reads the
+engine-resolved value back, "WNUMB win= value=" log line per fire);
+choice double-tone when a type-2 window arms (the missing cue);
+first value queues behind the question, changes interrupt; gates on
+speak_choices / dialog_choice_tone; WSPCL close + field change reset.
+BONUS FIXES in the same build: WSPCL countdown arming narrowed to
+type==1 (type 2 is the NUMERIC display, proven by this very window —
+the old 1-or-2 arming let an inn visit falsely arm the countdown
+machinery, [TIMERLOAD]'s stale class); Uninstall's missing WSPCL
+restore added (asymmetric since v2.30.56, benign at teardown).
+Awaiting play-test — verify [NUMSEL93] (a)-(e) in research §8 (visit
+the inn: cue + starting value + Up/Down tracking vs the screen).
 
 [AERITH] Game says her name is "Aerith" — 7H retranslation or read bug?
 ------------------------------------------------------------------------
@@ -1011,6 +1029,12 @@ still gated (a stale ticker must not narrate itself).
 line? If NOT, the clock window isn't re-created by script on load and
 the next step is reading the window-state table directly (type byte
 [0xCFF5D3+win*0x30] + per-window state) instead of the opcode hook.
+NOTE 2026-08-07 (v2.30.93): the arming rule narrowed — WSPCL type
+semantics are now settled (1 = countdown clock, 2 = plain NUMERIC
+display, per the WNUMB derivation), so arming happens on type 1
+ONLY. The old 1-or-2 rule let the inn's stay-length selector
+(type 2, no countdown anywhere near it) falsely arm this machinery
+against stale savemap timer values.
 Also worth confirming: is the on-screen clock visible after such a load?
 7H/Echo-S 5-min timer is only why testers meet this sooner, not a
 different mechanism.
