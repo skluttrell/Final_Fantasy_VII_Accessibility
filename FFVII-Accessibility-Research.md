@@ -6581,6 +6581,108 @@ killer (home=prev lines); (e) Beam Gun/limits no longer split into
 "(no effect)" + orphan number; (f) misses still speak bare within
 ~5s; (g) log header v2.30.90.
 
+### Log verification 2026-08-07 (three 2026-08-06 v2.30.90 local logs)
+
+Logs 4/5/6 in old_game_logs/2013_with_7h/local_run (11:44/14:03/20:03
+sessions, NVDA, Reactor 5 -> Church -> Sector 5/6 -> the whole Wall
+Market dress quest). [BATTLE90] status:
+  (b) VERIFIED -- exactly one grace-suppress fired and it was right
+      (log.4 12:11:37 "grace-suppressed (entry+1437ms)" swallowing a
+      ghost +42); eight battle entries, ZERO entry "plus N HP" chorus.
+  (a) NOT EXERCISED -- no level-up occurred all day (party parked at
+      level 10, victories worth 16-180 exp). Still awaiting a session
+      that levels.
+  (c)-(f) MIXED -- homing works (94/95 dmg lines attached: 65
+      cur-early, 23 prev, 5 cur, 1 legitimate orphan; no report=0
+      standalones left), BUT two new log-proven issues:
+      (1) home=prev is systematically OFF-BY-ONE when ATB overlaps:
+      in the log.4 Blood Taste battle every "quiet prev" line paired
+      action N's damage with action N-1's actor -- smoking gun is
+      Tentacle Drain (11:46:20: Tifa -2/BT4 +2 spoken as "Blood Taste
+      3, attacks", then "name-upgrade gen=14 => Tentacle Drain" for
+      the CURRENT report the pair belonged to; also 11:46:35 Barret's
+      kill spoken as BT4 damaging itself). The 300ms TURN_MIN_DAMAGE
+      rule routes to prev exactly when the damage belongs to the
+      just-opened action's first fast write.
+      (2) the no-effect deadline fires ~60ms after report-OPEN on
+      post-animation opens (log.4 12:11:42 open->no-effect in 62ms),
+      because the deadline anchors to the turn-anchored open_tick
+      which can already be ~5s old at flash time -- 4 of 6 no-effect
+      lines were followed 300-450ms later by the real damage as a
+      split "chained" utterance. Both recorded in PARKED [BATTLELINE]
+      for direction; neither is junk-class (all text sane, all 30
+      flash lines ok=1, zero STALE lines).
+
+### v2.30.91 (2026-08-07): text-decode FE escape + Echo-S markers + fw/fm names
+
+User directive: work the PARKED entries the new logs + screen captures
+settle with no guesswork. Three changes, no new addresses, no cfg keys.
+
+1. 0xFE FUNCTION-CODE ESCAPE HANDLED (ff7_text.cpp decode_walk). Field
+text uses 0xFE as an escape prefix (ff7tk/community spec: FE D2-D9 =
+colors, DA flash, DB rainbow, FE DE = insert number from the script's
+message variable). decode_walk had NO 0xFE branch: the escape fell into
+the unknown-byte arm and its sub-code decoded as an ordinary character
+on the next loop pass -- silent only because kExtendedChars' 0xD2-0xDF
+slots happen to be empty. Live corpus (log.6): "FE D6 <8F> FE D9"
+before every named-speaker line, "FE D7 ... FE D9" around key-item
+names, "FE DE" at every in-dialog number. Now FE+subcode consume as one
+unit (guard_space keeps word boundaries; a trailing FE before the 0xFF
+terminator consumes alone). Sub-codes with argument bytes would surface
+as stray glyphs in the debug log = evidence for a table entry, never
+silently eaten (v2.30.17 policy).
+
+2. ECHO-S MARKER GLYPHS 0x8F / 0xB8 DROPPED (decode_walk only).
+[DIALOGCHARS]+[ITEMASCII] root cause: vanilla table says 0x8F='O-slash'
+0xB8='y-umlaut' -- letters that never occur in FF7 English prose; the
+7H/Echo-S retranslation repurposes those font slots as decoration
+(0x8F color-bracketed before speaker names, 0xB8 before colored
+key-item names). The 20:04:44 screen capture of the Member's Card
+pickup shows NO visible glyph where 0xB8 sits; the mod spoke
+"y-umlaut" there and "O-slash Aerith" on every named line. Both bytes
+now vanish behind a word-boundary space. DELIBERATELY not changed in
+kExtendedChars/DecodeChar: the MPNAM caption-harvest parity
+(ff7_mpnam_caption_catalog.py is an exact DecodeChar mirror; place-name
+identity depends on it) must not drift for a dialog-only fix.
+OFFLINE DRY-RUN (v2.30.10 practice): standalone cl harness compiled
+ff7_text.cpp against the four logged raw dumps (Aerith line, Member's
+Card, squats result, inn price) + a truncated-trailing-FE guard -- all
+pass, speaker lines open clean ("Aerith \"Excuse me..."), no O-slash/
+y-umlaut anywhere, FE DE behavior audibly unchanged.
+
+3. fw/fm CROWD STEMS NAMED ([WALLMKT2CH], kDevWords proxy.cpp).
+'std fw1' (DSBC.HRC; catalog: elmpb+mrkt1 only) and 'std fm1'
+(DMIA.HRC; corelin/mrkt2/mtcrl_7/ncorel) spoke as bare "fw"/"fm" in
+Wall Market (log.6: single fm entity field 195 = the wandering
+Member's Card man, single fw entity field 205 by the Honey Bee
+approach; the user's same-night captures show exactly a man in
+overalls and a white-capped woman). Added fw->"woman", fm->"man"
+(word-pass stems, digits strip, so fm2/fw1 etc. inherit).
+
+BONUS ROOT CAUSES FOUND, NOT FIXED (recorded in PARKED): FE DE is THE
+[DIALOGNUM]+[INNGIL] mechanism -- squats results ("Here's the squats
+you managed <FE DE>." / "He did <FE DE> many squats, and you did
+<FE DE> that many.") and the inn price ("It's <FE DE> gil a night.",
+twice) all carry the number OUTSIDE the text bytes; speaking the value
+needs the engine's message-variable source (a static session away --
+window numeric params are set by the field script's MPARA family).
+[AERITH] CLOSED: savemap preview speaks "with Aerith" and dialog bytes
+literally spell 21 45 52 49 54 48 -- the 7H retranslation renamed her;
+the mod's reads are correct. Also re-observed: kernel2 scan lines show
+command=00000000 AND mg_desc=00000000 on 2013+7H all sessions (battle
+command names resolve elsewhere; magic descriptions still unfound --
+[K2DESC] unchanged).
+
+Deployed both installs hash-verified (23EA7B0D14DB3AD9). VERIFY
+[TEXT91]: (a) named-speaker dialogs open with the name, no "O-slash"
+("Aerith, Excuse me..."); (b) key-item pickups speak clean ("Obtained
+Key Item Member's Card!" -- no "y-umlaut"); (c) Wall Market main
+street speaks "man" for the wanderer near the south gate, north
+street speaks "woman" near the Honey Bee approach (J/L People list
+and proximity agree); (d) no new stray glyphs in dialog (an FE
+sub-code with args would show as fresh junk -- report it with the
+log); (e) log header v2.30.91.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

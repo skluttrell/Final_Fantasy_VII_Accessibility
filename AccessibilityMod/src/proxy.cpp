@@ -9260,6 +9260,17 @@ static const DevWord kDevWords[] = {
     { L"guid", L"guide" }, { L"heli", L"helicopter" },
     { L"shinra", L"Shinra" }, { L"old", L"elder" },
     { L"fatman", L"big man" }, { L"nman", L"man" },
+    // fw/fm = generic field woman/man crowd models (v2.30.91). Grounded per
+    // the played-evidence rule ([WALLMKT2CH]): flevel model catalog has
+    // 'std fw1' (DSBC.HRC) only on elmpb+mrkt1 and 'std fm1' (DMIA.HRC) on
+    // corelin/mrkt2/mtcrl_7/ncorel -- generic-crowd fields; the 2026-08-06
+    // v2.30.90 log.6 spoke bare "fm" (field 195, Wall Market main street,
+    // the wandering Member's Card man) and "fw" (field 205, north street,
+    // the woman by the Honey Bee Inn approach), and the user's same-night
+    // screen captures show exactly those two NPCs: a man in overalls and a
+    // white-capped woman. Digit suffixes strip in the word pass, so the
+    // stems cover fw1/fm1/fm2/... everywhere the models recur.
+    { L"fw", L"woman" }, { L"fm", L"man" },
     { L"mech", L"mechanic" }, { L"meca", L"mechanic" },
     { L"fstaff", L"attendant" }, { L"mstaff", L"attendant" },
     { L"cgirl", L"chocobo girl" },

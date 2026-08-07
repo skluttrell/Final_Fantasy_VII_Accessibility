@@ -50,6 +50,14 @@ Parked: 2026-08-06 (from bug_report.txt; 2013+7H).
 Likely a FF7Text decode gap (7H/Echo-S retranslated strings can carry
 byte values vanilla text never uses — cf. the v2.30.86 lesson that
 runtime bytes are the modded truth).
+FIXED v2.30.91 (2026-08-07, log-proven): the character was byte 0xB8
+("ÿ" in the vanilla ff7tk table) which Echo-S puts before colored
+key-item names ("...Key Item B8 FE D7 Member's Card FE D9 !", log.6
+20:04:43; the same-second screen capture shows NO glyph there). 0xB8
+now drops behind a word-boundary space in decode_walk (dialog path
+only — DecodeChar/caption-harvest parity untouched). Same build also
+made 0xFE a real escape (see [DIALOGCHARS]). Verify [TEXT91] (b) in
+research §8: pickups speak "Obtained Key Item Member's Card!" clean.
 
 [TEXTBOX] Ground-up re-examination of the text box system
 ------------------------------------------------------------------------
@@ -107,6 +115,10 @@ entry (the v2.30.61 feature entry, later in this file). The
 FIXED v2.30.90 (2026-08-06): level-ups now buffer and ride the
 victory utterance itself ("...and 10 A P. Barret grew to level 7!").
 Awaiting play-test — verify [BATTLE90] (a) in research §8.
+NOT EXERCISED 2026-08-07: the three 2026-08-06 v2.30.90 sessions had
+ZERO level-ups (party parked at level 10 all day, victories worth
+16-180 exp) — the fix ran but never had anything to buffer. Still
+awaiting a session that actually levels.
 
 [TENTHP] Tent HP regain replays at next battle start
 ------------------------------------------------------------------------
@@ -133,6 +145,13 @@ FIXED v2.30.90 (2026-08-06): 2500ms init grace from the first mode==2
 poll — settles written inside it fold silently ("grace-suppressed"
 debug lines). Awaiting play-test — verify [BATTLE90] (b): use a tent,
 enter a battle, no "plus N HP" chorus.
+LOG-VERIFIED 2026-08-07 (2026-08-06 v2.30.90 logs 4/5): WORKING —
+one grace-suppress fired, correctly (log.4 12:11:37 ghost +42
+swallowed at entry+1437ms); eight battle entries across the day,
+zero entry-time "plus N HP" chorus; the only "plus N HP" lines were
+legitimate mid-battle items/drains. The tent-specific repro still
+deserves one ear-check, but the ghost class it fixed is gone from
+the logs.
 
 [SYNCBUTTON] No. 5 Reactor synchronized button press
 ------------------------------------------------------------------------
@@ -163,6 +182,21 @@ don't get Steal until later."
 Parked: 2026-08-06 (from bug_report.txt; tester update).
 "Sometimes it's not reading out numbers during dialog. Noticeable
 during squats mini game."
+ROOT CAUSE FOUND 2026-08-07 (log.6 squats session 20:30-20:35 + the
+user's frame captures): the number is NOT in the text bytes — FF7's
+FE DE function code inserts a numeric variable at render time. Squats
+results carry it exactly where the screen shows the count ("Here's
+the squats you managed <FE DE>." on screen reads "...you managed 6.",
+20:32:46; final score "He did <FE DE> many squats, and you did
+<FE DE> that many.", 20:33:20). Same mechanism as [INNGIL] — one fix
+serves both. v2.30.91 made FE DE an explicitly consumed escape
+(behavior unchanged: number still silent, words no longer at risk of
+fusing); SPEAKING the value needs the engine's message-variable
+source (window numeric params, set by the field script's MPARA
+family) — one static session when revived. Note the squats COUNTDOWN
+is separate and already tracked (STTIM/WSPCL type=1 armed, TIMER
+ticks logged both rounds); the live squat COUNTER during the 30s has
+no window at all in the logs — nothing to hook there yet.
 
 [VIRTCURSOR] Virtual cursor for Status and Materia info screens
 ------------------------------------------------------------------------
@@ -187,6 +221,233 @@ trading context budget); timing precision = sampling interval; final
 dialog-collision check needs a human listener. FF7 FMVs are a favorable
 case: short, mostly dialog-free. Nothing built, ffmpeg availability
 never checked.
+
+[AERISNAME] Aeris spoken as "Flower Girl" until the player names her
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user request).
+Every interaction that speaks Aeris's name BEFORE the naming screen
+(destination browser People entries, proximity announce, dialog speaker
+attribution, journey/direction speech — anywhere the mod names her)
+must say "Flower Girl" instead. Her real name appears only AFTER she
+has been named. Matches what sighted players see: the game itself
+withholds her name until the naming screen. Likely needs a
+"has-been-named" signal (story progress / PPV threshold, or a savemap
+flag around her naming event) gating the character-name resolution the
+v2.19/v2.20 machinery uses; the pre-naming label is "Flower Girl".
+
+[VERYCLOSE] "Very close" directions overshoot — measure from object center
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user request).
+"When I get close to something within its detection radius I can
+interact with, I'd like to have it measure where I am in relation to
+the center of that object. I think that would help locate things that
+are 'very close' better. I've noticed that it will tell me 'very close
+to the up and right' or similar direction patterns but when I head
+that direction I tend to overshoot the entity." I.e. inside the
+interaction/detection radius the direction phrase should be derived
+from the player's offset relative to the OBJECT'S CENTER (and keep
+updating), so the final approach homes in instead of overshooting.
+Related prior work: v2.30.73 made "very close" use the first walkable
+leg rather than the net bearing, and v2.30.71/.72 always append a
+direction unless standing exactly on the target — this report says
+that's still not enough for the last meter.
+
+[DIALOGCHARS] More strange characters in dialog: "Ø" before Aerith line
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report).
+Concrete new sample: Ø spoken/shown with Aerith's "Hmm?" dialog.
+Same decode-gap family as [ITEMASCII] (undefined characters on item
+pickup) but in STORY DIALOG this time; "Aerith" spelling points at the
+7H/Echo-S retranslation, whose text can carry byte values vanilla
+FF7Text never uses (v2.30.86 lesson: runtime bytes are the modded
+truth). When revived, get the raw dialog bytes from a log before
+patching the decode table.
+FIXED v2.30.91 (2026-08-07, raw bytes captured as this entry asked):
+every named-speaker line in log.6 opens "FE D6 8F FE D9 <name>" —
+{GREEN} marker {WHITE}. Two bugs: (1) decode_walk had NO 0xFE-escape
+branch (the escape hit the unknown arm, its sub-code then decoded as
+a normal char — only accidentally silent because kExtendedChars'
+0xD2-0xDF slots are empty); FE+subcode now consume as one unit.
+(2) the marker byte 0x8F ("Ø" in the vanilla table — a letter FF7
+English prose never uses; Echo-S repurposes the font slot) was the
+spoken "Ø" — now drops with a guarded space, decode_walk only
+(caption-harvest DecodeChar parity untouched). Offline dry-run vs the
+logged dumps passed (research §8 v2.30.91). Verify [TEXT91] (a)/(d).
+
+[ROOFHOP] No audio cues / empty pathfinder after the Aeris soldier escape
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report).
+"After I meet Aeris and we escape from the soldiers, there seems to be
+a section with no audio cues, probably hopping across roofs. There are
+no locations listed in pathfinder." Likely the rooftop-hopping fields
+after the church escape: if those fields have no gateways/triggers/
+models the browser can see (progression may be entirely script-driven
+hotspots or jump lines), every category lists empty and no cues fire.
+Needs a log from that stretch to see the field ids and what the
+trigger/model scans actually found before designing an affordance
+(story hotspots à la [HOTSPOT] elevtr1 are the existing pattern for
+script-only interactions).
+
+[EMPTYNAME] Aeris's House spoken as "To 's House, unexplored"
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report).
+Pathfinder announced the destination as "To 's House, unexplored.
+2 of 12." — the character name is missing in front of "'s House".
+Almost certainly the [UNEXPLORED] harvested caption (v2.30.86): the
+field's MPNAM caption contains a character-name TOKEN ({AERIS}-style
+FF7Text variable), and the harvest decode renders it as empty instead
+of resolving it to the character's name. When revived: check how
+ff7_mpnam_caption_catalog.py / the DecodeChar mirror handles name-
+variable bytes, and resolve them through the live savemap names (the
+v2.19/v2.20 machinery) — which also intersects [AERISNAME]: before she
+is named, the honest caption would be "Flower Girl's House" (or the
+raw house wording), not her real name. Once the field is visited, the
+live learner should adopt the game's own spelling — worth confirming
+the visited path resolves the token correctly too.
+
+[MPANNOUNCE] On-demand MP announce wanted
+------------------------------------------------------------------------
+Parked: 2026-08-06 (tester G-Rad, en route to Shinra HQ): "I just wish
+we had a way to announce MP."
+An on-demand readout, sibling to the accessiblity_keys.txt
+Announcements section (H = on-demand battle HP readout, also still
+unimplemented — see the FF4-scheme keys entry later in this file).
+Per the key-parity rule, check what key the FF1-6 mods use for MP
+before picking a binding — extend H to speak HP AND MP, or use the
+scheme's designated key; never invent a new one. Current-MP source is
+already known: battle char block +0x14 (used by the v2.30.57
+affordability check); menu-side MP lives in the savemap records.
+
+[LIMITSEL] Battle limit-break selection not announced
+------------------------------------------------------------------------
+Parked: 2026-08-06 (tester G-Rad): "limit breaks don't announce during
+battle while selecting. Cloud now has 2 and it's hard to tell which
+one is highlighted."
+When the limit gauge is full and the player opens the limit list in
+battle, cursor movement over the available limit breaks speaks
+nothing. Kernel2 limit NAMES are already resolvable (magic-section
+entries >=128, v2.30.35; branch-7 flash resolution live-verified
+v2.30.76) — what's missing is announcing the battle limit-selection
+list itself: its cursor address/window is presumably not hooked the
+way the magic/item lists are. Needs a live look at that submenu's
+cursor state when revived.
+
+[INNGIL] Inn price spoken as "this much gil" — number missing
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report).
+The inn dialog says it costs "this much gil" to stay per night, but
+the actual amount is never spoken. Reads like a NUMERIC VARIABLE in
+the dialog text that the decode path drops or that the game writes
+into the text box separately from the dialog string (FF7 field
+scripts can render numbers via a dedicated opcode/window rather than
+inline text) — same family as [DIALOGNUM] (numbers sometimes not read
+in dialog, squats minigame). When revived, capture a log at an inn to
+see what bytes the dialog actually carries at that moment; if the
+number is drawn via the game's number-window mechanism, the dialog
+hook never sees it and a separate read of that window is needed.
+ROOT CAUSE FOUND 2026-08-07 (log.5 14:29:34 + log.6 20:52:27,
+identical bytes both visits): "It's <FE DE> gil a night." — the
+FE DE numeric-variable code, exactly the [DIALOGNUM] mechanism (see
+that entry for the fix path; the amount never touches the dialog
+bytes). The suspicion above is confirmed in the "variable" form, not
+the separate-window form — the ASK pair ('Stay'/'Don't stay') spoke
+fine.
+
+[INNSTAY] Inn "how long to stay" prompt — no selection speech, no cue
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report; companion to [INNGIL]).
+The inn asks how long the player wants to stay, but the mod announces
+no amount selection there and no in-game sound cue plays (the dialog
+double-tone that normally marks a choice is absent too). Suggests
+this prompt is NOT the standard dialog-choice mechanism the mod
+already handles, but a numeric/amount selector (likely the same
+number-window mechanism suspected in [INNGIL]) that neither the
+choice detection nor the cue logic recognizes. When revived, log a
+full inn interaction: identify what window/opcode drives the
+stay-length prompt, then wire selection speech (current value as it
+changes) and the choice cue to it. Investigate together with
+[INNGIL] — one inn session log should feed both.
+LOG EVIDENCE 2026-08-07 (both inn visits, log.5 14:31:39 / log.6
+20:52:33): the prompt IS partially visible to the hooks — 'Sleep for
+how long?' spoke, then a special numeric window armed (WSPCL id=3
+type=2, the same opcode family as the countdown clock) while the
+dialog side decoded EMPTY (raw E7 E0 E1 → ''). So the hour/amount
+display is a WSPCL type=2 window: the v2.30.56 WSPCL hook already
+sees it arm — reading its live value + wiring the choice cue is the
+remaining work when revived.
+
+[AERITH] Game says her name is "Aerith" — 7H retranslation or read bug?
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report): the game says Aeris's name is
+"Aerith"; user doesn't know if that's 7th Heaven's doing or a bug in
+reading names from the game's memory.
+Strong prior for the 7H explanation: the Echo-S/retranslation mods
+deliberately rename Aeris to "Aerith" (the modern canonical
+spelling) — [DIALOGCHARS] already noted an "Aerith" dialog line from
+the same install, and this project's rule is that runtime bytes are
+the modded truth (v2.30.86). If the retranslation writes the DEFAULT
+name at the naming screen, the savemap record itself would carry
+"Aerith" and the mod's name reads would be CORRECT, not buggy. To
+confirm when revived: a log line showing the raw savemap name bytes
+for her record (the v2.19 live-name machinery reads these) — if the
+savemap says Aerith, it's the mod profile, case closed; walkthrough.txt
+can arbitrate the vanilla spelling ("Aeris"). Only if the savemap
+bytes DISAGREE with what's spoken is there a real read bug.
+Cross-refs: [AERISNAME] (Flower Girl gating) and [EMPTYNAME]
+(caption name-token resolution) both touch the same name plumbing —
+whichever is revived first should note what the savemap actually
+holds on this install.
+RESOLVED 2026-08-07 (the discriminating evidence this entry asked
+for, from the 2026-08-06 logs): the savemap on this install DOES say
+"Aerith" — save previews speak "with Aerith" (log.6 20:03:29 etc.),
+and story dialog bytes literally spell it (21 45 52 49 54 48 =
+"Aerith", log.6 20:14:15 raw dump). walkthrough.txt's vanilla
+spelling is "Aeris" ⇒ the 7H/Echo-S retranslation renamed her at the
+naming screen; the mod's name reads are CORRECT, not a bug. Case
+closed per this entry's own criterion (savemap agrees with speech).
+
+[WALLMKT2CH] Wall Market people named only "fw" and "fm"
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report).
+People in Wall Market speak with bare two-letter developer stems:
+"fw" and "fm". This is exactly the case the v2.20/v2.28 naming
+residuals anticipated — unknown words pass through raw BY DESIGN
+(wrong > terse), and a play sighting plus its FIELD is what turns a
+stem into a translation. Field: Wall Market (user report; exact field
+id from the next log). When revived: run/extend the per-field context
+pass (investigate/ff7_short_entity_context.py, and the model catalog
+for .char labels) against the Wall Market fields to ground what fw/fm
+are — plausibly female/male crowd NPCs ("woman"/"man"), but translate
+only on catalog evidence per the played-evidence rule, then add the
+stems to the table in proxy.cpp.
+FIXED v2.30.91 (2026-08-07) exactly as this entry prescribed — the
+evidence pieces all landed at once: flevel model catalog pins
+'std fw1' (DSBC.HRC) to elmpb+mrkt1 and 'std fm1' (DMIA.HRC) to
+corelin/mrkt2/mtcrl_7/ncorel; log.6 shows ONE fm entity on field 195
+(Wall Market main street — the wandering Member's Card man, NAV
+person label='std fm1') and ONE fw on field 205 (north street, by
+the Honey Bee approach); the user's 2026-08-06 20:04/20:06 captures
+show exactly those NPCs (man in overalls handing over the Member's
+Card; white-capped woman). kDevWords gained fw→"woman", fm→"man"
+(stems, so fm2/fmw-adjacent Corel sightings inherit the fm word
+only on exact-stem "fm" labels — fmw stays raw, no evidence yet).
+Verify [TEXT91] (c) in research §8.
+
+[DRESSOPTS] Wall Market dressmaker dialog — not all options visible
+------------------------------------------------------------------------
+Parked: 2026-08-06 (user report, flagged worth an investigation).
+Talking to the old man in the Wall Market bar to have a dress made
+for Cloud: it appears not all the dialog options are visible/spoken.
+User's own caveat: 7th Heaven has no voice samples for the missing
+ones either, so they may be INTENTIONALLY obscured by the game until
+some other event reveals them (the dress-quality flow does vary its
+choices with story/sidequest state). When revived: first establish
+ground truth — what choice entries does the dialog window actually
+contain at that moment (raw dialog bytes + choice count from a log),
+versus what the walkthrough says the full option set is and what
+unlocks the rest. Only if the window carries options the mod fails to
+speak is there a mod bug; if the game genuinely withholds them,
+parity says stay silent about them too.
 
 
 ========================================================================
@@ -266,6 +527,30 @@ deadline 5000ms; battle-entry grace kills the ghosts. Full design in
 research §8 v2.30.90. Awaiting play-test — verify [BATTLE90] (c)-(f).
 Issue (4) stays open (harmless generic fallback; needs one more limit
 log to map Tifa's idx space).
+LOG-VERIFIED 2026-08-07 (2026-08-06 v2.30.90 logs 4/5, ~95 dmg
+lines): the report=0 standalone class is GONE (94/95 homed: 65
+cur-early, 23 prev, 5 cur, 1 legitimate orphan — Air Buster hitting
+Tifa mid-menu). TWO NEW LOG-PROVEN ISSUES, recorded for direction,
+not yet fixed:
+(5) home=prev OFF-BY-ONE under ATB overlap: in the log.4 Blood Taste
+battle every "quiet prev" line paired action N's damage with action
+N-1's actor — proof: the Tentacle Drain pair (Tifa -2 / BT4 +2,
+11:46:20) spoke as "Blood Taste 3, attacks, ..." while the CURRENT
+report name-upgraded to Tentacle Drain 1.3s later; Barret's kill hit
+spoke as "Blood Taste 4, Tentacle Drain, Blood Taste 4 minus 42 HP."
+(self-damage), Cloud's kill as Barret's, Tifa's 16 as Cloud's. The
+300ms TURN_MIN_DAMAGE rule routes prev exactly when the damage is
+the just-opened action's first fast write. The cur-early/cur paths
+(Air Buster, Hell House, Guard Hound) all read correct.
+(6) NO-EFFECT DEADLINE anchored to the turn-anchored open_tick: on
+post-animation opens the 5000ms deadline is already spent — log.4
+12:11:42 open→"(no effect)" in 62ms, then the real damage lands
+300-450ms later as a split "chained" utterance (4 of 6 no-effect
+fires today; the other 2 were battle-ending blows, legitimately
+truncated). Deadline should re-anchor on the flash/name-upgrade or
+first fragment opportunity, not the turn open.
+Also clean across all three logs: zero STALE lines, all 30 flash
+resolutions ok=1, no junk text anywhere.
 
 [LAYERFILTER] Shift+; layer filter — SHIPPED v2.30.88 (2026-08-05), awaiting play-test
 ------------------------------------------------------------------------
@@ -564,6 +849,12 @@ sig, v2.30.57) fails — the text mod likely rewords descriptions. Magic
 I-key speaks no description in this setup. Fix = a sig ladder like
 v2.30.47's name ladder (single-entry + entry-count band relative to the
 FOUND magic-name section, or index-align from mat_desc's block).
+RE-OBSERVED 2026-08-07: all 16 kernel2 scan lines across the three
+2026-08-06 v2.30.90 sessions show mg_desc=00000000 AND
+command=00000000 (csig still matches 'Attack|Magic|' — battle command
+names resolve fine elsewhere, all flash lines ok=1). Unchanged
+symptom, now with the command pointer also unresolved on 2013+7H;
+fold that into the sig-ladder work when revived.
 ------------------------------------------------------------------------
 First build on the screen-construction investigation (research §4
 FIELD_JUMP_INTERFACE row): the engine has ONE transition mailbox

@@ -262,6 +262,66 @@ std::vector<std::wstring> decode_walk(const char* encoded_text, bool split_lines
             ++p;
             // Do not clear at_start -- button icons precede text, not content.
         }
+        // ── 0xFE function-code escape (v2.30.91) ─────────────────────────────
+        // Field text uses 0xFE as an escape prefix for FUNCTION codes: the
+        // byte AFTER it is an operation, not a glyph (ff7tk/community text
+        // spec: 0xD2-0xD9 = text colors gray..white, 0xDA flash, 0xDB
+        // rainbow, 0xDE = insert a NUMBER from the script's message
+        // variable, ...). Until v2.30.91 the 0xFE itself fell into the
+        // unknown-byte branch below and its SUB-CODE then decoded as an
+        // ordinary character on the next iteration -- which only stayed
+        // silent by luck, because the kExtendedChars slots for 0xD2-0xDF
+        // happen to be empty. Live proof this matters (2026-08-06 v2.30.90
+        // log.6, 2013+7H Echo-S): every named-speaker dialog line opens
+        // with "FE D6 <glyph> FE D9" ({GREEN}glyph{WHITE}) and every
+        // key-item pickup wraps the item name in "FE D7 ... FE D9"
+        // ({CYAN}...{WHITE}); the squats-minigame and inn-price dialogs
+        // carry "FE DE" exactly where the on-screen number appears.
+        // Consume the escape AND its sub-code as one unit so no future
+        // font-table change can turn a function code into spoken junk.
+        //
+        // FE DE (number insert) keeps the guard_space so the words around
+        // the still-unspoken number don't fuse. Speaking the actual VALUE
+        // needs the engine's message-variable source (set by the field
+        // script, not present in the text bytes) -- see PARKED [DIALOGNUM]/
+        // [INNGIL]: root cause is now proven, the value read is future work.
+        //
+        // Sub-codes with argument bytes (e.g. a timed-pause variant) would
+        // leave their args to decode as stray visible characters in the
+        // debug log -- deliberate: today's whole live corpus (FE D6/D7/D9/
+        // DE) is argless, and a visible-junk log line is evidence for the
+        // next table entry, strictly better than silently eating bytes on
+        // an undocumented guess (same policy as the v2.30.17 name-token
+        // rework).
+        else if (byte == 0xFE) {
+            guard_space(result);
+            // Consume the sub-code too, unless it is the 0xFF terminator
+            // (a truncated trailing escape must still stop the walk).
+            p += (p + 1 < p_end && p[1] != 0xFF) ? 2 : 1;
+            // Do not clear at_start -- function codes precede content.
+        }
+        // ── Echo-S marker glyphs 0x8F / 0xB8 (v2.30.91) ──────────────────────
+        // In ff7tk's vanilla table these are the Latin glyphs 0x8F='Ø' and
+        // 0xB8='ÿ' -- letters that never occur in FF7's English prose. The
+        // 7H/Echo-S retranslation repurposes exactly these two font slots
+        // as decorative MARKERS: 0x8F color-bracketed before every spoken
+        // speaker name ("FE D6 8F FE D9 Aerith ..." -- user report
+        // [DIALOGCHARS]: 'Ø' spoken before Aerith's lines), 0xB8 before
+        // colored key-item names in pickup messages ("...Key Item B8 FE D7
+        // Member's Card..." -- user report [ITEMASCII]; the 2026-08-06
+        // 20:04:44 screen capture of that exact dialog shows NO visible
+        // glyph there). They carry no information a listener needs, so
+        // they vanish behind a word-boundary space. DELIBERATELY handled
+        // here in decode_walk, NOT in kExtendedChars/DecodeChar: the
+        // caption-harvest pipeline (investigate/ff7_mpnam_caption_catalog
+        // .py) is an exact byte-for-byte mirror of DecodeChar, and place-
+        // name identity (dedupe, journey names) depends on that parity --
+        // the shared table must not drift for a dialog-only cosmetic fix.
+        else if (byte == 0x8F || byte == 0xB8) {
+            guard_space(result);
+            ++p;
+            // Do not clear at_start -- markers precede content.
+        }
         // ── Newline ──────────────────────────────────────────────────────────
         // 0xE0: confirmed newline in the PC dialog rawptr data (tested v1.2-v1.7).
         // 0xE7: newline as documented in ff7tk eng[] table.
