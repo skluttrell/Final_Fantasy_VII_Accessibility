@@ -7027,6 +7027,88 @@ listing; (d) chest/pickup fields: "Chest 2" on walk-in matches the
 Items listing, ", opened"/", device" suffixes still after the number;
 (e) log header v2.30.96.
 
+### v2.30.97 (2026-08-09): Train Graveyard trains named -- curated line-name mechanism
+
+User report (log.10, 2026-08-09, 2013+7H local run): returning to
+Sector 7 through the Train Graveyard after Corneo's Mansion, "you hop on
+train cars with lights, but there's no indication which train you're
+supposed to get on." Log shows the player entering field 144 (mds7st1,
+south graveyard) at 12:19, field 145 (mds7st2, the puzzle screen) at
+12:27, then circling 145 until the session ends at 12:37 -- exit never
+reached. Every trigger in both fields is entity-named literally
+"lineNN", so the browser spoke ten-plus indistinguishable "line N"
+entries and the journey advice could only route over anonymous climb
+lines.
+
+MECHANISM DECODED OFFLINE (NEW investigate/ff7_graveyard_train_dump.py,
+log graveyard_train_dump_20260809_130649.log -- full disassembly of both
+fields' entity scripts; opcode walker/lengths verbatim from the line
+catalog generator):
+- Field 145 has FOUR boardable-train walk-on lines (no OK press):
+  entities 7/8 ('line20'/'line21', ground, right side = the
+  walkthrough's "brownish train") and 9/10 ('line30'/'line31', the
+  upper train). Walking on plays the hop-in animation (cloud s7-s10:
+  jump into the car, hide, teleport through, jump out) and MOVES the
+  other wrecks.
+- Puzzle state = savemap byte V[1][164]: bit0 = brown train's side
+  (its two lines LINON-swap each hop -- exactly one enabled at a time,
+  which is why the runtime line array always misses two entries);
+  bit1 = middle passenger car kyak01 rolled away (set by the FIRST
+  brown-train hop -- the long op_A9 rolling choreography in kyak01 s7);
+  bit2 = upper train kisya01 rolled away (only fully rolls after bit1;
+  its lines then swap too). 'init' replays positions/LINON/locks from
+  the byte on every field entry.
+- A dedicated 'id_lock' entity applies IDLCK walkmesh-lock batches per
+  state (slots 3-14): the route to the Sector 7 exit does not EXIST
+  until both trains have moved -- the journey's climb-line advice in
+  log.10 was honest geometry into a dead end.
+- Field 144 is benign: climb-over-wreck LINE pairs (ground/roof, each
+  reqew's a cloud LADER script; entity 2 sits inside the first train's
+  z=-134 interior where the sewer drops you, entity 3 is its outside
+  twin) plus one roof-gap jump pair (entities 10/11).
+
+FIX -- generic curated-name mechanism + first entries (user-approved
+descriptive style "brown train, hop in"; generic mechanism explicitly
+requested "for when we need it later"):
+1. NEW hand-maintained ff7_curated_line_names.h: {field_id, entity_id,
+   full_phrase, name} sorted for binary search, same (field, entity)
+   identity as the line catalog. Scope rules in the header: entries
+   only from decoded script evidence (cite the dump log), <= 23 chars
+   with ordinal room, object-first wording, NO direction words (the
+   v2.30.67 ladder collision), full_phrase=true suppresses the
+   browser's kind suffix (a name that already states its action must
+   not gain ", scene").
+2. NEW LineSpokenBaseName(field, ent, ename) in proxy.cpp = curated
+   lookup, else TranslateEntityName. It is the single funnel BOTH name
+   producers now use -- the Triggers build pass AND
+   TriggerLineSpokenName, INCLUDING both duplicate-ordinal compare
+   loops -- so browser, K announce, walk-into, journey legs, and homing
+   share one vocabulary (v2.30.62/.96 rule). TriggerLineSpokenName
+   reads FIELD_ID itself (same volatile read + transition-staleness
+   tradeoff as every consumer).
+3. Build pass TrigLine gains curated_full; the behavior-suffix block
+   skips curated full-phrase names.
+4. Entries: 144 -> "first train" x2 (in/out pair), "south/middle/north
+   wreck" x2 each (climb pairs, keep ", climb" suffix + ordinals like
+   ladders), "roof gap jump" x2; 145 -> "center wreck"/"left wreck"
+   pairs, "brown train, hop in" (ents 7/8), "upper train, hop in"
+   (ents 9/10), "roof gap jump" x4 (ents 11-14). The hop pairs never
+   ordinal (one enabled at a time).
+No new addresses, no cfg change, no new keys. Deployed both installs
+(hash C1BA3C2475B68577). DLL literal checks passed (all curated names +
+version string).
+
+VERIFY [TRAINYARD97]: (a) field 145: J/L lists "brown train, hop in" /
+"upper train, hop in" with NO ", scene" suffix and no ordinals; (b)
+walking onto the brown train line hops through + the middle car rolls;
+after re-entry from the far side the SAME name speaks from the swapped
+line; (c) upper train after brown: hop moves it and the exit route
+opens (journey to Sector 7 Station now routes); (d) climb pairs speak
+"center wreck 1, climb" style (ordinal before suffix); (e) field 144:
+"first train 1/2, climb", wreck pairs, "roof gap jump 1/2"; (f) a
+non-curated field's lines are unchanged ("ladder 2", "Trigger N"); (g)
+log header v2.30.97.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)

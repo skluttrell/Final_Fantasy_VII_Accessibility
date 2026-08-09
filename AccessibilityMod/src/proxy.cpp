@@ -82,6 +82,9 @@
 #include "ff7_field_captions.h" // generated MPNAM harvest: field id -> friendly
                                 // caption for UNVISITED places (v2.30.86)
 #include "ff7_line_trigger_catalog.h" // generated: what each LINE trigger DOES
+#include "ff7_curated_line_names.h"   // hand-curated: spoken names for lines
+                                      // whose dev names are meaningless
+                                      // ("lineNN" puzzle screens, v2.30.97)
 #include "ff7_field_graph.h"          // generated: gateway edges (journeys, v2.30.65)
 #include "ff7_prop_catalog.h" // generated: talk-scripted model entities
                               // (device whitelist for MC_PROP, v2.30.45)
@@ -9447,6 +9450,30 @@ static std::wstring TranslateEntityName(const std::wstring& raw)
 }
 
 // ---------------------------------------------------------------------------
+// Spoken BASE name for a trigger line -- curated override first, dev-word
+// translation second (v2.30.97). This is the single funnel BOTH line-name
+// producers go through (the Triggers-category build pass and
+// TriggerLineSpokenName below, including their duplicate-ordinal compare
+// loops), so a curated name can never split the vocabulary between the
+// browser and the journey/walk-into voices. The defining case: the Train
+// Graveyard's boardable trains, whose dev entity names are all literally
+// "lineNN" -- translation can only ever say "line", and log.10
+// (2026-08-09) showed the player circling the puzzle screen for ten
+// minutes among eleven indistinguishable "line N" entries.
+// field_id comes from the same FIELD_ID global every consumer already
+// reads; the curated table inherits the line array's accepted transition
+// staleness (one keypress of a same-field stale row at worst).
+// ---------------------------------------------------------------------------
+static std::wstring LineSpokenBaseName(uint16_t field_id, uint8_t ent,
+                                       const std::wstring& ename)
+{
+    if (const FF7CuratedLines::CuratedLine* c =
+            FF7CuratedLines::Find(field_id, ent))
+        return c->name;
+    return TranslateEntityName(ename);
+}
+
+// ---------------------------------------------------------------------------
 // Field model label from the raw MODEL LOADER section (v2.16).
 //
 // Walks section 2 of the field file buffer (format decoded live 2026-07-13,
@@ -9847,12 +9874,17 @@ static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
 {
     const uint8_t mapped = *reinterpret_cast<const volatile uint8_t*>(
         FF7Addr::FIELD_ENTITY_LINE_SLOT + ent);
+    // Current field id for the curated-name lookup (v2.30.97) -- same
+    // global, same volatile read, same transition-staleness tradeoff as
+    // every other consumer.
+    const uint16_t field_id = static_cast<uint16_t>(
+        *reinterpret_cast<const volatile int16_t*>(FF7Addr::FIELD_ID));
     const uint8_t* tbl = nullptr;
     uint8_t n = 0;
     std::wstring ename;
     if (FieldEntityNameTable(&tbl, &n) && mapped == line_idx &&
         EntityNameFromTable(tbl, n, ent, ename)) {
-        out = TranslateEntityName(ename);
+        out = LineSpokenBaseName(field_id, ent, ename);
         // Ordinal among ENABLED same-named lines in live-array slot
         // order â€” the exact rule the Triggers category applies to its
         // gathered list, so both paths produce identical numbers.
@@ -9872,7 +9904,7 @@ static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
             if (omap != i || !EntityNameFromTable(tbl, n, oent, oname))
                 continue;   // unnamed lines fall back to "Trigger N" in
                             // the browser -- never a duplicate of a name
-            if (TranslateEntityName(oname) == out) {
+            if (LineSpokenBaseName(field_id, oent, oname) == out) {
                 ++total;
                 if (i < line_idx)
                     ++ordinal;
@@ -12840,6 +12872,10 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                     // member"); empty = fallback
                 const FF7LineCatalog::LineInfo* info;  // behavior catalog
                                     // row (v2.30.23), null = unknown
+                bool curated_full;  // curated name already states the
+                                    // action -- suppress the kind suffix
+                                    // (v2.30.97, "brown train, hop in"
+                                    // must not gain ", scene")
             } tl[FF7Addr::FLINE_MAX];
             int n_tl = 0;
 
@@ -12885,13 +12921,26 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                     *reinterpret_cast<const volatile uint8_t*>(
                         FF7Addr::FIELD_ENTITY_LINE_SLOT + ent);
                 std::wstring ename;
+                t.curated_full = false;
                 if (have_names && mapped_slot == i &&
-                    EntityNameFromTable(ent_table, ent_count, ent, ename))
+                    EntityNameFromTable(ent_table, ent_count, ent, ename)) {
                     // v2.20: translate the dev name ("ladd0" -> "ladder
                     // down", "av j" -> "Jessie") before it becomes the
                     // spoken identity; unknown names pass through.
-                    wcsncpy_s(t.name, TranslateEntityName(ename).c_str(),
+                    // v2.30.97: curated (field, entity) names override
+                    // the translation through the shared wrapper, so
+                    // this pass and TriggerLineSpokenName stay one
+                    // vocabulary.
+                    wcsncpy_s(t.name,
+                              LineSpokenBaseName(
+                                  static_cast<uint16_t>(field_id), ent,
+                                  ename).c_str(),
                               _TRUNCATE);
+                    const FF7CuratedLines::CuratedLine* cur =
+                        FF7CuratedLines::Find(
+                            static_cast<uint16_t>(field_id), ent);
+                    t.curated_full = (cur != nullptr && cur->full_phrase);
+                }
 
                 if (Config::Get().debug_log) {
                     char dbg[160];
@@ -12938,7 +12987,7 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                 // glance: "pinball, exit to Seventh Heaven" / "border,
                 // scene". Suffixes state only what the SCRIPTS contain â€”
                 // an exit may still be story-gated at any given moment.
-                if (tl[a].info != nullptr) {
+                if (tl[a].info != nullptr && !tl[a].curated_full) {
                     using namespace FF7LineCatalog;
                     const LineInfo* li = tl[a].info;
                     std::wstring sfx;
