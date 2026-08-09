@@ -9891,6 +9891,90 @@ static void TriggerLineSpokenName(uint32_t line_idx, uint8_t ent,
 }
 
 // ---------------------------------------------------------------------------
+// Spoken name for a field MODEL -- the browser's naming rules in one call
+// (v2.30.96), the model-side twin of TriggerLineSpokenName above. The
+// destination browser has always numbered duplicate labels ("man 1"/
+// "man 2" on the Wall Market streets, the 2026-08-04 station log's
+// "Shinra soldier 1"/"Shinra soldier 2"), but the v2.30.62 walk-into
+// announce spoke the BARE translated label: bumping into any of three men
+// said "man" every time, so a player could not tell which of the
+// browser's numbered men they had just visited (user report, 2026-08-09).
+// This function produces label + ordinal exactly as the browser build
+// pass does, so a thing is called the same whether you cycle to it with
+// J/L or walk into it -- the one-vocabulary rule (lines got the same
+// treatment in v2.30.67).
+//
+// Parity requirements mirrored from the build pass (the CAT_PEOPLE/
+// CAT_ITEMS walk in the pathfinder thread) -- deviate from ANY of these
+// and the two voices drift apart on some field:
+//   - base = the classifier's friendly name when the label classifies
+//     (Chest/Materia/...), else the dev-word translation; a label-less
+//     slot falls back to the browser's "Person N";
+//   - the ordinal counts ALL labeled models, visible or not, eligible or
+//     not, in slot order (the v2.18.2 identity-stability rule: a hidden
+//     or despawned sibling still reserves its number, so survivors are
+//     never renamed under the player);
+//   - labels compare after the same 23-character truncation the browser's
+//     wchar_t[24] storage applies (a long name must not group with its
+//     untruncated twin in one path but not the other);
+//   - the player's own slot is skipped exactly as the build pass skips it
+//     (it never receives a label there, so it must not count here).
+// Cost: a fresh FieldModelLabel + translation walk over <=32 slots, but
+// only on a walk-into arming edge -- never per poll.
+// ---------------------------------------------------------------------------
+static void ModelSpokenName(uint32_t nmod, uint32_t pmid,
+                            const char* field_name, uint16_t model_idx,
+                            std::wstring& out)
+{
+    // One slot's spoken base, truncated as the browser stores it.
+    const auto slot_base = [&](uint16_t m, wchar_t (&buf)[24]) -> bool {
+        buf[0] = L'\0';
+        if (m == pmid)
+            return false;           // player: never labeled in the browser
+        std::wstring lbl;
+        if (!FieldModelLabel(m, field_name, lbl))
+            return false;
+        const wchar_t* friendly = nullptr;
+        ClassifyModelLabel(lbl, &friendly);
+        wcsncpy_s(buf, friendly ? friendly
+                                : TranslateDevLabel(lbl).c_str(),
+                  _TRUNCATE);
+        return buf[0] != L'\0';
+    };
+
+    wchar_t base[24];
+    if (!slot_base(model_idx, base)) {
+        // Browser fallback for a label-less slot: keep even the failure
+        // case speaking the identical name in both voices.
+        wchar_t fb[24];
+        _snwprintf_s(fb, _countof(fb), _TRUNCATE, L"Person %u",
+                     model_idx + 1u);
+        out = fb;
+        return;
+    }
+
+    // Ordinal among same-base slots in slot order (browser pass 2).
+    int ordinal = 1, total = 0;
+    const uint32_t n_walk = (nmod < 32u) ? nmod : 32u;
+    for (uint16_t k = 0; k < n_walk; ++k) {
+        wchar_t kb[24];
+        if (!slot_base(k, kb))
+            continue;
+        if (wcscmp(kb, base) == 0) {
+            ++total;
+            if (k < model_idx)
+                ++ordinal;
+        }
+    }
+    out = base;
+    if (total > 1) {
+        wchar_t obuf[8];
+        _snwprintf_s(obuf, _countof(obuf), _TRUNCATE, L" %d", ordinal);
+        out += obuf;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Journey connector graph (v2.30.87) â€” the line snapshot, connector-edge
 // rules, and component BFS factored out of BuildJourneySpeech so the
 // Shift+\ path filter can ask "is that LEVEL reachable at all?" for every
@@ -11831,14 +11915,16 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
             // ... same for characters with dialog"). Names come from the
             // SAME machinery the destination browser uses, so a thing is
             // called the same whether you walked into it or cycled to it
-            // with J/L — models through FieldModelLabel + the label
-            // classifier + TranslateDevLabel, lines through the entity
-            // name table + TranslateEntityName + the offline behaviour
-            // catalog's suffix ("ladder up", "pinball, exit to Seventh
-            // Heaven"). Queued (interrupt=false) so walking past three
-            // things in a row reads as a list instead of each cutting the
-            // last off, and so it never clips dialog that starts in the
-            // same instant.
+            // with J/L — models through ModelSpokenName, lines through
+            // TriggerLineSpokenName, both carrying the browser's duplicate
+            // ordinals since v2.30.96 ("man 2", "ladder 2" — before that
+            // this block spoke the bare translation and three Wall Market
+            // men were all just "man"), plus the offline behaviour
+            // catalog's suffix on lines ("ladder up", "pinball, exit to
+            // Seventh Heaven"). Queued (interrupt=false) so walking past
+            // three things in a row reads as a list instead of each
+            // cutting the last off, and so it never clips dialog that
+            // starts in the same instant.
             const auto speak_prox = [&](const std::wstring& what) {
                 if (Config::Get().proximity_announce && quiet_ok &&
                     !what.empty())
@@ -11920,9 +12006,20 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                         static_cast<uint16_t>(field_id), ent_id))
                                     mc = MC_PROP;
                                 if (mc != MC_SCENERY) {
-                                    std::wstring name = friendly
-                                        ? std::wstring(friendly)
-                                        : TranslateDevLabel(lbl);
+                                    // v2.30.96: the browser's label +
+                                    // duplicate-ordinal name, not the bare
+                                    // translation -- walking into one of
+                                    // three "man" models must say "man 2",
+                                    // the exact name the J/L listing gave
+                                    // it, or the player cannot track which
+                                    // of the numbered duplicates they have
+                                    // already visited (user report; see
+                                    // ModelSpokenName for the parity
+                                    // rules). Suffixes stay AFTER the
+                                    // ordinal, as everywhere.
+                                    std::wstring name;
+                                    ModelSpokenName(nmod, pmid, pfname, m,
+                                                    name);
                                     if (mc == MC_PROP)
                                         name += L", device";
                                     speak_prox(name);
@@ -11961,22 +12058,17 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                         // rather than speaking a plausible wrong name.
                         if (Config::Get().proximity_announce) {
                             const uint8_t ent = le[FF7Addr::FLINE_OFF_ENTITY];
-                            const uint8_t mapped =
-                                *reinterpret_cast<const volatile uint8_t*>(
-                                    FF7Addr::FIELD_ENTITY_LINE_SLOT + ent);
+                            // v2.30.96: name through TriggerLineSpokenName
+                            // -- the browser/journey voice with the
+                            // v2.30.67 duplicate ordinal ("ladder 2") plus
+                            // the same entity/slot stale-guard and
+                            // "Trigger N" fallback this site used to
+                            // re-derive inline, minus the ordinal. Walking
+                            // into a rung must say the number the Triggers
+                            // listing gave it, same reason as the model
+                            // announce above.
                             std::wstring name;
-                            const uint8_t* et = nullptr;
-                            uint8_t ec = 0;
-                            std::wstring ename;
-                            if (mapped == i && FieldEntityNameTable(&et, &ec) &&
-                                EntityNameFromTable(et, ec, ent, ename))
-                                name = TranslateEntityName(ename);
-                            if (name.empty()) {
-                                wchar_t fb[24];
-                                _snwprintf_s(fb, _countof(fb), _TRUNCATE,
-                                             L"Trigger %u", i + 1u);
-                                name = fb;
-                            }
+                            TriggerLineSpokenName(i, ent, name);
                             const FF7LineCatalog::LineInfo* li =
                                 (field_id > 0)
                                     ? FF7LineCatalog::Find(

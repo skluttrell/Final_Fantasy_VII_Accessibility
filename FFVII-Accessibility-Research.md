@@ -6978,6 +6978,55 @@ selector cannot be backed out of with cancel once "stay" is chosen
 (natural game behavior), so the [NUMSEL93] (c) re-announce retest
 path is decline at the ASK, then talk again.
 
+### v2.30.96 (2026-08-09): walk-into announces carry the browser's duplicate ordinals
+
+User request: multiple NPCs sharing one name (the Wall Market man/woman
+crowd) need discrete numbers "so players can keep track of who they've
+visited."
+
+ASSESSMENT FIRST: the destination browser ALREADY numbers duplicates --
+the build pass translates labels before its ordinal pass, so field 197's
+'std man1/man2/man3' + 'std fm1' all become "man" and list as "man 1..
+man 4" (play-proven at the station: "Shinra soldier 1/2", 2026-08-04
+log). The actual gap was the v2.30.62 WALK-INTO announce (proximity
+block): despite its own comment claiming name parity with the browser,
+it spoke the BARE translation -- every one of three men said just "man"
+on contact, so nothing connected the man you just talked to with the
+numbered listing you navigate by. The line-side walk-into had the same
+gap: it re-derived the entity name inline (translation + "Trigger N"
+fallback) WITHOUT the v2.30.67 duplicate ordinal that
+TriggerLineSpokenName already provides to the Triggers category and
+journey speech ("ladder 2").
+
+FIX (proxy.cpp, no new addresses, no cfg change):
+1. NEW ModelSpokenName() -- the model-side twin of
+   TriggerLineSpokenName: friendly-or-translated base label + duplicate
+   ordinal, mirroring the browser build pass EXACTLY (counts ALL labeled
+   models regardless of visibility/eligibility in slot order = the
+   v2.18.2 identity-stability rule; compares after the same 23-char
+   truncation as the browser's wchar_t[24] storage; skips the player
+   slot; "Person N" fallback). Cost: a <=32-slot label walk, only on a
+   walk-into arming edge.
+2. The prox model announce names through it ("man 2, device" ordering:
+   ordinal before suffix, as everywhere).
+3. The prox line announce now calls TriggerLineSpokenName instead of
+   its inline copy -- same stale-guard, same fallback, plus the ordinal.
+The v2.30.62 header comment updated to describe the real machinery.
+
+Deliberately NOT changed: the browser itself (already correct); the
+walk-into stays silent for label-less models (announcing "Person N" on
+contact would be new behavior, not parity); ordinals stay per-field
+(cross-field tracking is what field names are for).
+
+VERIFY [WALKORD96]: (a) Wall Market street with several men: J/L lists
+"man 1"/"man 2"/... and WALKING INTO each speaks the same numbered name
+the listing used; (b) a solo same-named NPC on another field still
+speaks bare ("man", no number) in both voices; (c) a two-ladder field:
+walking onto a rung says "ladder 1"/"ladder 2" matching the Triggers
+listing; (d) chest/pickup fields: "Chest 2" on walk-in matches the
+Items listing, ", opened"/", device" suffixes still after the number;
+(e) log header v2.30.96.
+
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
