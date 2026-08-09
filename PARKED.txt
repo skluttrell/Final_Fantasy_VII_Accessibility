@@ -2675,6 +2675,29 @@ command name. Additional verify items:
     unchanged v2.30.49 state path);
 (g) log header v2.30.103.
 
+[MAGICM104] v2.30.104 verify queue -- menu magic names via GKT
+------------------------------------------------------------------------
+Parked: 2026-08-09 (shipped v2.30.104, deployed both
+D93572CB37C6322A, NOT released; full derivation research S8
+v2.30.104). User report in log.12: magic menu "back to saying spell
+1" -- the standing-stale-copy factory hit the menu side (FFNx freed
+the latched magic block during the session's battles; the use-time
+head re-check rightly rejected it; graceful generic fallback was the
+audible symptom). The exact follow-up condition v2.30.100 predicted.
+Fix: MagicFileNameGktFirst = single menu-side magic-file resolver,
+GKT-first + heap fallback + shadow diff logging; consumers = magic
+menu lists (MAGICM) + limit technique names (LIMITM). Descriptions
+stay heap ([K2DESC]).
+Verify: (a) magic menu speaks real spell names again, INCLUDING
+after fighting a battle in the same session (the stale-block
+window); (b) summon + E.Skill tabs still named; (c) limit menu
+technique names still speak; (d) zero "MAGICM/LIMITM shadow diff"
+lines in clean play; (e) log header v2.30.104.
+RESIDUAL (unchanged scope): item/materia/equip menu names + ALL
+descriptions still heap-scanned -- GKT can serve item-family NAMES
+(section 4 remap) if those menus ever report the same class;
+descriptions have no GKT sections at all.
+
 [REVIEW101] v2.30.101 review fixes -- verify queue + skipped findings
 ------------------------------------------------------------------------
 Parked: 2026-08-09 (shipped v2.30.101, deployed both installs

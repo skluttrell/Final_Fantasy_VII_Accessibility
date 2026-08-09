@@ -2566,6 +2566,46 @@ static bool SectionEntryText(const uint8_t* base, uint32_t entry, std::wstring& 
     return false;   // blank/whitespace-only entry (padding) â€” treat as no name
 }
 
+// v2.30.104: ONE resolver for every MENU-side magic-file name (spell /
+// summon / E.Skill lists, limit-technique names) -- the game's own
+// get_kernel_text first, scavenged heap section as fallback, .103-style
+// shadow comparison between them when both resolve.
+//
+// WHY: the menus kept the v2.7 heap-only lookup after the v2.30.100
+// battle migration ("GKT migration = follow-up if menu junk ever
+// reported" -- reported 2026-08-09, log.12: FFNx freed the latched
+// magic block during the session's battles, ValidatedSection rightly
+// rejected the stale pointer at use, and the magic menu fell back to
+// "Spell 1" generics). GKT section 0 (bias 0, cap 0xE0) serves the
+// SAME raw magic-file indices the menu lists and the limit grid carry:
+// piece 19 is 0-based with NO filler entry ([0]='Cure' .. [128] limit
+// region -- ff7_kernel_text_tables_dump.py, both installs identical),
+// so heap and GKT agree on indexing and this is a pure source swap.
+// `src` tags the shadow/evidence log lines with the calling menu.
+static bool MagicFileNameGktFirst(uint32_t idx, const char* src,
+                                  std::wstring& out)
+{
+    if (ResolveViaGameKernelText(FF7Addr::GKT_SECTION_MAGIC, idx, out)) {
+        if (Config::Get().debug_log) {
+            std::wstring shadow;
+            if (SectionEntryText(ValidatedSection(&g_k2.magic,
+                                                  g_k2_magic_sig),
+                                 idx, shadow) &&
+                PlausibleActionName(shadow) && shadow != out) {
+                char dbg[224];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] %s shadow diff idx=%lu gkt=%ls heap=%ls",
+                    src, static_cast<unsigned long>(idx),
+                    out.c_str(), shadow.c_str());
+                Log::Write(dbg);
+            }
+        }
+        return true;
+    }
+    return SectionEntryText(ValidatedSection(&g_k2.magic, g_k2_magic_sig),
+                            idx, out);
+}
+
 // Resolve (command_index, action_index) from the flash-message struct into the
 // exact display name, replicating dispatcher sub_6D1CC0's branch table.
 // Branch semantics derived by static disassembly and live-verified 2026-07-11
@@ -4195,8 +4235,11 @@ static void LimitLevelLine(uint32_t party_slot, uint32_t level, std::wstring& ou
         const uint32_t name_idx = 128 + block * 7 +
                                   ((level < 3) ? level * 2 + t : 6u);
         std::wstring name;
-        if (SectionEntryText(ValidatedSection(&g_k2.magic, g_k2_magic_sig),
-                             name_idx, name)) {
+        // v2.30.104: GKT-first, same stale-heap vulnerability as the
+        // magic list (raw idx 128+ = the magic file's limit region,
+        // inside section 0's 0xE0 cap; F8 colour-code skip is applied
+        // by both sources).
+        if (MagicFileNameGktFirst(name_idx, "LIMITM", name)) {
             if (any)
                 out += L", ";
             out += name;
@@ -4650,9 +4693,12 @@ static DWORD WINAPI MagicMenuThread(LPVOID /*unused*/)
         if (id == 0xFF) {
             msg = L"Empty";
         } else {
-            if (!SectionEntryText(ValidatedSection(&g_k2.magic,
-                                                   g_k2_magic_sig),
-                                  id, msg) || msg.empty()) {
+            // v2.30.104: GKT-first (MagicFileNameGktFirst above) — the
+            // heap-only lookup here was the last standing-stale-copy
+            // victim: FFNx frees the latched block on kernel2 reload and
+            // the use-time head re-check then rejects it, which spoke
+            // "Spell 1" generics for every real spell (log.12).
+            if (!MagicFileNameGktFirst(id, "MAGICM", msg) || msg.empty()) {
                 wchar_t buf[24];
                 _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"Spell %u",
                              static_cast<unsigned>(id) + 1u);
