@@ -2487,17 +2487,23 @@ static bool ResolveViaGameKernelText(int section, uint32_t idx,
     // 0x100 = the restored v2.7-era guard: armor/accessory ids (0x100+)
     // never flash in battle (usable items are 0-0x7F, thrown weapons
     // 0x80-0xFF), so anything above is a corrupt/mid-write pair that must
-    // not resolve to a plausible equipment name. Command ids are 1..~0x17
-    // (the command-names file holds 24 entries — kernel2_get_text itself
-    // has NO bounds check, so the caps here are the only thing preventing
-    // an off-table u16 read).
+    // not resolve to a plausible equipment name. Section 5 (command names)
+    // caps at 0x20 = the file's 32-entry extent (v2.30.102: its
+    // description sibling enumerates as exactly 32 entries in the
+    // 2026-08-01 kernel2 section dump, and the engine's own cmd->branch
+    // table 0x6D70A8 tops out at id 0x20 = enemy-action, which is never a
+    // menu id) — the file is RAW-id-indexed (see CommandMenuName), so the
+    // old 0x18 cap would have cut off the Slash-All/2x-Cut id range the
+    // v2.30.100 rework exists to name. kernel2_get_text itself has NO
+    // bounds check, so the caps here are the only thing preventing an
+    // off-table u16 read.
     const uint32_t cap =
           (section == FF7Addr::GKT_SECTION_MAGIC)  ? 0xE0u
         : (section == FF7Addr::GKT_SECTION_SUMMON) ? 0xE0u - 0x38u
         : (section == FF7Addr::GKT_SECTION_ESKILL) ? 0xE0u - 0x48u
         : (section == FF7Addr::GKT_SECTION_LIMIT)  ? 0xE0u - 0x80u
         : (section == FF7Addr::GKT_SECTION_ITEM)   ? 0x100u
-                                                   : 0x18u;
+                                                   : 0x20u;
     if (idx >= cap)
         return false;
     uint8_t raw[64];
@@ -7690,8 +7696,11 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // Resolve a battle COMMAND id to its display name.
 // Priority: (1) hardcoded names for ids the kernel command-name table does
 // not cover 1:1 â€” the Defend/Change-row pseudo-commands and Limit (which
-// keeps its unshifted kernel id, live-confirmed); (2) the kernel2 command-
-// name section at entry id-1 (ids are 1-based, table is 0-based); (3) the
+// keeps its unshifted kernel id, live-confirmed); (2) the game's own
+// get_kernel_text, section 5 at the RAW id (the file carries a filler
+// entry 0 — the engine's menu draw at 0x71F35A pushes the id unadjusted);
+// (3) the scavenged heap section at entry id-1 (its signature anchors one
+// entry into the file, so 0-based-off-Attack holds THERE only); (4) the
 // v2.7 generic label ("command N" worst case). Returns via `out`.
 static void CommandMenuName(uint8_t id, std::wstring& out)
 {
@@ -7703,14 +7712,25 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
         break;
     }
     // v2.30.100: the game's own command-name lookup first (GKT section 5 =
-    // the command-names file, entry id-1 for 1-based ids). On 2013+7H the
-    // heap scan has NEVER found this section (log.10: command=0 with a
-    // 22-scan fruitless streak), so materia-granted commands (Mug,
-    // 2x-Cut, ...) only ever spoke "command N" there — this both closes
-    // that gap and removes the dependency on the transient battle copy.
+    // the command-names file). On 2013+7H the heap scan has NEVER found
+    // this section (log.10: command=0 with a 22-scan fruitless streak), so
+    // materia-granted commands (Mug, 2x-Cut, ...) only ever spoke
+    // "command N" there — this both closes that gap and removes the
+    // dependency on the transient battle copy.
+    //
+    // v2.30.102: the index is the RAW command id, NOT id-1. The engine's
+    // own command-menu draw (call site 0x71F35A, byte-verified) pushes the
+    // menu row's id byte unadjusted: the file is id-indexed with a filler
+    // entry 0 (vanilla's description sibling duplicates entry 1 into
+    // entry 0; Echo-S rebuilds entry 0 as a "Left" label — which is
+    // exactly what v2.30.100/.101 spoke for Attack in log.11, every name
+    // shifted one down). The id-1 convention belongs ONLY to the heap
+    // fallback below, whose "Attack|Magic|" signature anchors its base one
+    // entry into the file — as anchored, id-1 there was play-proven for
+    // weeks and stays.
     if (id != 0 &&
         ResolveViaGameKernelText(FF7Addr::GKT_SECTION_COMMAND,
-                                 static_cast<uint32_t>(id) - 1, out))
+                                 static_cast<uint32_t>(id), out))
         return;
     // v2.22.1 fallback: the scavenged command section is a TRANSIENT battle
     // allocation (the 2026-07-16 session log caught a reused copy speaking

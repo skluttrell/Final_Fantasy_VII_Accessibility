@@ -224,8 +224,9 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `G_SMALL_BATTLE_MODEL_STATE` | `0x00BF23B8` | Stride 0x74; its +0x3E "actionIdx" climbs like an animation counter when polled continuously, but AT FLASH TIME it holds the real ability id (FFNx passes it to the flash writer) â€” only sample it via the flash struct below |
 | `BATTLE_ACTOR_DATA` | `0x00DC38E0` | FFNx ff7.h `battle_actor_data`; the old "KERNEL2_REQUEST" reading was its middle: +0x08 formation_entry (pending pulse), **+0x0C command_index (0xDC38EC), +0x10 action_index (0xDC38F0)** â€” written at FLASH TIME (~1â€“2s after turn start), not rewritten for repeated identical flashes (v2.7, live-verified 2026-07-11: Ice/Potion/Machine Gun/Tentacle) |
 | `BATTLE_DISPATCH_BYTE_TABLE` | `0x006D70A8` | Static .text: byte[table+cmd] = flash-name branch for cmd 0x00â€“0x20; jump table at 0x6D7080. Branchâ†’source: 0/1=magic names; 2=summon; 3/5=item namespace; 4=buffer 0xDC3640; 6=magic+72 (E.Skill); 7=magic+128 (Limit, 0x7F='????'); 8=enemy attack table; 9=no flash text (v2.7) |
+| `BATTLE_CMDMENU_NAME_DRAW` | `0x0071F35A` | Static .text (v2.30.102, ff7_gkt_section5_callsites_static.py): the engine's battle command-menu name draw's `call 0x41963C` -- pushes section 5 with the menu row's RAW id byte (`[0xDD4714]+row*2+0x1A`, no -1; +0x1B = a per-row enable byte the same fn tests). THE byte proof that GKT section 5 is id-indexed with a filler entry 0; sibling sites in the same fn: 0x71F289 (section 0), 0x71F2D2 (section 1), 0x71F798 (section 2). Evidence anchor only -- the mod calls 0x41963C, never this site |
 | `ENEMY_ATTACK_NAME_TABLE` | `0x009A9484` | Current formation's enemy attack names from scene.bin, stride 0x20, FF7-encoded (v2.5 candidate â†’ CONFIRMED v2.7; 'Machine Gun'/'Tonfa'/'Bite'/'Tentacle') |
-| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). **CORRECTED v2.30.100 (2026-08-09): calling it WORKS everywhere, including battle** -- it is the exact resolver the flash box (consumer call 0x6D72C6) and the in-battle limit window (draw 0x6DF40D) render from. `__cdecl(section, idx, file_base)`, every engine call site passes file_base=8. Sections: 0=magic names, 1=summon (+56), 2=E.Skill (+72), 3=limit (+128; idx 0x7F = '????' sentinel -> empty), 4=item names w/ the engine's own namespace remap (<0x80 item, <0x100 weapon, <0x120 armor, <0x180 accessory), 5=command names, 6-9=battle statics via jump table 0x419A38 (7 COMPOSES into a scratch = writes; never call from mod threads). Sections 0-5 are pure reads; kernel2_get_text has NO bounds check (callers cap idx). The old 'useless in battle: scratch empty' reading was FFNx REPLACING the callee (FFNx/src/ff7/kernel.cpp: per-file external_malloc blocks, all freed+reallocated by kernel2_reset_counters on kernel2 reload = the stale-copy factory the heap scan kept latching) -- the scratch is bypassed under FFNx, not battle-empty. v2.30.100: PRIMARY battle name source (ResolveViaGameKernelText, SEH-guarded + plausibility gate) |
+| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). **CORRECTED v2.30.100 (2026-08-09): calling it WORKS everywhere, including battle** -- it is the exact resolver the flash box (consumer call 0x6D72C6) and the in-battle limit window (draw 0x6DF40D) render from. `__cdecl(section, idx, file_base)`, every engine call site passes file_base=8. Sections: 0=magic names, 1=summon (+56), 2=E.Skill (+72), 3=limit (+128; idx 0x7F = '????' sentinel -> empty), 4=item names w/ the engine's own namespace remap (<0x80 item, <0x100 weapon, <0x120 armor, <0x180 accessory), 5=command names, 6-9=battle statics via jump table 0x419A38 (7 COMPOSES into a scratch = writes; never call from mod threads). Sections 0-5 are pure reads; kernel2_get_text has NO bounds check (callers cap idx). The old 'useless in battle: scratch empty' reading was FFNx REPLACING the callee (FFNx/src/ff7/kernel.cpp: per-file external_malloc blocks, all freed+reallocated by kernel2_reset_counters on kernel2 reload = the stale-copy factory the heap scan kept latching) -- the scratch is bypassed under FFNx, not battle-empty. v2.30.100: PRIMARY battle name source (ResolveViaGameKernelText, SEH-guarded + plausibility gate). **v2.30.102: section 5 is RAW-id-indexed** -- the engine's command-menu draw (call site 0x71F35A) pushes the menu row's id byte unadjusted; the file has a filler entry 0 (Echo-S rebuilds it as "Left"; the .100 id-1 guess spoke every command shifted one down, log.11). Section-5 cap = 0x20 (32-entry file; cmd->branch table 0x6D70A8 tops at 0x20 = enemy-action, never a menu id) |
 | `K2_LOADER_STATICS` | `0x00419379` | Vanilla kernel2 bump allocator (REPLACED under FFNx): returns 0x9A13C8+[0x9A8120], records the offset in u16 table 0x9A7FC8[[0x9A8124]++], advances the cursor. Statics: fill cursor 0x9A8120, file counter 0x9A8124 (both BSS). GKT remap tables (.data, byte-verified 2026-08-09, ff7_gkt_consumer_tables_static.py): bias 0x7B74A0 = 00 38 48 80; section->file 0x7B74A8 = 01 01 01 01 02 00; item-namespace thresholds 0x7B7488/0x7B748A + target sections 0x7B7498 (04 0A 0B 0C 0D); empty-string default 0x7C0AE8 (v2.30.100) |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) â€” but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** â€” PSX comments identify unnamed PC fields |
@@ -7463,6 +7464,68 @@ still speaks "Limit level N." header on first entry; (e) any
 (f) log header v2.30.101.
 
 ---
+
+### v2.30.102 (2026-08-09): battle command menu spoke shifted names -- GKT section 5 is RAW-id-indexed
+
+**User report (same evening as .101 deploy)**: the battle menu no
+longer says Attack/Magic/Item -- "they are all replaced with the wrong
+text like left, summon, and other incorrect values". First play
+exercise of the .100 GKT-first CommandMenuName path (the [GKT100]
+verify queue never covered section 5 before tonight).
+
+**Evidence (log.11, 2013 install, v2.30.101 header)**: the standing
+BMENU log line carried the whole diagnosis --
+  id=0x01 (Attack) => "Left"
+  id=0x02 (Magic)  => "Attack"
+  id=0x04 (Item)   => "Summon"
+  id=0x14 (Limit)  => "Limit"   [hardcoded switch case, not GKT]
+i.e. every GKT-resolved name shifted exactly one entry down: the
+section-5 file holds name(id) at entry[id], with a filler entry 0
+("Left" on the Echo-S rebuild), while CommandMenuName passed id-1 on
+the .100 assumption that the 1-based ids index a 0-based table.
+
+**Byte verification (new investigate/ff7_gkt_section5_callsites_static
+.py; log gkt_section5_callsites_*.log)**: swept .text for every
+`call 0x41963C` site and decoded the argument pushes. The engine's own
+battle command-menu draw at **0x71F35A** does:
+    mov  al, [edx + ecx*2 + 0x1A]   ; edx = [0xDD4714] menu widget,
+    push eax                        ;   ecx = row -> id byte
+    push 5                          ; section 5 (command names)
+    call 0x41963C
+-- the RAW id, no -1. Since this is the exact call the screen renders
+from, entry[raw id] = what sighted players see, on vanilla and 7H
+alike. The id-1 convention belongs ONLY to the scavenged heap section:
+its "Attack|Magic|" signature anchors the scavenged base one entry
+into the file (vanilla files carry a filler entry 0 -- the command
+DESCRIPTION sibling visibly duplicates entry 1 into entry 0 in the
+2026-08-01 kernel2_section_enum log), so 0-based-off-Attack is correct
+there and that fallback is untouched (play-proven for weeks).
+
+**Fixes**:
+1. CommandMenuName: GKT lookup passes the raw id (id != 0 guard keeps
+   the filler entry 0 unspoken). Heap fallback stays id-1.
+2. Section-5 idx cap 0x18 -> 0x20 (ResolveViaGameKernelText): the
+   file's real extent is 32 entries (description sibling enumerates
+   as exactly 32; the engine's cmd->branch table 0x6D70A8 tops out at
+   id 0x20 = enemy-action, never a menu id). The old 0x18 figure was
+   part of the same id-1 guess ("24 entries") and would have cut off
+   the Slash-All/2x-Cut id range under raw indexing -- the exact
+   materia-granted names the .100 rework exists to speak. A short
+   Echo-S table stays safe: SEH guard + plausibility gate + REJECT
+   logging cover any off-table read.
+3. ff7_addresses.h GET_KERNEL_TEXT note corrected (raw-id indexing +
+   call site 0x71F35A + 32-entry extent).
+
+**Verify queue [GKT102]** (in PARKED.txt): (a) battle menu speaks
+Attack/Magic/Item/Summon correctly on both installs; (b) materia
+commands (Steal/Sense/Mug...) named, id > 0x17 commands (2x-Cut
+class) named if available; (c) no "REJECT src=cmdmenu"/sec=5 lines in
+clean play; (d) log header v2.30.102.
+
+Built clean, deployed both installs, hash-verified 378F970BCCEE3112.
+NOT released.
+
+---
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -7814,6 +7877,7 @@ Proven payoffs of cluster reasoning so far:
 | `0x6F4DB2` | shared widget navigation helper | takes widget ptr arg; ALL cursor inc/dec/wrap/scroll logic â€” cursor ops are [reg+disp], invisible to absolute-operand scans |
 | `0x6DA51A` / `0x6DA67E` | limit widget init / state-24 limit-select handler (fn[15] = fn[24]) | init copies count (table+6) to 0xDC35A4 + the widget's rows/total; the handler's confirm writes table[w4] -> 0xDC3C78 and table[w4+3] -> 0xDC3C84, calls 0x6E5C52, state -> 0 with prev 0x18 (v2.30.98, ff7_limit_battle_widget_static.py) |
 | `0x6DF40D` | battle limit window draw | rows via get_kernel_text(section 3, table[i]) = magic names biased +128; title's level digit from savemap charrec +0x0E (v2.30.98) |
+| `0x71F35A` | battle command-menu name draw call site | `call 0x41963C` pushing section 5 + the menu row's RAW id (`[0xDD4714]+row*2+0x1A`, no -1) -- the v2.30.102 byte proof that the command-name file is id-indexed w/ filler entry 0; sibling section-0/1/2 calls at 0x71F289/0x71F2D2/0x71F798 (ff7_gkt_section5_callsites_static.py) |
 | `0x703517` / `0x703048` | limit-list builders (menu module) | fill the battle char blocks' limit ids (all slots / Set-handler path) from the savemap limit level via helper 0x5C8684(record, level*3+technique), plus the 0x1C attack records from 0x91F6D4/0x91F688 (v2.30.98) |
 | `0x6E5C52` | set_battle_targeting_data (FFNx) | +0x14E/+0x164 â†’ target type/index globals |
 | `0x6E6291` | battle_update_targeting_info (FFNx) | +0x684 â†’ targeting_actor_id 0xDC3C98 |
@@ -8186,7 +8250,7 @@ any of these bytes.
 |---------|--------|-------|
 | `0xDD4700â€“0xDD470C` | shop scrollbar param block | 7 u16s rewritten per state (x, y, scroll, w, h, â€¦) â€” draw plumbing, never read for state |
 | `0xDD4710` | shop layout-struct ptr | â†’ 0x925660 (0x9256D8 in the 0xDC130C==1 variant); window x/y fields feed every draw call. Hottest read in the loop (R=976 in the mining pass) |
-| `0xDD4714` | shop widget-struct ptr | â†’ 0xDD4744 (set every tick at loop entry) |
+| `0xDD4714` | shop widget-struct ptr | â†’ 0xDD4744 (set every tick at loop entry). v2.30.102: ALSO the battle command-menu widget ptr during battle -- the name draw 0x71F35A reads command ids at [ptr]+row*2+0x1A (module-shared slot, not shop-only) |
 | `0xDD4718` / `0xDD4738` | frame counter / parity toggle | wrapper 0x71FF95 housekeeping â€” noise |
 | `0xDD4720` | SHOP_PRICE_TABLE_PTR | u32 â†’ heap price table (items Â·4, materia +0x600) â€” validate before every read |
 | `0xDD4724/28/2C` | SHOP_ID / NAME_IDX / TEXT_IDX | written by init 0x719D7A from the catalog record |

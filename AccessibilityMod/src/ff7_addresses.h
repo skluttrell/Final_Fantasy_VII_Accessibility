@@ -1694,7 +1694,12 @@ constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
 //         0x7B7488: idx<0x80 items, <0x100 weapons, <0x120 armor,
 //         <0x180 accessories — supersedes the mod's manual 128+ split)
 //     5 = command names (file 8 = KERNEL.BIN piece 18) — the section the
-//         heap scan NEVER finds on 2013+7H (log.10: command=0 all session)
+//         heap scan NEVER finds on 2013+7H (log.10: command=0 all session).
+//         ⚠ RAW-id-indexed: the engine's command-menu draw (call site
+//         0x71F35A, byte-verified 2026-08-09) pushes the menu row's id
+//         byte ([0xDD4714]+row*2+0x1A) UNADJUSTED — the file has a filler
+//         entry 0 (Echo-S rebuilds it as a "Left" label; the v2.30.100
+//         id-1 assumption spoke every command shifted one down, log.11)
 //     6..9 = battle statics via jump table 0x419A38 (7 COMPOSES into a
 //         scratch buffer = writes — NEVER call 7 from mod threads;
 //         9 returns ENEMY_ATTACK_NAME_TABLE rows, which the mod already
@@ -1707,10 +1712,13 @@ constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
 //   idx+bias < 0xE0 (0x4196F1 cmp/jge) — past that it DROPS the bias and
 //   reads magic entry idx raw (wrong namespace), so callers cap idx at
 //   0xE0-bias (biases 0x7B74A0 = {0,0x38,0x48,0x80}), < 0x100 for 4
-//   (armor/accessory ids never flash in battle), < 0x18 for 5 (the
-//   command file holds 24 entries). Caps live in ResolveViaGameKernelText
-//   (v2.30.101 — earlier 0xE0/0x180/0x18 caps left the bias-skip window
-//   open, and this comment said 0x20 where the code enforced 0x18).
+//   (armor/accessory ids never flash in battle), < 0x20 for 5 (the
+//   command file holds 32 entries — its description sibling enumerates as
+//   exactly 32 in the 2026-08-01 kernel2 dump, and the cmd->branch table
+//   0x6D70A8 tops out at id 0x20 = enemy-action, never a menu id). Caps
+//   live in ResolveViaGameKernelText (v2.30.101 closed the bias-skip
+//   window; v2.30.102 corrected the section-5 cap for raw-id indexing —
+//   the earlier "24 entries"/0x18 figure was the id-1-convention guess).
 constexpr uint32_t GET_KERNEL_TEXT_FN          = 0x0041963C;
 constexpr int      GKT_FILE_BASE               = 8;    // every engine call site
 constexpr int      GKT_SECTION_MAGIC           = 0;

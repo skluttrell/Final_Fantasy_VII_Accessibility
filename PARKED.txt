@@ -2637,6 +2637,29 @@ src=gkt with the name; limit breaks speak what the screen shows;
 Tifa's limit (idx=98) -- note what speaks now; materia-granted
 commands (Mug/Sense) named on 2013+7H; zero REJECT lines in clean
 play; log header v2.30.100.
+2026-08-09 SAME EVENING: the command-menu half of this queue FAILED
+its first play test (log.11: every menu name shifted one down --
+"Left"/"Attack"/"Summon" for Attack/Magic/Item). Root cause: GKT
+section 5 is RAW-id-indexed (engine draw site 0x71F35A byte-proof),
+the .100 id-1 assumption belonged to the heap section only. Fixed in
+v2.30.102; menu-name verification moves to [GKT102] below. The
+non-menu items of this queue (flash names, limits, REJECT lines)
+still ride the next battles unchanged.
+
+[GKT102] v2.30.102 verify queue -- battle command menu raw-id fix
+------------------------------------------------------------------------
+Parked: 2026-08-09 (shipped v2.30.102, deployed both installs
+378F970BCCEE3112, NOT released; full derivation research S8
+v2.30.102). CommandMenuName now passes the RAW command id to GKT
+section 5 (the file has a filler entry 0 -- "Left" on Echo-S) and the
+section-5 cap rose 0x18 -> 0x20 (32-entry file; covers the
+Slash-All/2x-Cut id range). Heap fallback stays id-1 (its signature
+anchors one entry into the file; play-proven).
+Verify next battles: (a) battle menu speaks Attack/Magic/Item/Summon
+correctly on both installs; (b) materia commands (Steal/Sense/Mug...)
+named; a 2x-Cut-class command (id > 0x17) named if one is equipped;
+(c) no "REJECT src=cmdmenu" or sec=5 REJECT lines in clean play;
+(d) log header v2.30.102.
 
 [REVIEW101] v2.30.101 review fixes -- verify queue + skipped findings
 ------------------------------------------------------------------------
