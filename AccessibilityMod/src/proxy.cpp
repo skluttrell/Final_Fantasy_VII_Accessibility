@@ -6285,6 +6285,28 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     HpWatch hp_watch[10] = {};   // indexed by actor slot; 3 is an engine gap
     constexpr ULONGLONG DAMAGE_SETTLE_MS = 400;
 
+    // v2.30.99: damage-DISPLAY watcher (user request 2026-08-09: "say
+    // 'miss' when any attack misses, enemy or party"). A miss changes no
+    // HP, so the hp_watch above is structurally blind to it — this watch
+    // reads the engine's own floating-number machinery instead: any
+    // effect60 slot whose fn pointer is DISPLAY_DAMAGE_FN is a damage
+    // display in flight, and its data slot holds exactly what the screen
+    // shows (value sentinel -1 = the MISS glyph — see the BATTLE DAMAGE
+    // DISPLAY section of ff7_addresses.h for the full five-pass static
+    // derivation). Non-sentinel values are numbers the hp_watch already
+    // speaks, so they are logged for cross-checking but never spoken here.
+    struct DmgDisplayWatch {
+        bool active;     // fn slot currently holds DISPLAY_DAMAGE_FN
+        bool reported;   // this activation was already read + logged
+    };
+    DmgDisplayWatch dmg_disp[FF7Addr::EFFECT60_SLOT_COUNT] = {};
+    // A miss can display on BOTH value channels of one action (HP and MP
+    // displays are separate effect60 registrations over the same target),
+    // and multi-hit attacks re-display per swing; one spoken "miss" per
+    // target per window is what a sighted player effectively reads.
+    ULONGLONG last_miss_tick[10] = {};
+    constexpr ULONGLONG MISS_DEDUP_MS = 600;
+
     // v2.30.89: the combined ACTION REPORT (user request 2026-08-05:
     // "[enemy] [attack-type] [character name] minus [amount] hp" — one
     // line saying what attacked, whom, and what it did, and the same for
@@ -6557,6 +6579,8 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                 memset(enemy_was_alive, 0, sizeof(enemy_was_alive));
                 party_life[0] = party_life[1] = party_life[2] = PartyLife::Unseen;
                 memset(hp_watch, 0, sizeof(hp_watch));
+                memset(dmg_disp, 0, sizeof(dmg_disp));       // v2.30.99
+                memset(last_miss_tick, 0, sizeof(last_miss_tick));
                 battle_entry_tick = 0;   // re-arm the init grace (v2.30.90)
                 // Reports still open at module exit speak what they have —
                 // normally the quiet timer fired long before, but a
@@ -6928,6 +6952,156 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                         std::wstring msg = fragment + L".";
                         last_announce_tick = now;
                         TTS::Speak(msg, /*interrupt=*/false);
+                    }
+                }
+
+                // ---- v2.30.99: damage-display watcher (misses) ----------
+                // See dmg_disp above. Runs AFTER the hp_watch loop so a
+                // miss fragment lands in the same tick's report delivery,
+                // and BEFORE delivery so it can still attach this tick.
+                {
+                    const ULONGLONG now = GetTickCount64();
+                    for (uint32_t i = 0; i < FF7Addr::EFFECT60_SLOT_COUNT; ++i) {
+                        const uint32_t fn =
+                            *reinterpret_cast<const volatile uint32_t*>(
+                                FF7Addr::EFFECT60_FN_ARRAY + i * 4);
+                        DmgDisplayWatch& d = dmg_disp[i];
+                        if (fn != FF7Addr::DISPLAY_DAMAGE_FN) {
+                            // Slot freed (or holds another effect): the
+                            // next DISPLAY_DAMAGE_FN here is a new display.
+                            d.active = false;
+                            continue;
+                        }
+                        if (!d.active) {
+                            // First sighting. The trigger fn fills the data
+                            // slot AFTER add_fn_to_effect60 stores the fn
+                            // pointer — reading now could catch half-filled
+                            // fields, so wait one full poll (the display
+                            // lives >= ~180ms; a 50ms delay cannot lose it).
+                            d.active   = true;
+                            d.reported = false;
+                            continue;
+                        }
+                        if (d.reported)
+                            continue;
+                        d.reported = true;
+
+                        const uint32_t slot_base = FF7Addr::EFFECT60_DATA_ARRAY +
+                            i * FF7Addr::EFFECT60_DATA_STRIDE;
+                        const int16_t val =
+                            *reinterpret_cast<const volatile int16_t*>(
+                                slot_base + FF7Addr::E60DMG_OFF_VALUE);
+                        const uint32_t actor =
+                            *reinterpret_cast<const volatile uint32_t*>(
+                                slot_base + FF7Addr::E60DMG_OFF_ACTOR);
+                        const uint16_t flags =
+                            *reinterpret_cast<const volatile uint16_t*>(
+                                slot_base + FF7Addr::E60DMG_OFF_FLAGS);
+
+                        // Corpus line for every display sighted (numbers
+                        // cross-check the hp_watch; -2/-3 build the corpus
+                        // that will eventually name those glyphs).
+                        if (Config::Get().debug_log) {
+                            char dbg[160];
+                            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                                "[FF7Access] BATTLE dmgdisp slot=%lu actor=%lu "
+                                "val=%d flags=%04X",
+                                static_cast<unsigned long>(i),
+                                static_cast<unsigned long>(actor),
+                                static_cast<int>(val),
+                                static_cast<unsigned>(flags));
+                            Log::Write(dbg);
+                        }
+
+                        // Only the MISS glyph is spoken. Numbers belong to
+                        // the hp_watch (double-speaking every hit is the
+                        // alternative); -2/-3 are unidentified glyph
+                        // displays — speaking a guessed word for them would
+                        // violate the never-misspeak rule, so they stay
+                        // log-only until a play report pins them.
+                        if (val != FF7Addr::DMGDISP_MISS)
+                            continue;
+                        // Actor 0xF is the engine's "no target" sentinel
+                        // (runner writes it when the anim event has no
+                        // damage record); 3 is the actor-slot gap.
+                        if (actor > 9 || actor == 3)
+                            continue;
+                        if (!Config::Get().speak_battle_damage)
+                            continue;
+                        // Same entry grace as the hp_watch: effect arrays
+                        // are BSS — a slot surviving from the previous
+                        // battle while this one initializes must not speak
+                        // a ghost miss (no real action lands this early).
+                        if (now - battle_entry_tick < BATTLE_INIT_GRACE_MS)
+                            continue;
+                        if (last_miss_tick[actor] != 0 &&
+                            now - last_miss_tick[actor] < MISS_DEDUP_MS)
+                            continue;
+                        last_miss_tick[actor] = now;
+
+                        wchar_t who[64];
+                        if (actor <= 2) {
+                            PartySlotLabel(static_cast<uint8_t>(actor), who,
+                                           _countof(who));
+                        } else {
+                            std::wstring ename;
+                            if (EnemySlotName(static_cast<uint8_t>(actor), ename))
+                                _snwprintf_s(who, _countof(who), _TRUNCATE,
+                                             L"%ls", ename.c_str());
+                            else
+                                _snwprintf_s(who, _countof(who), _TRUNCATE,
+                                             L"enemy %u",
+                                             static_cast<unsigned>(actor - 3u));
+                        }
+                        std::wstring fragment = who;
+                        fragment += L", miss";
+
+                        // Route like an hp_watch fragment, with the display
+                        // moment as the write time — the engine shows the
+                        // glyph mid-animation, squarely inside its own
+                        // action's window. A display in the first 300ms of
+                        // the current turn is the previous action's tail
+                        // (same TURN_MIN_DAMAGE_MS reasoning as hp routing).
+                        ActionReport* home = nullptr;
+                        const char*   home_tag = "orphan";
+                        if (report.open &&
+                            now >= report.open_tick + TURN_MIN_DAMAGE_MS) {
+                            home = &report;      home_tag = "cur";
+                        } else if (prev_report.open) {
+                            home = &prev_report; home_tag = "prev";
+                        } else if (report.open) {
+                            home = &report;      home_tag = "cur-early";
+                        }
+
+                        // Standing rule: every spoken claim ships with a
+                        // log line carrying its discriminating inputs.
+                        char dbg[192];
+                        _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                            "[FF7Access] BATTLE miss actor=%lu slot=%lu "
+                            "flags=%04X home=%s => %ls",
+                            static_cast<unsigned long>(actor),
+                            static_cast<unsigned long>(i),
+                            static_cast<unsigned>(flags), home_tag,
+                            fragment.c_str());
+                        Log::Write(dbg);
+
+                        if (home) {
+                            std::wstring& f = home->frag[actor];
+                            if (f.empty()) {
+                                home->order[home->n_frags++] =
+                                    static_cast<uint8_t>(actor);
+                                f = fragment;
+                            } else {
+                                f += L", miss";
+                            }
+                            home->frag_tick = now;
+                        } else {
+                            // No action owns it: standalone, queued so it
+                            // never clips in-flight speech (v2.12.1 rule).
+                            std::wstring msg = fragment + L".";
+                            last_announce_tick = now;
+                            TTS::Speak(msg, /*interrupt=*/false);
+                        }
                     }
                 }
 

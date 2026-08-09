@@ -1820,6 +1820,67 @@ constexpr uint32_t SCENE_MSG_BASE         = 0x009AD1E0;
 constexpr uint32_t SCENE_MSG_OFFSETS      = 0x009AD9E0;
 constexpr int16_t  SCENE_MSG_MIN_IDX      = 0x100;      // >= this = scene dialogue
 
+// ---------------------------------------------------------------------------
+// BATTLE DAMAGE DISPLAY (v2.30.99) — the floating number / "MISS" sprite a
+// sighted player sees over a target. HP polling cannot see a miss (nothing
+// changes), so the mod watches the engine's own display machinery instead.
+// Fully static derivation 2026-08-09 (investigate/ff7_battle_miss_static*.py,
+// five passes; FFNx anchor: ff7_data.h "Display battle damage" block —
+// display_battle_damage_5BB410 = gav(battle_sub_425D29, 0x3D), chain
+// verified byte-for-byte on our exe).
+//
+// FULL DATA FLOW (for the record; the mod only polls the LAST stage):
+//   1. Damage calc: the attack context [0x99CE0C] resolves per-target
+//      results; helper 0x5DA562(anim_event, hp_val, hp_flags, mp_val,
+//      mp_flags) calls the record ALLOCATOR 0x436DA7: idx = ring counter
+//      [0x9AEA98] & 0x7F; record = 0x9ABA08 + idx*0xE (128 records of 14
+//      bytes; battle-init memset at 0x41CCE0 confirms 0x1C0 dwords).
+//      Record: +0 target actor (word), +2 HP display value, +4 HP flags,
+//      +6/+8 barrier & m-barrier gauge snapshots (0xFFFF = none; consumed
+//      by 0x4371FC into the party HUD gauge words 0x9A8B4C/0x9A8B4E),
+//      +0xA MP display value, +0xC MP flags. The record index is stamped
+//      into the anim event's byte +3 ("damageEventQueueIdx", FFNx ff7.h).
+//   2. Anim-event runner (0x42CFxx): copies the record into a staging row
+//      [0xBFD088]*0xC + 0xBF2A40 (value/flags/MP pair; parallel target-id
+//      byte table 0xC05E68[0x4E], searched by 0x42DE25).
+//   3. Animation script opcode 0xC2 "display damage" (handler inside
+//      run_animation_script at 0x4223AC; two more trigger paths 0x42604E
+//      and 0x42E156) posts an effect100 that in turn registers effect60
+//      fn DISPLAY_DAMAGE_FN with the value/actor/flags in its data slot.
+//   4. display_battle_damage (0x5BB410) draws from its effect60 slot:
+//      value >= 0 renders digits (draw helper 0x5BB756; flags bit 2 adds
+//      a tag glyph — the MP marker); value -1/-2/-3 render fixed GLYPH
+//      sprites instead — -1 is the MISS-class display (drawn at texture
+//      (0x80,0x88) 24x11 in the battle HUD atlas), -2/-3 are two further
+//      glyph displays whose game meaning is not yet play-identified
+//      (logged, never spoken, until a play report names them).
+//
+// THE MOD'S WATCH: poll the effect60 FUNCTION array — add_fn_to_effect60
+// (0x5BED92, disasm'd) stores the fn pointer at [EFFECT60_FN_ARRAY+i*4]
+// (60 slots, first free wins) and pairs it with the 0x20-byte data slot at
+// EFFECT60_DATA_ARRAY + i*0x20. A slot whose fn == DISPLAY_DAMAGE_FN is a
+// damage display in flight; its data slot carries exactly what the screen
+// shows. The display lives >= 11 engine frames (n_frames init 0xB at
+// 0x5BB460, 15fps battle engine => >= 180ms even under FFNx's frame
+// multiplier, which PATCHES the count UP), so a 50ms poll cannot miss it.
+// ⚠ The trigger fn fills the data slot right AFTER add_fn_to_effect60
+// returns — a poll landing between the two would read half-filled fields,
+// so the reader waits one full poll after first sighting the fn pointer
+// (the one-frame-pending pattern, same as the dialog rawptr rule).
+constexpr uint32_t EFFECT60_FN_ARRAY     = 0x00BFB1B0; // 60 x u32 fn pointer
+constexpr uint32_t EFFECT60_DATA_ARRAY   = 0x00BFC3A0; // 60 x 0x20-byte slot
+constexpr uint32_t EFFECT60_SLOT_COUNT   = 60;         // loop bound in 0x5BED92
+constexpr uint32_t EFFECT60_DATA_STRIDE  = 0x20;
+constexpr uint32_t DISPLAY_DAMAGE_FN     = 0x005BB410; // the display effect fn
+// Data-slot fields of a DISPLAY_DAMAGE_FN effect (written by 0x425D29 /
+// its two sibling trigger paths, read back by 0x5BB410's draw calls):
+constexpr uint32_t E60DMG_OFF_VALUE      = 0x0E; // s16 displayed value / sentinel
+constexpr uint32_t E60DMG_OFF_ACTOR      = 0x10; // u32 target actor slot 0-9
+constexpr uint32_t E60DMG_OFF_FLAGS     = 0x14; // u16 render flags (bit2 = MP tag)
+constexpr int16_t  DMGDISP_MISS          = -1;   // glyph: the MISS display
+constexpr int16_t  DMGDISP_GLYPH2        = -2;   // glyph, meaning unidentified
+constexpr int16_t  DMGDISP_GLYPH3        = -3;   // two-line glyph, unidentified
+
 constexpr uint32_t BATTLE_MENU_STATE       = 0x0091EF9C; // u16 current widget
 constexpr uint32_t BATTLE_MENU_PREV_STATE  = 0x0091EF98; // u16 previous widget
 constexpr uint32_t BATTLE_ACTIVE_SLOT      = 0x00DC3C7C; // u8 party slot 0-2

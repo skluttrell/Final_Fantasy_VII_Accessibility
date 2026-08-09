@@ -250,6 +250,10 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `BATTLE_LIMIT_COUNT` | `0x00DC35A4` | u16 = widget-init copy of the limit list's count byte (table+6); sits just before BATTLE_MENU_BUSY. Doc-only -- the mod reads the per-slot count byte (v2.30.98) |
 | `BATTLE_TEXT_QUEUE` | `0x00BF1EB8` | Battle text display queue (v2.36): battle_text_data[64], **stride 6**, s16 buffer_idx at +0 (-1 = empty slot, â‰¥0x100 = scene AI dialogue). FFNx name-anchored (add_text_to_display_queue+0x25). The channel BattleMessageThread reads for the scorpion tail warning etc. |
 | `SCENE_MSG_BASE / _OFFSETS` | `0x009AD1E0 / 0x009AD9E0` | Current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0 + (idx-0x100)Â·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD â†’ 0x41D2E5). v2.36 |
+| `EFFECT60_FN_ARRAY` | `0x00BFB1B0` | u32[60] effect60 function pointers (add-fn 0x5BED92 disasm, v2.30.99): first zero slot wins; paired data slot = 0xBFC3A0 + idx*0x20, current-executing idx word [0xBF2DF4]. THE mod's damage-display watch: fn == 0x5BB410 means a floating damage number/glyph is on screen (READ BY MOD, 50ms poll) |
+| `EFFECT60_DATA_ARRAY` | `0x00BFC3A0` | 60 x 0x20-byte effect60 data slots. For a 0x5BB410 (damage display) effect: s16 display value @+0x0E (>=0 digits; -1 MISS glyph; -2/-3 unidentified glyphs), u32 target actor slot @+0x10, u16 render flags @+0x14 (bit2 = MP tag glyph). The trigger fills fields AFTER add_fn stores the pointer, so the mod reads one poll late (v2.30.99) |
+| `DISPLAY_DAMAGE_FN` | `0x005BB410` | display_battle_damage (FFNx name; = gav(battle_sub_425D29,0x3D), chain verified byte-for-byte on our exe): the effect60 fn drawing the floating number/MISS. Draw helper 0x5BB756 switches on the value word: -1 = MISS glyph tex(0x80,0x88) 24x11, -2 = glyph (0x20,0xE0), -3 = two-line glyph (0x20,0xEA)+(0x20,0xF4), else digits (v2.30.99 five-pass static, ff7_battle_miss_static*.py) |
+| *(damage-display source chain)* | `0x9ABA08` etc. | doc-only (v2.30.99): damage-event records at 0x9ABA08, stride 0xE x 128 (ring index u32 [0x9AEA98] & 0x7F; allocator 0x436DA7; filler 0x5DA562(event, hp_val, hp_flags, mp_val, mp_flags) called from the attack context ptr [0x99CE0C] resolution): +0 target actor, +2 HP display value, +4 HP flags, +6/+8 barrier/m-barrier gauge snapshots (consumer 0x4371FC -> HUD words 0x9A8B4C/0x9A8B4E), +0xA MP display value, +0xC MP flags; record idx is stamped into anim-event byte +3 (FFNx damageEventQueueIdx; anim-event queue 0x9ACB98, stride 0xC). The runner (0x42CFxx) copies records to staging rows 0xBF2A40 stride 0xC (write-row byte 0xBFD088, parallel target-id bytes 0xC05E68[0x4E], searched by 0x42DE25); anim opcode 0xC2 (handler 0x4223AC) plus sibling paths 0x42604E/0x42E156 post the staged values to the effect60 display |
 | `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id (âœ“ live: 1 on Attack confirm, 2 on Magic, 19=0x13 on Right press = Change-row, 20 on Limit) |
 | `BATTLE_ISSUED_ACTION` | `0x00DC3C78` | u16 = FFNx issued_action_id (âœ“ live: 30 after confirming Ice) |
 | `BATTLE_TARGET_TYPE/INDEX` | `0x00DC3C90/94` | u8 pair = FFNx issued_action_target_type/index. INDEX tracks the moving target selection live (âœ“: 4â†”5 across enemies, 0 = party slot 0) |
@@ -7172,6 +7176,96 @@ future session); the target_flags byte at +3 is decoded but unused.
 
 ---
 
+### v2.30.99 (2026-08-09): misses spoken -- the damage-display writer found
+
+**User request**: "say 'miss' when any attack misses, whether from an
+enemy or my party." The documented residual since v2.30.84: a miss
+changes no HP, so the hp_watch is structurally blind to it -- closing it
+needed the engine's damage-display writer, parked until asked for.
+
+**Static derivation (five offline passes, no game launch)** --
+investigate/ff7_battle_miss_static.py .. _static5.py, logs
+battle_miss_static*_20260809_*.log. Lead: the vendored FFNx checkout's
+ff7_data.h "Display battle damage" block names
+display_battle_damage_5BB410 = gav(battle_sub_425D29, 0x3D); every FFNx
+chain hop verified byte-for-byte on our exe (run_animation_script =
+grc(0x42A5EB,0xB8) = 0x41FBA4; gav(ras,0x2850) = 0x425D29; gav +0x3D =
+0x5BB410; gav +0xA8 = 0x425E5F). Full decode, source to pixels:
+
+1. Damage calc resolves per-target results in the attack context
+   [0x99CE0C]; helper 0x5DA562(event, hp_val, hp_flags, mp_val,
+   mp_flags) calls allocator 0x436DA7: ring idx [0x9AEA98] & 0x7F,
+   record 0x9ABA08 + idx*0xE (128 x 14 bytes -- battle-init memset
+   0x41CCE0 clears exactly 0x1C0 dwords). Record: +0 target actor, +2
+   HP display value, +4 HP flags, +6/+8 barrier/m-barrier gauge
+   snapshots (consumer 0x4371FC -> HUD gauge words 0x9A8B4C/0x9A8B4E),
+   +0xA MP display value, +0xC MP flags; the record idx is stamped into
+   the anim event's byte +3 -- FFNx ff7.h's damageEventQueueIdx,
+   anim-event queue 0x9ACB98 stride 0xC.
+2. The anim-event runner (0x42CFxx) copies the record to a staging row
+   0xBF2A40 + [0xBFD088]*0xC (parallel target bytes 0xC05E68[0x4E],
+   searched by 0x42DE25).
+3. Animation-script opcode 0xC2 "display damage" (handler 0x4223AC
+   inside run_animation_script; sibling trigger 0x42604E and direct
+   copier 0x42E156 are two more paths) posts an effect100 (fn 0x425D29)
+   which registers effect60 fn 0x5BB410 with value/actor/flags in its
+   data slot.
+4. display_battle_damage 0x5BB410 (an effect60 fn) draws from its slot:
+   value >= 0 renders digits (draw helper 0x5BB756; flags bit 2 adds a
+   tag glyph -- the MP marker); value -1/-2/-3 render fixed glyphs.
+   -1 draws the sprite at battle-HUD texture (0x80,0x88) 24x11 = the
+   MISS display; -2 and -3 (a two-line stack) are further glyph
+   displays not yet play-identified.
+
+Effect60 registry (add-fn 0x5BED92 disasm): fn array 0xBFB1B0[60]
+(first zero slot wins), data slots 0xBFC3A0 + idx*0x20, current-index
+word [0xBF2DF4]. Effect100 twins: 0x5BEC50 / 0xBF2858[100] / 0xBFB718,
+idx word [0xBF23B8] -- which EQUALS the recorded
+G_SMALL_BATTLE_MODEL_STATE base; both consumers demonstrably work, the
+overlap is recorded unresolved (not load-bearing).
+
+**Mod changes (BattleActionThread, no new cfg key)**: dmg_disp[60]
+watcher each 50ms poll while mode==2 -- a fn slot turning 0x5BB410 is a
+display in flight; fields are read ONE POLL LATE (the trigger fills the
+data slot after add_fn returns -- the rawptr one-frame lesson applied
+preemptively; the display lives >= 11 engine frames, so 50ms cannot
+lose it). Always logs "BATTLE dmgdisp slot= actor= val= flags=" (debug)
+-- numbers cross-check the hp_watch and -2/-3 sightings build the
+naming corpus. val == -1 speaks: "<target>, miss" routed EXACTLY like
+an hp_watch fragment (display moment = write time; TURN_MIN_DAMAGE_MS
+routes an early display to the lingering previous action), standalone
+queued line when no report is open; "BATTLE miss actor= slot= flags=
+home=" logs every spoken claim. Gates: speak_battle_damage (the
+floating-number parity key -- glossary updated, block spliced into BOTH
+installed cfgs), the 2500ms battle-entry grace (effect arrays are BSS;
+a slot surviving from the last battle must not speak a ghost), 600ms
+per-target dedup (an action can register HP and MP displays for one
+target). -2/-3 and out-of-range actors (0xF = the runner's no-target
+sentinel) never speak. BONUS: a missed action's combined line now
+speaks at the miss fragment's quiet timer (~1s) instead of waiting out
+the 5s no-effect deadline.
+
+**Verify queue [MISS99]** (any battle with a whiff -- Whole Eater and
+high-evade targets are reliable): (a) an enemy attack missing a party
+member speaks "<enemy>, <attack>, <char>, miss."; (b) a party attack
+missing speaks "<char>, Attack, <enemy>, miss."; (c) one "miss" per
+missed action (no HP/MP double-speak); (d) every spoken miss has a
+"BATTLE miss" log line and every display a "BATTLE dmgdisp" line
+(debug); (e) any val=-2/-3 in the log: note what the screen showed --
+that names the glyphs; (f) log header v2.30.99; (g) first seconds of a
+battle after a previous battle: no ghost miss (entry grace); (h) a
+multi-target miss (enemy AoE missing two members) lists both targets.
+
+**Residual**: crits are STILL invisible (the crit display is a render
+variant of the digits path -- the flags word's unmapped bits are the
+suspect; the dmgdisp corpus will show which bit rides critical hits);
+MP damage numbers are now observable (val >= 0 with flags bit 2) but
+deliberately unspoken -- hp_watch owns numbers today, MP-damage speech
+is a cheap follow-up if wanted; -2/-3 glyph meanings unknown until a
+play report catches one.
+
+---
+
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
 
 ### Overview
@@ -7603,6 +7697,9 @@ module uses (0x76713B/163/172 -> DEST field/triangle/direction).
 | `0x923418` | SHOP_CATALOG | shop records, stride 0x54 (name idx, greeting-set idx, ware count, ware[10]{type,id}) â€” the complete what-every-shop-sells table, indexable offline (v2.30.28) |
 | `0x9AD1E0` / `0x9AD9E0` | SCENE_MSG_BASE / SCENE_MSG_OFFSETS | current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0+(idxâˆ’0x100)Â·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD â†’ 0x41D2E5). v2.36 scene-message reader |
 | `0x9AE12C` | BATTLE_DROPS_COUNT | u32 count for the drops array 0x99E2F0 (battle results, v2.35). Sits just past the actor_vars block |
+| `0x9ABA08` | damage-event records | stride 0xE x 128 ring (index u32 0x9AEA98 & 0x7F, allocator 0x436DA7, filler 0x5DA562): +0 target actor, +2 HP display value (-1 = MISS), +4 HP flags, +6/+8 barrier gauge snapshots (0x4371FC -> 0x9A8B4C/0x9A8B4E), +0xA/+0xC MP value/flags. Battle-init memset (0x41CCE0, 0x1C0 dwords) proves the extent. The SOURCE of every floating damage number/MISS (v2.30.99; doc-only -- the mod watches the effect60 stage instead) |
+| `0x9ACB98` | anim-event queue | stride 0xC entries (byte +0 actor, +2 anim script id, +3 damage-record idx = FFNx damageEventQueueIdx); walked via word [0x9AAD7A + n*0xC] by the runner 0x42CFxx (v2.30.99; doc-only) |
+| `0x99CE0C` | attack context POINTER | dword -> the damage calc's working struct (+0x208 target list, +0x214 pushed to the display filler, +0x218/+0x220 flag words); the value/sentinel decision happens against this struct before 0x5DA562 files the record (v2.30.99; doc-only, pointer NOT validated for polling -- do not read without a guard) |
 | `0x9ADF0C` | kernel2 data pointer candidate | REJECTED â€” reads 0 at runtime (2026-07-11) |
 | *(heap, varies)* | decompressed kernel2 text block | magic/item/weapon name sections observed stable for a whole session; each section = u16 offset table + 0xFF-terminated strings, `u16[base]` = offset of entry 0. Located at runtime by English signature scan ('Cure\|Cure2', 'Potion\|Hi-Potion', 'Buster Sword', 'Attack\|Magic') + walk-back rule `u16[base]==distance` (v2.7). No stable static anchor exists â€” the only exe-static pointers into the block are font tables (0xCFF3F8 cluster). âš  **"resident for process lifetime" was DISPROVED for the COMMAND-name section 2026-07-16** (v2.22.1): it lives in a TRANSIENT battle allocation, freed/reused between battles â€” a cached pointer decoded reused binary as speech. ALL section pointers are now head-signature revalidated on every use (ValidatedSection, proxy.cpp); treat any kernel2 pointer as potentially stale. v2.30.77 ESCALATION: a HEAD signature alone is NOT enough -- a stale low-address copy can keep its head while its BODY is reused under it (the mid-battle "head gone"/junk-limit-name case); every section must ALSO pass the body invariant (u16 entry-offset table monotone NON-DECREASING with all offsets in [table_end, 0x8000] -- proven offline on all 12 sections of BOTH installs' kernel2.bin, ff7_kernel2_offset_monotonic.py; zero-length dummy entries make equal runs, hence non-decreasing not strictly-increasing), enforced at acceptance AND every use (SectionBodyPlausible, proxy.cpp) |
 
@@ -7614,6 +7711,11 @@ module uses (0x76713B/163/172 -> DEST field/triangle/direction).
 | `0xBE1178` | G_BATTLE_MODEL_STATE | stride 0x1AEC Ã— 10 slots â‰ˆ ends 0xBF1EF0 |
 | `0xBF23B8` | G_SMALL_BATTLE_MODEL_STATE | stride 0x74; starts right after the large array |
 | `0xBF1EB8` | BATTLE_TEXT_QUEUE | battle text display queue, battle_text_data[64] stride 6 (s16 buffer_idx@+0, -1=empty, â‰¥0x100=scene AI dialogue). FFNx-anchored (add_text_to_display_queue+0x25). v2.36's scene-message channel (scorpion tail warning etc.) |
+| `0xBF2A40` | damage-display STAGING rows | stride 0xC (HP value/flags, record idx, MP value/flags), write-row byte 0xBFD088, parallel target-id bytes 0xC05E68[0x4E] (mapper 0x42DE25); copied from the 0x9ABA08 records by the anim-event runner (v2.30.99; doc-only) |
+| `0xBF2DF4` | effect60 CURRENT index | word naming the executing effect60 slot, written by the executor per call (v2.30.99; doc-only) |
+| `0xBFB1B0` | EFFECT60_FN_ARRAY | u32[60] fn pointers; entry == 0x5BB410 = damage display in flight (v2.30.99, READ BY MOD 50ms poll) |
+| `0xBFC3A0` | EFFECT60_DATA_ARRAY | 60 x 0x20 data slots; for a 0x5BB410 effect: s16 value +0x0E (-1 = the MISS glyph, -2/-3 unidentified glyphs, else digits), u32 target actor +0x10, u16 flags +0x14 bit2 = MP tag (v2.30.99, READ BY MOD) |
+| `0xBF2858` / `0xBFB718` | effect100 twin arrays | fn ptrs [100] + 0x20-byte data slots (add-fn 0x5BEC50); current idx word read at [0xBF23B8]. WARNING: that idx address EQUALS the recorded G_SMALL_BATTLE_MODEL_STATE base and both consumers behave in play -- unresolved overlap, recorded v2.30.99, not load-bearing for the mod (doc-only) |
 | `0xBFC3E0â€“0xBFC5E0` | SFX/audio playback buffer | random churn; noise source in scans |
 
 The battle command-menu CURSOR is confirmed NOT in either known per-actor array
