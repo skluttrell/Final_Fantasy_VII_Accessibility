@@ -1622,21 +1622,41 @@ constexpr uint32_t DISPLAY_BATTLE_ACTION_TEXT = 0x42782A;
 //   exe's own static tables (0x7B74A0 bias, 0x7B74A8 file, 0x7B7488/8A/98
 //   item-namespace remap), read 2026-07-11 from the exe image.
 //
-//   Kernel-text section STORAGE: sections live in ONE heap block (address
-//   varies per run), each section = u16 entry-offset table followed by
-//   0xFF-terminated FF7-encoded strings; entry N is at base + u16[base+N*2],
-//   and u16[base+0] equals the table's byte size (offset of first string).
-//   The static scratch copy at 0x9A13C8 (offset table 0x9A7FC8) that
-//   get_kernel_text itself uses is EMPTY during battle (menu-module only),
-//   and the documented result pointer 0xDC208C is never written under FFNx
-//   (FFNx replaces the whole consumer path) — neither can be used.
-//   The DLL locates each needed section by scanning its own process memory
-//   for the section's known first entries (signature), then validating with
-//   the u16[base]==distance rule. ⚠ NOT once-per-process (v2.22.1
-//   correction, 2026-07-23 audit fixed this stale comment): the COMMAND
-//   section proved to live in a TRANSIENT battle allocation, so proxy.cpp's
-//   ValidatedSection() re-checks every cached section pointer's head
-//   signature before EVERY use and rescans on mismatch. Signatures:
+//   Kernel-text section STORAGE — CORRECTED MODEL (v2.30.100, 2026-08-09,
+//   investigate/ff7_kernel2_battle_source_static.py + FFNx/src/ff7/kernel.cpp):
+//   each section = u16 entry-offset table followed by 0xFF-terminated
+//   FF7-encoded strings; entry N is at base + u16[base+N*2], and u16[base+0]
+//   equals the table's byte size (offset of first string). WHERE the bases
+//   live depends on FFNx:
+//     - Vanilla engine: kernel2 files are unpacked into the static scratch
+//       0x9A13C8 by bump-allocator 0x419379, which records each file's
+//       offset in the u16 table 0x9A7FC8 (fill cursor 0x9A8120, file
+//       counter 0x9A8124 — all BSS, runtime-filled).
+//     - Under FFNx (BOTH supported installs): FFNx REPLACES the allocator
+//       and kernel2_get_text (0x419457) — each file becomes its own
+//       external_malloc block tracked in FFNx.dll's kernel2_sections[]
+//       array (lifts the scratch size limit for retranslation mods), and
+//       kernel2_reset_counters() FREES AND REALLOCATES all of them on any
+//       kernel2 reload. The v2.7 probe that found the scratch "ALL ZERO in
+//       battle" was seeing FFNx's replacement, not a menu-module lifetime
+//       rule — the scratch is simply never used under FFNx.
+//   EITHER WAY, the game's outer dispatcher get_kernel_text (0x41963C,
+//   GET_KERNEL_TEXT_FN below) resolves names correctly — the in-battle
+//   limit window (draw 0x6DF40D) and the flash-text consumer (0x6D72C6)
+//   both call it and always render the right text on screen. v2.30.100
+//   therefore calls it too (ResolveViaGameKernelText in proxy.cpp,
+//   SEH-guarded) as the PRIMARY battle name source.
+//   The legacy path — the DLL locating sections by scanning process memory
+//   for known first entries (signature + u16[base]==distance rule) — is
+//   kept as FALLBACK ONLY for these branches; it can latch a stale/partial
+//   copy left behind by kernel2_reset_counters (log.10 2026-08-09: a copy
+//   with valid entries 0..~95 but binary garbage at the limit-name tail
+//   passed every structural check and spoke junk — the offset TABLE
+//   survives reuse, the text bytes do not). ⚠ NOT once-per-process
+//   (v2.22.1 correction, 2026-07-23 audit fixed this stale comment): the
+//   COMMAND section proved to live in a TRANSIENT battle allocation, so
+//   proxy.cpp's ValidatedSection() re-checks every cached section pointer's
+//   head signature before EVERY use and rescans on mismatch. Signatures:
 //     magic-names:  'Cure'|'Cure2'         (entries 0..55 spells,
 //                                            56..71 summon names,
 //                                            72..95 enemy skills,
@@ -1653,9 +1673,47 @@ constexpr uint32_t DISPLAY_BATTLE_ACTION_TEXT = 0x42782A;
 constexpr uint32_t G_ACTIVE_ACTOR_ID          = 0x00BE1170;
 constexpr uint32_t G_BATTLE_MODEL_STATE        = 0x00BE1178;
 constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
-// GET_KERNEL_TEXT (the real one) is sub_41963C — but calling it is useless in
-// battle: it reads the menu-module scratch tables, which are empty then.
-// v2.7 reads the underlying heap sections directly instead (see above).
+
+// The game's own text resolver: const char* __cdecl get_kernel_text(int
+// section, int idx, int file_base) at 0x41963C. v2.30.100 calls this
+// DIRECTLY (see the corrected storage model above) — it is the exact
+// function the on-screen flash box and the battle limit window render
+// from, so whatever it returns is sighted parity by construction, under
+// FFNx replacement, 7th Heaven retranslations, or vanilla alike.
+// Disassembled 2026-08-09 (ff7_kernel2_battle_source_static.py +
+// ff7_gkt_consumer_tables_static.py, exe .data tables byte-verified):
+//   section semantics (bias table 0x7B74A0 = 00 38 48 80, file map
+//   0x7B74A8 = 01 01 01 01 02 00 → kernel2 file = map[section] +
+//   file_base, and every engine call site passes file_base = 8):
+//     0 = magic names (bias 0;   file 9  = KERNEL.BIN piece 19)
+//     1 = summon names (idx+56, same file)
+//     2 = enemy-skill names (idx+72, same file)
+//     3 = LIMIT names (idx+128, same file; idx==0x7F → '????' sentinel
+//         remapped to 0xFF internally → returns the empty default)
+//     4 = item names WITH the engine's own namespace remap (thresholds
+//         0x7B7488: idx<0x80 items, <0x100 weapons, <0x120 armor,
+//         <0x180 accessories — supersedes the mod's manual 128+ split)
+//     5 = command names (file 8 = KERNEL.BIN piece 18) — the section the
+//         heap scan NEVER finds on 2013+7H (log.10: command=0 all session)
+//     6..9 = battle statics via jump table 0x419A38 (7 COMPOSES into a
+//         scratch buffer = writes — NEVER call 7 from mod threads;
+//         9 returns ENEMY_ATTACK_NAME_TABLE rows, which the mod already
+//         reads directly)
+//   Sections 0..5 are PURE READS (const .data remap tables + the
+//   kernel2_get_text pointer walk) — safe from any thread. The only
+//   hazard is a concurrently freed FFNx section block (kernel2 reload),
+//   hence the SEH guard + text plausibility gate at the call site.
+//   idx guard: for sections<4 the engine only applies the bias while
+//   idx+bias < 0xE0; a wild idx would walk past the offset table, so
+//   callers cap idx (< 0xE0 for 0..3, < 0x180 for 4, < 0x20 for 5).
+constexpr uint32_t GET_KERNEL_TEXT_FN          = 0x0041963C;
+constexpr int      GKT_FILE_BASE               = 8;    // every engine call site
+constexpr int      GKT_SECTION_MAGIC           = 0;
+constexpr int      GKT_SECTION_SUMMON          = 1;
+constexpr int      GKT_SECTION_ESKILL          = 2;
+constexpr int      GKT_SECTION_LIMIT           = 3;
+constexpr int      GKT_SECTION_ITEM            = 4;
+constexpr int      GKT_SECTION_COMMAND         = 5;
 constexpr uint32_t BATTLE_ACTOR_DATA           = 0x00DC38E0; // FFNx battle_actor_data
 constexpr uint32_t BATTLE_ACTOR_PENDING        = 0x00DC38E8; // +0x08 formation_entry
 constexpr uint32_t BATTLE_ACTOR_CMD_INDEX      = 0x00DC38EC; // +0x0C command_index

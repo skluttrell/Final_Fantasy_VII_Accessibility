@@ -2333,6 +2333,176 @@ static void ScanKernel2Sections(bool urgent = false)
     InterlockedExchange(&g_k2_scan_busy, 0);
 }
 
+// ---------------------------------------------------------------------------
+// v2.30.100: the junk-speech class closed at BOTH ends (log.10 2026-08-09:
+// "Aerith, +,+ ((((((%%%%..." — limit-name upgrades spoke binary garbage
+// with ok=1 twice in one session, and identical bytes across battles).
+//
+// ROOT CAUSE (ff7_kernel2_battle_source_static.py + FFNx/src/ff7/kernel.cpp,
+// full story in ff7_addresses.h SECTION 1c): under FFNx every kernel2 text
+// file is a separate external_malloc block, freed and reallocated by
+// kernel2_reset_counters() on any kernel2 reload. The mod's heap signature
+// scan latched such a freed-and-partially-reused copy: its offset table and
+// early entries (Ice/Bolt/Cure all session) survived — so the v2.30.77
+// SectionBodyPlausible offset-table walk passed — while the tail where the
+// limit names live was reused as binary data. A structural check on the
+// TABLE can never catch rot in the TEXT.
+//
+// FIX, two independent layers:
+//   1. PRIMARY SOURCE: call the game's own get_kernel_text (0x41963C) —
+//      the exact function the on-screen flash box and limit window render
+//      from, correct by construction under FFNx/retranslations/vanilla.
+//      SEH-guarded (a kernel2 reload can free FFNx's block mid-read).
+//   2. TEXT PLAUSIBILITY GATE on every battle name from ANY source: real
+//      action names are short and letter-heavy; every observed junk line
+//      is long runs of punctuation/spaces (raw bytes 0x02..0x0F). A name
+//      failing the gate is dropped (generic label speaks instead) and its
+//      raw bytes are logged — junk can never reach the screen reader
+//      again, and the log keeps the evidence for the corpus.
+// ---------------------------------------------------------------------------
+
+// Is this decoded string shaped like a real action/command name?
+// Real names ("Braver", "Choco/Mog", "1000 Needles", "Hi-Potion", Echo-S
+// retranslations alike) are <= ~24 chars and dominated by letters/digits.
+// Observed junk is the opposite: long, and dominated by punctuation runs
+// ("((((((%%%%", "-./.!###\"\"##\"-,") with multi-space gaps (0x00 bytes).
+// Rules are deliberately loose enough that no legitimate kernel name can
+// fail: trailing spaces are ignored; single punctuation marks and pairs
+// pass; rejections are (a) 3+ RUNS of the same non-alphanumeric char
+// (never in a real name, always in junk — and '????' padding entries
+// SHOULD read as unnamed), (b) 3+ extended glyphs (>0x7E: the é/ü table
+// region — decoded junk tails like "ÑÖ ÉàÅí" are full of them, real
+// names have at most an accent or two), (c) a punctuation-majority
+// string. KNOWN LIMITATION (accepted): sparse-letters junk like the
+// v2.30.76 "% Y-c'  sSd p vge tex" shape passes these rules — rejecting
+// it would need tightness that risks real retranslated names; the
+// gkt-primary source is the defense for that class.
+static bool PlausibleActionName(const std::wstring& name)
+{
+    size_t len = name.size();
+    while (len > 0 && name[len - 1] == L' ')   // ignore trailing pad
+        --len;
+    if (len == 0 || len > 32)
+        return false;
+    size_t alnum = 0, ext = 0, run = 0;
+    wchar_t prev = 0;
+    for (size_t i = 0; i < len; ++i) {
+        const wchar_t c = name[i];
+        run = (c == prev) ? run + 1 : 1;
+        prev = c;
+        const bool is_alnum =
+            (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
+            (c >= L'0' && c <= L'9');
+        if (is_alnum)
+            ++alnum;
+        else if (run >= 3)
+            return false;
+        if (c > 0x7E && ++ext >= 3)
+            return false;
+    }
+    return alnum * 3 >= len;   // at least a third letters/digits
+}
+
+// The game's own text resolver (see FF7Addr::GET_KERNEL_TEXT_FN notes).
+typedef const char* (__cdecl* GetKernelTextFn)(int section, int idx,
+                                               int file_base);
+
+// SEH-guarded call + bounded copy-out. The copy must live INSIDE the
+// guard: under FFNx the returned pointer targets an external_malloc block
+// that kernel2_reset_counters() can free on a concurrent kernel2 reload —
+// reading it then is the AV this catches. Separate noinline function
+// because MSVC forbids __try where C++ unwinding is required (C2712);
+// holds no C++ objects. Returns copied byte count (0xFF terminator not
+// included), 0 for an immediately-empty entry, -2 on access violation.
+static __declspec(noinline) int GKTFetchRaw(int section, int idx,
+                                            uint8_t* buf, int buf_len)
+{
+    __try {
+        const GetKernelTextFn fn =
+            reinterpret_cast<GetKernelTextFn>(FF7Addr::GET_KERNEL_TEXT_FN);
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(
+            fn(section, idx, FF7Addr::GKT_FILE_BASE));
+        if (!p)
+            return -1;
+        int n = 0;
+        while (n < buf_len - 1 && p[n] != 0xFF) {
+            buf[n] = p[n];
+            ++n;
+        }
+        buf[n] = 0xFF;
+        return n;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER
+                    : EXCEPTION_CONTINUE_SEARCH) {
+        return -2;
+    }
+}
+
+// Debug-log a gate rejection WITH the discriminating evidence (the v2.30.81
+// standing rule): raw bytes for the gkt path, so the corpus shows exactly
+// what memory was decoded if the gate ever fires again.
+static void LogRejectedName(const char* src, int section, uint32_t idx,
+                            const uint8_t* raw, int raw_len)
+{
+    if (!Config::Get().debug_log)
+        return;
+    char hex[3 * 24 + 4] = {};
+    const int n = raw_len < 24 ? raw_len : 24;
+    for (int i = 0; i < n; ++i)
+        _snprintf_s(hex + i * 3, sizeof(hex) - static_cast<size_t>(i) * 3,
+                    _TRUNCATE, "%02X ", raw[i]);
+    char dbg[224];
+    _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+        "[FF7Access] BATTLE name REJECT src=%s sec=%d idx=%lu bytes=%s",
+        src, section, static_cast<unsigned long>(idx), hex);
+    Log::Write(dbg);
+}
+
+// Resolve one name through the game's get_kernel_text. Returns true only
+// for a decoded, plausibility-gated, non-blank name; every failure path
+// leaves the caller free to fall back (heap section, then generic label).
+static bool ResolveViaGameKernelText(int section, uint32_t idx,
+                                     std::wstring& out)
+{
+    // Index caps mirror the engine's own guards (GET_KERNEL_TEXT_FN notes):
+    // sections 0-3 bias-guard at 0xE0; section 4's remap tops out at 0x180
+    // (key-item ids never flash in battle); command ids are 1..~0x17 (the
+    // command-names file holds 24 entries — kernel2_get_text itself has NO
+    // bounds check, so the cap here is the only thing preventing an
+    // off-table u16 read).
+    const uint32_t cap = (section <= FF7Addr::GKT_SECTION_LIMIT) ? 0xE0u
+                       : (section == FF7Addr::GKT_SECTION_ITEM)  ? 0x180u
+                                                                 : 0x18u;
+    if (idx >= cap)
+        return false;
+    uint8_t raw[64];
+    const int n = GKTFetchRaw(section, static_cast<int>(idx),
+                              raw, sizeof(raw));
+    if (n <= 0) {
+        if (n == -2 && Config::Get().debug_log) {
+            char dbg[96];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BATTLE gkt AV sec=%d idx=%lu (kernel2 reload?)",
+                section, static_cast<unsigned long>(idx));
+            Log::Write(dbg);
+        }
+        return false;
+    }
+    const uint8_t* text = raw;
+    // Limit names begin with an F8+parameter colour code (2 bytes) — skip
+    // both, same rule as SectionEntryText below.
+    if (text[0] == 0xF8 && n >= 2)
+        text += 2;
+    if (text[0] == 0xFF)
+        return false;
+    out = FF7Text::Decode(reinterpret_cast<const char*>(text));
+    if (PlausibleActionName(out))
+        return true;
+    LogRejectedName("gkt", section, idx, raw, n);
+    out.clear();
+    return false;
+}
+
 // Decode entry `entry` of a kernel2 text section into `out`.
 // Returns false (leaving generic-label fallback to the caller) when the
 // section is missing, the entry is out of table bounds, or the text is
@@ -2371,75 +2541,126 @@ static bool SectionEntryText(const uint8_t* base, uint32_t entry, std::wstring& 
 // Branch semantics derived by static disassembly and live-verified 2026-07-11
 // (Ice / Potion / Machine Gun / Tentacle).  Returns false for commands with
 // no flash text (branch 9) or any resolution failure.
-static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out)
+//
+// v2.30.100: kernel2-file branches resolve through the game's OWN
+// get_kernel_text FIRST (ResolveViaGameKernelText above — authoritative
+// under FFNx/retranslations, where the heap scan latched a rotten copy and
+// spoke junk); the v2.7 scavenged-section path is the fallback, and EVERY
+// result from ANY source now passes the PlausibleActionName gate. dbg_src
+// (optional) reports which source produced the name for the flash log line:
+// "gkt", "heap", or "none".
+static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out,
+                              const char** dbg_src = nullptr)
 {
+    if (dbg_src) *dbg_src = "none";
     if (cmd > FF7Addr::BATTLE_DISPATCH_MAX_CMD)
         return false;
 
-    // v2.22.1: revalidate the cached section pointers at USE time â€” a
-    // freed-and-reused section must fall back to generic labels, never
-    // decode reused memory (see ValidatedSection / the lifetime note).
+    const uint8_t branch = *reinterpret_cast<const uint8_t*>(
+        FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + cmd);
+
+    // ── PRIMARY: the game's own resolver, branch → GKT section (biases
+    // +56/+72/+128 and the item namespace remap are applied INSIDE the
+    // engine from its own .data tables — byte-verified 2026-08-09) ──
+    int gkt_section = -1;
+    switch (branch) {
+    case 0: case 1: gkt_section = FF7Addr::GKT_SECTION_MAGIC;  break;
+    case 2:   // summon names = magic file +56 via section 1; idx>=16 falls
+              // through to the plain magic file exactly as the game does
+        gkt_section = (idx < 16) ? FF7Addr::GKT_SECTION_SUMMON
+                                 : FF7Addr::GKT_SECTION_MAGIC;
+        break;
+    case 3: case 5: gkt_section = FF7Addr::GKT_SECTION_ITEM;   break;
+    case 6:         gkt_section = FF7Addr::GKT_SECTION_ESKILL; break;
+    case 7:   // Limit Break. LIVE-VERIFIED 2026-08-04 (v2.30.76 probe,
+              // BOTH installs): flash idx IS the 0-based limit index
+              // (idx 0 -> entry 128 "Braver"). The engine remaps its own
+              // 0x7F '????' sentinel internally; skip it here too so the
+              // generic label speaks instead of nothing.
+        if (idx == 0x7F)
+            return false;
+        gkt_section = FF7Addr::GKT_SECTION_LIMIT;
+        break;
+    default: break;   // branches 4/8/9 have no kernel2 file behind them
+    }
+    if (gkt_section >= 0 && ResolveViaGameKernelText(gkt_section, idx, out)) {
+        if (dbg_src) *dbg_src = "gkt";
+        return true;
+    }
+
+    // ── FALLBACK: the v2.7 scavenged heap sections (v2.22.1: revalidate
+    // the cached pointers at USE time — a freed-and-reused section must
+    // fall back to generic labels, never decode reused memory) ──
     const uint8_t* const k2_magic  = ValidatedSection(&g_k2.magic,  g_k2_magic_sig);
     const uint8_t* const k2_item   = ValidatedSection(&g_k2.item,   "Potion|Hi-Potion|");
     const uint8_t* const k2_weapon = ValidatedSection(&g_k2.weapon, "Buster Sword|");
 
-    const uint8_t branch = *reinterpret_cast<const uint8_t*>(
-        FF7Addr::BATTLE_DISPATCH_BYTE_TABLE + cmd);
+    bool ok = false;
     switch (branch) {
     case 0:   // section 0 (unused cmd 0x00)
     case 1:   // cmd 0x02 Magic: spell names are magic entries 0-55
-        return SectionEntryText(k2_magic, idx, out);
-    case 2:   // cmd 0x03 Summon.  The game uses the separate summon-attack-
-              // name file for idx<16, but its heap copy has no locatable
-              // signature; magic entries 56-71 hold the identical summon
-              // names ('Choco/Mog'â€¦'Knights of Round', verified live), so
-              // use those.  idx>=16 falls through to the magic file as the
-              // game itself does.
-        if (idx < 16)
-            return SectionEntryText(k2_magic, idx + 56, out);
-        return SectionEntryText(k2_magic, idx, out);
+        ok = SectionEntryText(k2_magic, idx, out);
+        break;
+    case 2:   // cmd 0x03 Summon: magic entries 56-71 hold the summon names
+        ok = (idx < 16) ? SectionEntryText(k2_magic, idx + 56, out)
+                        : SectionEntryText(k2_magic, idx, out);
+        break;
     case 3:   // cmd 0x04 Item
     case 5:   // cmd 0x08 (item variant)
         if (idx < 128)
-            return SectionEntryText(k2_item, idx, out);
-        if (idx < 256)   // thrown weapons share the item id space at 128+
-            return SectionEntryText(k2_weapon, idx - 128, out);
-        return false;    // armor/accessory ids never flash in battle
+            ok = SectionEntryText(k2_item, idx, out);
+        else if (idx < 256)   // thrown weapons share the item id space at 128+
+            ok = SectionEntryText(k2_weapon, idx - 128, out);
+        break;
     case 4: { // cmd 0x07: the game composes this name into a fixed buffer
         const char* buf = reinterpret_cast<const char*>(0x00DC3640);
-        if (static_cast<uint8_t>(buf[0]) == 0xFF || buf[0] == 0)
-            return false;
-        out = FF7Text::Decode(buf);
-        return !out.empty();
+        if (static_cast<uint8_t>(buf[0]) != 0xFF && buf[0] != 0) {
+            out = FF7Text::Decode(buf);
+            ok = !out.empty();
+        }
+        break;
     }
     case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'â€¦)
-        return SectionEntryText(k2_magic, idx + 72, out);
+        ok = SectionEntryText(k2_magic, idx + 72, out);
+        break;
     case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
-        // LIVE-VERIFIED 2026-08-04 (v2.30.76 probe, BOTH installs): the
-        // flash idx IS the 0-based limit index (idx 0 -> entry 128
-        // "Braver", idx 7 -> entry 135 "Big Shot", raw bytes vanilla on
-        // 2013+7H and 2026 alike). The 2026-08-03 junk report was a stale
-        // section copy passing the head-only re-check — closed by
-        // SectionBodyPlausible, not by any change here.
-        if (idx == 0x7F)   // the game's '????' sentinel for unnamed limits
-            return false;
-        return SectionEntryText(k2_magic, idx + 128, out);
+        ok = SectionEntryText(k2_magic, idx + 128, out);
+        break;
     case 8: { // cmd 0x20 enemy attack: per-formation table from scene.bin
-        if (idx >= 64)     // formation attack slots are small indices (0-31)
-            return false;
-        const char* entry = reinterpret_cast<const char*>(
-            FF7Addr::ENEMY_ATTACK_NAME_TABLE + idx * FF7Addr::ENEMY_ATTACK_NAME_STRIDE);
-        if (static_cast<uint8_t>(entry[0]) == 0xFF)
-            return false;
-        out = FF7Text::Decode(entry);
-        for (wchar_t c : out)
-            if (c != L' ')
-                return true;
-        return false;
+        if (idx < 64) {   // formation attack slots are small indices (0-31)
+            const char* entry = reinterpret_cast<const char*>(
+                FF7Addr::ENEMY_ATTACK_NAME_TABLE +
+                idx * FF7Addr::ENEMY_ATTACK_NAME_STRIDE);
+            if (static_cast<uint8_t>(entry[0]) != 0xFF) {
+                out = FF7Text::Decode(entry);
+                ok = false;
+                for (wchar_t c : out)
+                    if (c != L' ') { ok = true; break; }
+            }
+        }
+        break;
     }
     default:  // branch 9 (Attack/Steal/â€¦ â€” no flash text) or unknown
-        return false;
+        break;
     }
+
+    // The gate applies to the fallback sources too (branch 4/8 statics can
+    // decode mid-write or stale bytes just as heap sections can). No raw
+    // bytes at this altitude — log the decoded junk itself as evidence.
+    if (ok && !PlausibleActionName(out)) {
+        if (Config::Get().debug_log) {
+            char dbg[224];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BATTLE name REJECT src=heap br=%u idx=%lu => %ls",
+                static_cast<unsigned>(branch),
+                static_cast<unsigned long>(idx), out.c_str());
+            Log::Write(dbg);
+        }
+        out.clear();
+        ok = false;
+    }
+    if (ok && dbg_src) *dbg_src = "heap";
+    return ok;
 }
 
 // Generic command labels â€” the v2.5 fallback, used when no exact name exists
@@ -7223,20 +7444,27 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
                 // Flash appeared (or the same flash content repeated, in which
                 // case the unchanged values already describe this action).
                 std::wstring name;
+                const char* flash_src = "none";
                 const bool ok = ResolveActionName(flash_cmd & 0xFF,
-                                                  flash_idx & 0xFFFF, name);
+                                                  flash_idx & 0xFFFF, name,
+                                                  &flash_src);
                 // v2.30.76: the announce line logs cmd but not idx, which
                 // left the limit-junk report (2026-08-03) without the one
                 // number that mattered. Log the raw flash pair on every
                 // named resolution -- builds a per-branch verification
-                // corpus from ordinary play.
+                // corpus from ordinary play. v2.30.100: the line now also
+                // carries WHICH source resolved (gkt = the game's own
+                // get_kernel_text, heap = scavenged section) and the name
+                // itself, so the next junk report — if any — arrives
+                // self-diagnosing.
                 if (Config::Get().debug_log) {
-                    char fdbg[96];
+                    char fdbg[224];
                     _snprintf_s(fdbg, sizeof(fdbg), _TRUNCATE,
-                        "[FF7Access] BATTLE flash cmd=0x%02lX idx=%lu ok=%d",
+                        "[FF7Access] BATTLE flash cmd=0x%02lX idx=%lu ok=%d "
+                        "src=%s => %ls",
                         static_cast<unsigned long>(flash_cmd & 0xFF),
                         static_cast<unsigned long>(flash_idx & 0xFFFF),
-                        ok ? 1 : 0);
+                        ok ? 1 : 0, flash_src, ok ? name.c_str() : L"");
                     Log::Write(fdbg);
                 }
                 const bool combine = Config::Get().speak_battle_damage ||
@@ -7449,12 +7677,24 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
     default:
         break;
     }
-    // v2.22.1: the command section is a TRANSIENT battle allocation (the
-    // 2026-07-16 session log caught a reused copy speaking binary garbage
-    // on menu open) â€” revalidate its head signature before every lookup.
+    // v2.30.100: the game's own command-name lookup first (GKT section 5 =
+    // the command-names file, entry id-1 for 1-based ids). On 2013+7H the
+    // heap scan has NEVER found this section (log.10: command=0 with a
+    // 22-scan fruitless streak), so materia-granted commands (Mug,
+    // 2x-Cut, ...) only ever spoke "command N" there — this both closes
+    // that gap and removes the dependency on the transient battle copy.
+    if (id != 0 &&
+        ResolveViaGameKernelText(FF7Addr::GKT_SECTION_COMMAND,
+                                 static_cast<uint32_t>(id) - 1, out))
+        return;
+    // v2.22.1 fallback: the scavenged command section is a TRANSIENT battle
+    // allocation (the 2026-07-16 session log caught a reused copy speaking
+    // binary garbage on menu open) â€” revalidate its head signature before
+    // every lookup, and (v2.30.100) gate the text like every battle name.
     if (id != 0 &&
         SectionEntryText(ValidatedSection(&g_k2.command, g_k2_command_sig),
-                         static_cast<uint32_t>(id) - 1, out))
+                         static_cast<uint32_t>(id) - 1, out) &&
+        PlausibleActionName(out))
         return;
     wchar_t generic_buf[32];
     out = GenericActionLabel(id, generic_buf, _countof(generic_buf));

@@ -225,7 +225,8 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `BATTLE_ACTOR_DATA` | `0x00DC38E0` | FFNx ff7.h `battle_actor_data`; the old "KERNEL2_REQUEST" reading was its middle: +0x08 formation_entry (pending pulse), **+0x0C command_index (0xDC38EC), +0x10 action_index (0xDC38F0)** â€” written at FLASH TIME (~1â€“2s after turn start), not rewritten for repeated identical flashes (v2.7, live-verified 2026-07-11: Ice/Potion/Machine Gun/Tentacle) |
 | `BATTLE_DISPATCH_BYTE_TABLE` | `0x006D70A8` | Static .text: byte[table+cmd] = flash-name branch for cmd 0x00â€“0x20; jump table at 0x6D7080. Branchâ†’source: 0/1=magic names; 2=summon; 3/5=item namespace; 4=buffer 0xDC3640; 6=magic+72 (E.Skill); 7=magic+128 (Limit, 0x7F='????'); 8=enemy attack table; 9=no flash text (v2.7) |
 | `ENEMY_ATTACK_NAME_TABLE` | `0x009A9484` | Current formation's enemy attack names from scene.bin, stride 0x20, FF7-encoded (v2.5 candidate â†’ CONFIRMED v2.7; 'Machine Gun'/'Tonfa'/'Bite'/'Tentacle') |
-| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). âš  Useless in battle: reads menu-module scratch (0x9A13C8 via u16 table 0x9A7FC8) which is EMPTY during battle. v2.7 reads the heap text sections directly instead |
+| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). **CORRECTED v2.30.100 (2026-08-09): calling it WORKS everywhere, including battle** -- it is the exact resolver the flash box (consumer call 0x6D72C6) and the in-battle limit window (draw 0x6DF40D) render from. `__cdecl(section, idx, file_base)`, every engine call site passes file_base=8. Sections: 0=magic names, 1=summon (+56), 2=E.Skill (+72), 3=limit (+128; idx 0x7F = '????' sentinel -> empty), 4=item names w/ the engine's own namespace remap (<0x80 item, <0x100 weapon, <0x120 armor, <0x180 accessory), 5=command names, 6-9=battle statics via jump table 0x419A38 (7 COMPOSES into a scratch = writes; never call from mod threads). Sections 0-5 are pure reads; kernel2_get_text has NO bounds check (callers cap idx). The old 'useless in battle: scratch empty' reading was FFNx REPLACING the callee (FFNx/src/ff7/kernel.cpp: per-file external_malloc blocks, all freed+reallocated by kernel2_reset_counters on kernel2 reload = the stale-copy factory the heap scan kept latching) -- the scratch is bypassed under FFNx, not battle-empty. v2.30.100: PRIMARY battle name source (ResolveViaGameKernelText, SEH-guarded + plausibility gate) |
+| `K2_LOADER_STATICS` | `0x00419379` | Vanilla kernel2 bump allocator (REPLACED under FFNx): returns 0x9A13C8+[0x9A8120], records the offset in u16 table 0x9A7FC8[[0x9A8124]++], advances the cursor. Statics: fill cursor 0x9A8120, file counter 0x9A8124 (both BSS). GKT remap tables (.data, byte-verified 2026-08-09, ff7_gkt_consumer_tables_static.py): bias 0x7B74A0 = 00 38 48 80; section->file 0x7B74A8 = 01 01 01 01 02 00; item-namespace thresholds 0x7B7488/0x7B748A + target sections 0x7B7498 (04 0A 0B 0C 0D); empty-string default 0x7C0AE8 (v2.30.100) |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) â€” but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** â€” PSX comments identify unnamed PC fields |
 | `GAME_MODE` | `0x00CC0D89` | +0x01, u8. Live-observed: **0=field play, 1=FIELD JUMP PENDING (audit 2026-08-02: held for the whole screen load; set by MAPJUMP/gateway-hit/save-load/world-exit when arming FIELD_JUMP_INTERFACE, cleared at phase 2 - v2.30.64 watcher saw it on every transition of both runs), 2=battle, 6=name entry, 9=menu, 26=game-over handoff (TRANSIENT ~60ms â€” v2.30.37, 2026-07-27 wipe log)**. STATIC (v2.30.28, menu-type dispatcher 0x6CDA83 jump table decoded offline â€” index bytes 0x6CDBE4, targets 0x6CDBC4): **6=name entry, 7=PHS, 8=SHOP, 9=main menu, 14/18/19 = further menu screens**; also STATIC 2026-08-02: field_loop's own dispatch (0x63C1A0..) switches on mode - 0xF via jump table 0x63CC09, so modes **15..24 = menu-module sub-entries** invoked from the field loop (several take DEST_FIELD_ID as an argument) â€” the two live-confirmed values (6, 9) both match the decode, validating the table. LIVE v2.30.75 (ff7_menu_handoff_monitor.py 2026-08-03, full battle-victory-menu run at 30ms): **the VICTORY results screens never leave mode 2** - MENU_OPEN=1 for the whole sequence (no dips between the two results screens) while the byte stays battle, so `MENU_OPEN==1 && mode==2` = the results window and `mode==9` = the real main-menu family (new constants GAME_MODE_BATTLE / GAME_MODE_MAIN_MENU); on a real menu open **mode rises to 9 ~0.5-1.2s BEFORE MENU_OPEN** and both drop together on close; every menu-family thread now gates on ==9 (replaced the v2.35.1 g_victory_active flag + 4-second battle-recency tick, whose holes are logged in proxy.cpp's v2.30.75 header comment). âš  FFNx's `ff7_game_modes` enum does NOT describe this byte (it's for a different variable). âš  the GAME OVER film reel + post-game-over title prompt read as mode **0** with FIELD_ID **stale** at the dead field â€” the 26 blip is the only positive game-over signal (GameOverWatchThread polls it at 30ms) |
@@ -7269,6 +7270,123 @@ deliberately unspoken -- hp_watch owns numbers today, MP-damage speech
 is a cheap follow-up if wanted; -2/-3 glyph meanings unknown until a
 play report catches one.
 
+### v2.30.100 (2026-08-09): battle names from the game's own resolver -- junk speech closed at both ends
+
+**User report** (log.10, Train Graveyard Ghost battles): NVDA spoke raw
+junk twice -- "Aerith, +,+ ((((((%%%% ..." (12:19:56) and "Cloud,
+(+../-!#\"\"\"... " (12:21:05, again 12:38:02) -- transient, riding
+limit-break turns.
+
+**Log forensics** (the debug lines told the whole story before any new
+code ran): both junk lines were flash NAME-UPGRADES with ok=1 (gen=135
+cmd=0x14 idx=14; gen=161 AND gen=243 cmd=0x14 idx=0 = Braver, the exact
+entry live-verified correct in v2.30.77), and the junk bytes were
+IDENTICAL across battles 17 minutes apart = a stable bad source, not a
+race. The kernel2 scan had latched magic=0x2F846258 at 11:57:55 and
+held it all session (fruitless streak 0->22): every magic name BELOW
+entry 128 (Ice/Bolt/Cure/Fire) resolved correctly from that copy all
+session while EVERY limit name (entries 128+) decoded binary garbage
+(raw byte values 0x02..0x0F -> '"#$%()+,-./' in bitmap-shaped rows with
+0x00-run space gaps). The v2.30.77 SectionBodyPlausible check passed
+because the offset TABLE survived the block's reuse -- only the text
+tail rotted; a structural check on the table can never see text rot.
+Also: command=0 and mg_desc=0 all session (the [K2DESC] class) and
+weap_desc latched at an odd address -- the scan was running on fumes on
+this install.
+
+**Static derivation (two offline passes, no game launch)** --
+investigate/ff7_kernel2_battle_source_static.py +
+ff7_gkt_consumer_tables_static.py (logs *_20260809_*.log):
+
+1. get_kernel_text (0x41963C) fully decoded. Sections 0-5 resolve via
+   kernel2_get_text (0x419457): base = 0x9A13C8 + u16[0x9A7FC8 +
+   (file_map[section] + file_base)*2], text = base + u16[base+idx*2].
+   Bias table 0x7B74A0 = 00 38 48 80: section 0 = magic names,
+   1 = summons (+56), 2 = E.Skills (+72), 3 = LIMITS (+128; the engine
+   itself remaps idx 0x7F to the empty default = the '????' sentinel).
+   File map 0x7B74A8 = 01 01 01 01 02 00; every engine call site passes
+   file_base = 8 -> the magic file is kernel2 file 9. Section 4 = item
+   names WITH the engine's own namespace remap (thresholds
+   0x7B7488/8A: <0x80 items, <0x100 weapons, <0x120 armor, <0x180
+   accessories; targets 0x7B7498). Section 5 = COMMAND NAMES (file 8).
+   Sections 6-9 = battle statics via jump table 0x419A38 (7 composes
+   target names INTO a scratch buffer = has writes; 9 = the enemy
+   attack table 0x9A9484 the mod already reads).
+2. The scratch and offset table are BSS, runtime-filled by bump
+   allocator 0x419379 (fill cursor 0x9A8120, file counter 0x9A8124).
+3. THE v2.7 CONTRADICTION RESOLVED: FFNx REPLACES the allocator and
+   kernel2_get_text (FFNx/src/ff7/kernel.cpp): each kernel2 file
+   becomes its own external_malloc block in FFNx.dll's
+   kernel2_sections[] array, and kernel2_reset_counters() frees and
+   reallocates ALL of them on any kernel2 reload. The 2026-07-11 probe
+   that found the scratch "ALL ZERO in battle" was watching FFNx's
+   bypass, not a menu-module lifetime rule -- and the freed blocks are
+   exactly the stale copies the mod's signature scan keeps latching.
+   The OUTER dispatcher still works under FFNx: the in-battle limit
+   window draw 0x6DF40D calls get_kernel_text(3, id) and renders
+   correctly on screen -- the observation that forced this
+   re-derivation (v2.30.98 decoded that draw).
+
+**Mod changes**:
+- NEW ResolveViaGameKernelText: calls the game's own get_kernel_text
+  (typed fn ptr, __cdecl(section, idx, 8)) -- authoritative under
+  FFNx / 7th Heaven retranslations / vanilla alike; whatever it
+  returns is what the screen shows, so spoken = screen by
+  construction. SEH-guarded fetch (GKTFetchRaw; the byte copy lives
+  INSIDE the guard because a kernel2 reload can free FFNx's block
+  mid-read) and engine-mirroring idx caps (0xE0 sections 0-3, 0x180
+  section 4, 0x18 section 5 -- kernel2_get_text itself has NO bounds
+  check).
+- ResolveActionName: kernel2-file branches (0/1/2/3/5/6/7) now resolve
+  GKT-FIRST; the v2.7 scavenged-heap path is demoted to fallback.
+  Branch 7 keeps the 0x7F sentinel skip; branches 4 (composed buffer)
+  and 8 (enemy attack table) are unchanged sources. New optional
+  dbg_src out-param reports which source won.
+- NEW PlausibleActionName gate on EVERY battle name from ANY source
+  (gkt, heap fallback, composed buffer, enemy table, command menu):
+  <= 32 chars after trailing-space trim; no run of 3+ of the same
+  non-alphanumeric char (kills '((((((%%%%' and '????' padding); < 3
+  extended glyphs (> 0x7E -- the junk tails are full of them); >= 1/3
+  letters/digits. 58-case offline dry-run (scratchpad gate_test.cpp)
+  passed: the exact logged junk rejected, a real-name battery across
+  every name class accepted. KNOWN LIMITATION (documented in the
+  code): sparse-letters junk like the v2.30.76 "% Y-c' sSd" shape
+  passes the gate -- gkt-primary is the defense for that class.
+- CommandMenuName: GKT(section 5, id-1) FIRST -> materia-granted
+  commands (Mug, Sense, 2x-Cut...) now speak real names on 2013+7H,
+  where the command-name section was NEVER found by the scan (log.10:
+  command=0 with a 22-scan fruitless streak) and only "command N" ever
+  spoke; the heap fallback is now gated too.
+- Logging: the "BATTLE flash" line gains src=gkt|heap|none plus the
+  resolved name text; gate rejections log "BATTLE name REJECT" with
+  raw bytes (gkt path) or the decoded junk (heap path); GKT access
+  violations log "BATTLE gkt AV". The next junk report -- if any --
+  arrives self-diagnosing.
+
+**Verify queue [GKT100]** (any battle; limits need a full gauge):
+(a) magic/item/E.Skill flash names still speak correctly and their
+"BATTLE flash" lines say src=gkt; (b) a limit break speaks the SAME
+name the flash box shows on screen -- the junk class gone; (c) Tifa's
+limit (flash idx=98, historically ok=0 -> generic): note what speaks
+and what the flash line logs -- through GKT the engine may now resolve
+it; (d) the battle command grid with a materia-granted command (Mug,
+Sense) speaks the real name on 2013+7H; (e) zero "name REJECT" lines
+in a clean session -- any that appear carry raw bytes for the corpus;
+(f) log header v2.30.100; (g) if any battle text is retranslated under
+Echo-S, the RETRANSLATED form speaks (gkt reads the live kernel2, heap
+signatures no longer decide).
+
+**Residual**: the kernel2 heap scan still serves the MENU-side
+sections (item/materia/weapon/accessory names + descriptions) --
+migrating those to GKT is a possible follow-up if menu junk is ever
+reported; limit flash idx semantics beyond Cloud/Barret (Aerith
+idx=14, Tifa idx=98) remain unmapped, but GKT resolution IS the
+display path, so the mod now speaks whatever the screen shows by
+construction; the [K2DESC] command/mg_desc scan gap on 2013+7H is
+MOOT for the command grid (GKT section 5) but still open for
+descriptions.
+
+---
 ---
 
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
@@ -7581,7 +7699,7 @@ Proven payoffs of cluster reasoning so far:
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0x40B27B` | sub_40B27B | anchor for movie-playing word (+0x25) |
-| `0x41963C` | sub_41963C = **get_kernel_text** (FFNx external, confirmed via kernel2_get_text call at +0xF7) | `(section, idx, 8)`; result â†’ 0xDC208C; reads menu scratch 0x9A13C8 â€” EMPTY in battle |
+| `0x41963C` | sub_41963C = **get_kernel_text** (FFNx external, confirmed via kernel2_get_text call at +0xF7) | `(section, idx, 8)`; result -> 0xDC208C (dead under FFNx); **v2.30.100: called directly by the mod as the PRIMARY battle name source** -- works in battle (the limit window draw 0x6DF40D calls it and renders correctly); full section semantics in the S4 row |
 | `0x419457` | kernel2_get_text | `base = 0x9A13C8 + u16[0x9A7FC8 + file*2]; text = base + u16[base+idx*2]` |
 | `0x6D1CC0` | flash-name dispatcher | branch tables 0x6D7080 (jump) / 0x6D70A8 (byte, per cmd 0x00â€“0x20); per-branch sections in Â§4 |
 | `0x6D70F1` | enemy-attack name copier | branch 4 (cmd 0x07) â†’ buffer 0xDC3640 |
@@ -7683,7 +7801,7 @@ module uses (0x76713B/163/172 -> DEST field/triangle/direction).
 | `0x921ED4` | NAME_ENTRY_PANE_FLAG | 0=grid, 1=side panel on the naming screen (v2.8.2). Sole clean candidate of a full-static A/B/A revert scan; live-verified across 6 crossings. Far from the DD name-entry block â€” menu-module .data |
 | `0x9A8729`, `0x9A872A`, `0x9ADE30`, `0x9ADE34` | input-event/SFX pulse flags | pulse-and-reset on any d-pad press; REJECTED as cursor candidates |
 | `0x9A8731` | grid/panel covariant | 44 on grid, 49 on panel, reverted (pane-flag scan 2026-07-12); secondary candidate, likely cursor-SFX/sprite id â€” unused, PANE_FLAG is cleaner |
-| `0x9A13C8` / `0x9A7FC8` | kernel2 text scratch + u16 offset table | menu-module staging; **ALL ZERO during battle** (probed live 2026-07-11) â€” battle code never populates it |
+| `0x9A13C8` / `0x9A7FC8` | kernel2 text scratch + u16 offset table | vanilla staging filled by bump allocator 0x419379 (fill cursor 0x9A8120, file counter 0x9A8124); **ALL ZERO under FFNx** (probed live 2026-07-11) because FFNx REPLACES the allocator and kernel2_get_text with per-file heap blocks (kernel.cpp) -- CORRECTED v2.30.100: bypassed-under-FFNx, NOT a battle-lifetime rule |
 | `0x9A9484` | ENEMY_ATTACK_NAME_TABLE | CONFIRMED (was "section-8 table?"): current formation's attack names from scene.bin, stride 0x20; = get_kernel_text section 9 (`ret 0x9A9484 + idx*0x20`) |
 | `0x9A80F0` | target-name scratch buffer | get_kernel_text section 7 composes "name + dup letter (+ status/Sense text)" here on render; write-on-render only, do NOT poll (2026-07-13) |
 | `0x9A8794` | BATTLE_FORMATION_SLOTS | stride 0x10 Ã— 6 enemy slots (ends 0x9A87F4); u16[+0] = loaded-record index, movsx (âˆ’1 = empty). Note 0x9A8729/2A pulse flags above sit INSIDE the region just before it â€” this 0x9A87xx area is the battle formation block (2026-07-13, v2.10) |
