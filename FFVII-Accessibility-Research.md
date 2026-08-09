@@ -6605,6 +6605,11 @@ Market dress quest). [BATTLE90] status:
   (a) NOT EXERCISED -- no level-up occurred all day (party parked at
       level 10, victories worth 16-180 exp). Still awaiting a session
       that levels.
+  (a) PLAY-VERIFIED 2026-08-09 (user, by ear, v2.30.98/.99 era build):
+      level announcements on the victory screen WORK -- the v2.30.90
+      buffer-and-append fix delivers. [BATTLE90] (a) PASSES; both
+      PARKED [LEVELUP] entries resolved (residual: stat increases
+      still unspoken, if-asked follow-up).
   (c)-(f) MIXED -- homing works (94/95 dmg lines attached: 65
       cur-early, 23 prev, 5 cur, 1 legitimate orphan; no report=0
       standalones left), BUT two new log-proven issues:
