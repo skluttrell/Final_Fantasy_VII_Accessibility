@@ -14,7 +14,6 @@ resume.txt
 ff7_investigate.log
 scratchpad_ff7text.cpp
 old_game_logs/
-PARKED.txt
 investigate/*.log
 investigate/**/*.log
 investigate/venv/
