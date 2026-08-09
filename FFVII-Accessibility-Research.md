@@ -7571,6 +7571,13 @@ CONFIG_ROW != 1.
 
 ## 10. Current Status
 
+> **HISTORICAL SNAPSHOT — frozen at the v2.4 era (early July 2026), with a few
+> later strikethrough edits. NOT the current state.** The authoritative sources
+> are: §8 (per-version history, through the latest build), §4 + §14 (address
+> map), `PARKED.txt` (pending work), and the `project-ffvii-2026-access` memory
+> status block (current version + shipped feature map). Kept for the reasoning
+> trail only. (Banner added by the 2026-08-09 doc audit #5.)
+
 ### Working (as of v2.4)
 
 - All field story dialog (MESSAGE opcode 0x40) spoken via NVDA on dialog start and page advance
@@ -7626,6 +7633,13 @@ CONFIG_ROW != 1.
 ---
 
 ## 11. Remaining RE Work
+
+> **HISTORICAL (v2.4-era) — most rows below have since been RESOLVED** (e.g.
+> the battle text queue = `BATTLE_TEXT_QUEUE` 0xBF1EB8 v2.36; battle menu
+> cursor = `BATTLE_WIDGET_BASE` v2.9; per-menu cursors and the extended-char
+> table are in §4/§7). Check §4 and §14 before starting any hunt from this
+> table; the live open-questions list is `PARKED.txt`. (Banner added by the
+> 2026-08-09 doc audit #5.)
 
 | Symbol | Needed For | How to Find |
 |--------|-----------|------------|
@@ -7701,6 +7715,9 @@ Proven payoffs of cluster reasoning so far:
 | `0x40B27B` | sub_40B27B | anchor for movie-playing word (+0x25) |
 | `0x41963C` | sub_41963C = **get_kernel_text** (FFNx external, confirmed via kernel2_get_text call at +0xF7) | `(section, idx, 8)`; result -> 0xDC208C (dead under FFNx); **v2.30.100: called directly by the mod as the PRIMARY battle name source** -- works in battle (the limit window draw 0x6DF40D calls it and renders correctly); full section semantics in the S4 row |
 | `0x419457` | kernel2_get_text | `base = 0x9A13C8 + u16[0x9A7FC8 + file*2]; text = base + u16[base+idx*2]` |
+| `0x4223AC` / `0x42604E` / `0x42E156` | anim-script damage-post paths | anim opcode 0xC2 handler + two sibling paths: post the staged damage rows 0xBF2A40 to the effect60 display; staging is filled by the anim-event runner 0x42CFxx walking the anim-event queue 0x9ACB98 (v2.30.99, ff7_battle_miss_static*.py) |
+| `0x436DA7` / `0x5DA562` | damage-event allocator / filler | allocate + fill the 0x9ABA08 records (target, HP/MP display values + flags, barrier gauges) from the attack context [0x99CE0C] during damage calc -- the value/MISS-sentinel decision happens before the filler runs (v2.30.99) |
+| `0x5BB410` / `0x5BB756` / `0x5BED92` | display_battle_damage effect60 fn / its draw helper / effect60 add-fn | draw helper switches on the value word: -1 = MISS glyph, -2/-3 = unidentified glyphs, else digits (flags bit2 = MP tag); add-fn stores the fn ptr into the first zero slot of 0xBFB1B0 (effect100 twin add-fn 0x5BEC50 -> 0xBF2858). fn-array entry == 0x5BB410 is THE mod's damage/miss watch signal (v2.30.99) |
 | `0x6D1CC0` | flash-name dispatcher | branch tables 0x6D7080 (jump) / 0x6D70A8 (byte, per cmd 0x00â€“0x20); per-branch sections in Â§4 |
 | `0x6D70F1` | enemy-attack name copier | branch 4 (cmd 0x07) â†’ buffer 0xDC3640 |
 | `0x7B7488/8A/98` | item-namespace remap tables | idx<128â†’items, <256â†’weapons(âˆ’128), <288â†’armor, <384â†’accessory |
@@ -7765,6 +7782,7 @@ Proven payoffs of cluster reasoning so far:
 | `0x60C327` / `0x60C880`-region | field model init / unbind | init block writes the flag-byte DEFAULTS (+0x5E=0, +0x5F=0 solid, +0x60=0, +0x61=0 talkable, climb words 0) before the scale-based radii (see 0x60C3A8 row); the unbind loop (entityâ†’model map 0xCBFB70 := 0xFF) writes +0x62=0 hidden, **+0x5F=1**, +0x61=1 â€” polarity proof for both TLKON-convention bytes (ff7_solid_consumer_static.py 2026-08-04) |
 | `0x633FBC` | field-ARRIVAL player init | v2.30.83 bonus decode: on every field entry rewrites the PLAYER's +0x72 collision radius := **34*scale>>9** (why the station reads col=30 and the double-scale street col=60; distinct from the generic model-init default 30*scale>>9 at 0x60C3A8) and +0x76 speed := scale<<10>>9 (ff7_player_blocking_ground_truth.py) |
 | `0x61FD5C` | opcode WSPCL handler (table[0x36]) | writes its window-TYPE arg to byte [0xCFF5D3 + win*0x30] (v2.30.93 correction: type 1 = countdown clock, type 2 = NUMERIC display -- the v2.30.56 arming on 1/2 falsely armed on the inn selector; arming is type-1-only since v2.30.93) and position to +0xE0/+0xE2 of the same stride-0x30 window struct -- the v2.30.56 second timer-arming signal (ff7_timer_window_static.py) |
+| `0x61F2B0` / `0x61F377` | opcode MPARA (table[0x41]) / MPRA2 (table[0x42]) handlers | park per-window in-dialog number params: bank nibble -> 0xCBFBE0 + win*8 + slot, value/addr word -> 0xCC08A0 + win*16 + slot*2. Render side = typewriter sub-code dispatch 0x6324E5 routing FE DE/DF/E1 to the formatters 0x633433/0x6335D3/0x6334F0 via value helper 0x632FFB -- full data-side layout in the 0xCBFBxx/0xCC04xx dialog rows below (v2.30.92, ff7_msgnum_static*.py) |
 | `0x40AB81` / `0x40AC3C` / `0x40AC56` | global tick / countdown decrement / count-up increment | the per-second countdown decrement lives in the GLOBAL tick, gated ONLY by two pause bytes (0xDC0E6C/0xDC0E70) and count-up flag 0xDC093B & 2 -- **no "timer active" flag exists in the engine**, so a leftover savemap value ticks invisibly forever; the WSPCL clock window is the only honest liveness signal (v2.30.56) |
 
 Pattern: field module code sits in 0x60xxxxâ€“0x6Exxxx, world map in
@@ -7832,7 +7850,7 @@ module uses (0x76713B/163/172 -> DEST field/triangle/direction).
 |---------|--------|-------|
 | `0xBE1170` | G_ACTIVE_ACTOR_ID | u8; never resets between battles |
 | `0xBE1178` | G_BATTLE_MODEL_STATE | stride 0x1AEC Ã— 10 slots â‰ˆ ends 0xBF1EF0 |
-| `0xBF23B8` | G_SMALL_BATTLE_MODEL_STATE | stride 0x74; starts right after the large array |
+| `0xBF23B8` | G_SMALL_BATTLE_MODEL_STATE | stride 0x74; starts right after the large array. ⚠ the SAME address is read as the effect100 current-idx word (see the 0xBF2858 row below -- v2.30.99 unresolved overlap, both consumers behave in play) |
 | `0xBF1EB8` | BATTLE_TEXT_QUEUE | battle text display queue, battle_text_data[64] stride 6 (s16 buffer_idx@+0, -1=empty, â‰¥0x100=scene AI dialogue). FFNx-anchored (add_text_to_display_queue+0x25). v2.36's scene-message channel (scorpion tail warning etc.) |
 | `0xBF2A40` | damage-display STAGING rows | stride 0xC (HP value/flags, record idx, MP value/flags), write-row byte 0xBFD088, parallel target-id bytes 0xC05E68[0x4E] (mapper 0x42DE25); copied from the 0x9ABA08 records by the anim-event runner (v2.30.99; doc-only) |
 | `0xBF2DF4` | effect60 CURRENT index | word naming the executing effect60 slot, written by the executor per call (v2.30.99; doc-only) |
