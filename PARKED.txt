@@ -2666,16 +2666,19 @@ none are to be worked unasked):
     whether the race occurs in practice (any missed whiff report =
     check the dmgdisp corpus for two actions sharing a slot <50ms
     apart).
-  - [accented-name gate risk] PlausibleActionName rules (b)/(c)
-    reject 3+ extended glyphs (>0x7E) and punctuation-majority
-    strings -- correct for the observed junk tails, but an
-    accent-heavy retranslation/non-English kernel name ("Éclair de
-    Foudre" class) could be rejected to a generic label on every
-    source. No accented-name corpus exists to tune against;
-    loosening un-guessed risks readmitting the junk .100 closed.
-    Revive if any non-English/retranslation tester reports generic
-    labels where names used to speak; the REJECT log lines will
-    carry the exact bytes needed to tune the gate.
+  - [accented-name gate risk] REJECTED 2026-08-09, user decision:
+    the mod is ENGLISH-ONLY for the time being ("I do not have the
+    resources or expertise to test non-English builds") -- standing
+    scope rule, reject non-English-version issues on sight. The
+    finding stays recorded because its mechanism is real: gate rules
+    (b)/(c) reject 3+ extended glyphs (>0x7E) and punctuation-
+    majority strings, which an accent-heavy non-English kernel name
+    ("Éclair de Foudre" class) would fail to a generic label. IF the
+    English-only scope is ever lifted, this is the first thing to
+    revisit, and the REJECT log lines carry the exact bytes needed
+    to tune the gate. (English + 7H/Echo-S retranslations remain in
+    scope and pass the gate -- their names carry at most an accent
+    or two.)
   - [ModelSpokenName dedup] ModelSpokenName hand-mirrors the People
     browser build pass's naming rules (4-requirement parity comment,
     v2.30.96); a future change to either copy alone silently drifts
