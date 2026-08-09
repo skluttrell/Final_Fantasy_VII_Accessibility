@@ -7223,6 +7223,20 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // low byte; for the item branch the u16 is the id (kept whole so thrown
 // weapons at 128-255 resolve).
 //
+// LIMIT LIST (v2.30.98): state 24's widget was the last silent battle
+// list ("LIMIT LEVEL 1 / Braver" popup after confirming Limit). Decoded
+// offline (ff7_limit_battle_widget_static.py, fn[24] 0x6DA67E + widget
+// init 0x6DA51A): widget at +0x118, entries = PARALLEL BYTE ARRAYS at
+// CHAR_BLOCK+0xAC (u8 id[3] then u8 target[3] then u8 count at +6) —
+// the init sets visible rows = total = count, so the list never scrolls
+// and the index is the raw vertical cursor, no w0/scroll term. The id
+// IS the 0-based limit index (the game's own draw feeds it to kernel
+// text section 3 = magic names biased +128), i.e. the exact lookup
+// ResolveActionName's branch 7 already performs — so names come from
+// the live-verified Limit machinery with zero new text code. The entry
+// announce is prefixed "Limit level N." (savemap charrec +0x0E) to
+// mirror the window's own title.
+//
 // TARGETING: after Confirm, the game returns BATTLE_MENU_STATE to 0 and
 // runs target selection there (prev state 0x91EF98 keeps the menu it came
 // from) â€” state 0 is ALSO the idle ATB-wait state, so raw "state == 0"
@@ -7286,6 +7300,12 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
     // genuinely new turn (even for the same character) does.
     bool      turn_announced = false;
     uint8_t   turn_slot      = 0xFF;
+    // v2.30.98: speak "Limit level N." ahead of the first technique after
+    // the limit list opens (the window's own title), then techniques alone
+    // on later cursor moves. One utterance — a separate interrupt=true
+    // header line would cut the technique name (the v2.37 turn-prefix
+    // lesson applied).
+    bool      limit_header_pending = false;
 
     const auto reset_all = [&]() {
         last_state    = FF7Addr::BMENU_STATE_CLOSED;
@@ -7295,6 +7315,7 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
         last_target   = 0xFF;
         turn_announced = false;
         turn_slot      = 0xFF;
+        limit_header_pending = false;
     };
 
     // Label an actor slot for target announcements (see header comment).
@@ -7345,7 +7366,11 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                 last_state == FF7Addr::BMENU_STATE_COMMAND     ||
                 last_state == FF7Addr::BMENU_STATE_ITEM_LIST   ||
                 last_state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
-                last_state == FF7Addr::BMENU_STATE_SUMMON_LIST;
+                last_state == FF7Addr::BMENU_STATE_SUMMON_LIST ||
+                last_state == FF7Addr::BMENU_STATE_LIMIT;   // v2.30.98:
+                // single-target limits (Braver) run the same post-Confirm
+                // target selection as the other lists — fn[24]'s confirm
+                // path calls the identical targeting-defaults helper.
             targeting   = (state == FF7Addr::BMENU_STATE_TARGETING) && from_menu;
             last_target = 0xFF;   // re-announce the first target when armed
 
@@ -7354,6 +7379,10 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
             // the cursor speaks immediately on the state-1 entry poll).
             last_cmd_key  = 0xFFFFFFFF;
             last_list_key = 0xFFFFFFFF;
+            // v2.30.98: entering the limit list (from anywhere) re-arms the
+            // "Limit level N." prefix; leaving it disarms so a stale flag
+            // can't prefix a later session's first entry.
+            limit_header_pending = (state == FF7Addr::BMENU_STATE_LIMIT);
 
             if (Config::Get().debug_log) {
                 char dbg[96];
@@ -7578,6 +7607,79 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                     static_cast<unsigned>(state), index, w0, w4, scroll,
                     static_cast<unsigned>(entry_id),
                     static_cast<unsigned>(open_cmd), name.c_str());
+                Log::Write(dbg);
+                TTS::Speak(name, /*interrupt=*/true);
+            }
+        } else if (state == FF7Addr::BMENU_STATE_LIMIT) {
+            // ---- limit-select list (v2.30.98) ---------------------------
+            // Layout differs from every other list (see the LIMIT entry in
+            // ff7_addresses.h's LIST WIDGETS note): parallel byte arrays at
+            // CHAR_BLOCK+0xAC, index = the raw vertical cursor (the widget
+            // init pins visible rows = total entries, so nothing scrolls
+            // and w0/scroll never contribute).
+            const uint32_t widget = FF7Addr::BATTLE_WIDGET_BASE
+                + slot * FF7Addr::BATTLE_WIDGET_SLOT_STRIDE
+                + FF7Addr::BWIDGET_LIMIT_LIST;
+            const uint32_t w4 =
+                *reinterpret_cast<const volatile uint32_t*>(widget + FF7Addr::BWIDGET_OFF_VERT);
+            const uint32_t table = FF7Addr::BATTLE_CHAR_BLOCK
+                + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
+                + FF7Addr::BCHAR_OFF_LIMIT_LIST;
+            const uint8_t count =
+                *reinterpret_cast<const volatile uint8_t*>(table + FF7Addr::BLIST_LIMIT_COUNT_OFF);
+            // count outside 1..3 or a cursor past the end = the block is
+            // mid-build (the builders rewrite it on limit-level changes);
+            // skip rather than read a half-written entry.
+            if (count == 0 || count > FF7Addr::BLIST_LIMIT_MAX || w4 >= count)
+                goto targeting_check;
+
+            {
+                const uint32_t key = (static_cast<uint32_t>(state) << 16) | w4;
+                if (key == last_list_key)
+                    goto targeting_check;
+                last_list_key = key;
+
+                const uint8_t entry_id =
+                    *reinterpret_cast<const volatile uint8_t*>(table + w4);
+
+                // The stored id is the 0-based limit index — the exact
+                // input ResolveActionName's branch 7 takes (magic entry
+                // 128+id, live-verified v2.30.77). Command 0x14 = Limit is
+                // hardcoded rather than read from BATTLE_ISSUED_CMD: state
+                // 24 IS the limit widget by identity, no dispatch needed.
+                std::wstring name;
+                if (!ResolveActionName(0x14, entry_id, name)) {
+                    // Unnamed ('????' sentinel / section unavailable):
+                    // positional feedback keeps the list navigable.
+                    wchar_t rowbuf[32];
+                    _snwprintf_s(rowbuf, _countof(rowbuf), _TRUNCATE,
+                                 L"limit %u", w4 + 1u);
+                    name = rowbuf;
+                }
+
+                // Prefix the window's own title once per list-open. The
+                // level is read from the savemap record (+0x0E) — the same
+                // source the game's builder chose the techniques from.
+                if (limit_header_pending) {
+                    limit_header_pending = false;
+                    const uint32_t rec = CharRecFromPartySlot(slot);
+                    if (rec) {
+                        const uint8_t lvl = *reinterpret_cast<const volatile uint8_t*>(
+                            rec + FF7Addr::SAVEMAP_CHAR_LIMITLVL_OFF);
+                        wchar_t hdr[48];
+                        _snwprintf_s(hdr, _countof(hdr), _TRUNCATE,
+                                     L"Limit level %u. ",
+                                     static_cast<unsigned>(lvl));
+                        name.insert(0, hdr);
+                    }
+                }
+
+                char dbg[160];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU limit slot=%u w4=%u count=%u id=0x%02X => %ls",
+                    static_cast<unsigned>(slot), w4,
+                    static_cast<unsigned>(count),
+                    static_cast<unsigned>(entry_id), name.c_str());
                 Log::Write(dbg);
                 TTS::Speak(name, /*interrupt=*/true);
             }

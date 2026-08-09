@@ -1755,6 +1755,24 @@ constexpr uint32_t BATTLE_ACTION_IDX_OFFSET   = 0x3E;   // actionIdx (uint16_t) 
 //       (vert+scroll)*3  [= w0 + (w4+scroll)*3]. (Summon shares the magic
 //       widget family; grid/stride assumed identical, verify when the
 //       player has summons.)
+//     LIMIT (state 24, CHAR_BLOCK+slot*0x440+0xAC — v2.30.98 static,
+//       ff7_limit_battle_widget_static.py disasm of fn[24] 0x6DA67E + its
+//       widget-init 0x6DA51A + the menu-module builders 0x703517/0x703048):
+//       PARALLEL BYTE ARRAYS, not a struct list — u8 id[3] at +0 (0-based
+//       limit index; the draw code 0x6DF40D feeds it to get_kernel_text
+//       section 3 = the magic-names file at bias 128, i.e. EXACTLY the
+//       ResolveActionName branch-7 lookup, live-verified idx 0 = Braver),
+//       u8 target_flags[3] at +3 (fn[24] confirm: table[w4+3] -> 0xDC3C84),
+//       u8 COUNT at +6 (widget init copies it to 0xDC35A4 AND to the
+//       widget's visible-rows +0x0C and total-entries +0x1C — so the list
+//       NEVER SCROLLS and index = w4 ALONE, no w0/scroll term), then
+//       3 x 0x1C attack-data records at +8. The builders fill ids from
+//       the CURRENT limit level only (savemap charrec +0x0E), technique
+//       j of level L via helper 0x5C8684(record, L*3+j) — which is why
+//       the window shows one level's techniques. NOTE: fn[24] and the
+//       draw code index their slot from 0xDC3C80 (a second active-slot
+//       byte) while the widget INIT uses 0xDC3C7C — equal whenever the
+//       widget is open; the mod reads its usual 0xDC3C7C.
 //   Widget cursor fields unchanged: +0 horiz, +4 vert, +0x14 scroll.
 //
 // CONFIRM FLOW (what the game writes when the player picks something):
@@ -1773,6 +1791,10 @@ constexpr uint32_t BLIST_ITEM_STRIDE   = 6;   // u16 id @+0, empty 0xFFFF
 constexpr uint32_t BLIST_MAGIC_STRIDE  = 8;   // u8  id @+0, empty 0xFF
 constexpr uint32_t BLIST_MAGIC_NCOLS   = 3;   // magic/summon are 3-col grids
 constexpr uint32_t BLIST_MAGIC_DISABLE_OFF = 6; // u8 bit 0x02 = can't use
+
+// v2.30.98 limit-list layout (see the LIMIT entry in the LIST WIDGETS note).
+constexpr uint32_t BLIST_LIMIT_COUNT_OFF = 6;   // u8 entry count @ table+6
+constexpr uint32_t BLIST_LIMIT_MAX       = 3;   // ids occupy table+0..+2
 
 // ---------------------------------------------------------------------------
 // BATTLE SCENE MESSAGES (v2.36) — enemy AI dialogue like the scorpion's
@@ -1802,6 +1824,10 @@ constexpr uint32_t BATTLE_MENU_STATE       = 0x0091EF9C; // u16 current widget
 constexpr uint32_t BATTLE_MENU_PREV_STATE  = 0x0091EF98; // u16 previous widget
 constexpr uint32_t BATTLE_ACTIVE_SLOT      = 0x00DC3C7C; // u8 party slot 0-2
 constexpr uint32_t BATTLE_MENU_BUSY        = 0x00DC35AC; // u32 transition flag
+// v2.30.98: widget-init copy of the limit list's count byte (table+6) —
+// doc-only; the mod reads the per-slot count byte itself. Sits right
+// before BATTLE_MENU_BUSY in the same block.
+constexpr uint32_t BATTLE_LIMIT_COUNT      = 0x00DC35A4; // u16 limit entries
 
 // Live-confirmed BATTLE_MENU_STATE values the mod reacts to.
 constexpr uint16_t BMENU_STATE_TARGETING   = 0;      // also plain ATB wait
@@ -1828,6 +1854,8 @@ constexpr uint32_t BWIDGET_COMMAND     = 0x00;
 constexpr uint32_t BWIDGET_ITEM_LIST   = 0x38;   // state-5 widget
 constexpr uint32_t BWIDGET_MAGIC_LIST  = 0x70;   // state-6 widget
 constexpr uint32_t BWIDGET_SUMMON_LIST = 0xA8;   // state-7 widget
+constexpr uint32_t BWIDGET_LIMIT_LIST  = 0x118;  // state-24 widget (v2.30.98,
+                                                 // fn[24] 0x6DA67E disasm)
 constexpr uint32_t BWIDGET_OFF_HORIZ   = 0x00;
 constexpr uint32_t BWIDGET_OFF_VERT    = 0x04;
 constexpr uint32_t BWIDGET_OFF_SCROLL  = 0x14;
@@ -1852,6 +1880,11 @@ constexpr uint32_t BATTLE_CHAR_BLOCK        = 0x00DBA498;
 constexpr uint32_t BATTLE_CHAR_SLOT_STRIDE  = 0x440;
 constexpr uint32_t BCHAR_OFF_CMD_NCOLS      = 0x21;   // u8 command column count
 constexpr uint32_t BCHAR_OFF_CMD_TABLE      = 0x4C;   // 6-byte entries
+constexpr uint32_t BCHAR_OFF_LIMIT_LIST     = 0xAC;   // parallel byte arrays:
+                                                      // ids +0..2, target +3..5,
+                                                      // count +6, attack recs +8
+                                                      // (v2.30.98, see LIST
+                                                      // WIDGETS note)
 constexpr uint32_t BCHAR_OFF_MAGIC_LIST     = 0x108;  // 8-byte entries (v2.36
                                                       // stride correction; the
                                                       // magic MENU's draw loop

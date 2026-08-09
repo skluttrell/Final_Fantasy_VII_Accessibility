@@ -246,6 +246,8 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+colÂ·4: u8[+0] command id, u8[+1] action type (Confirm jump-table selector 0â€“0xB), u8[+2] action id. **Command ids are 1-BASED for basic commands** (âœ“ live: 1=Attack, 2=Magic, 4=Item; 0xFF=empty cell) **but Limit keeps kernel id 0x14=20** (âœ“ live: replaces Attack's row-0 entry when the gauge fills; Confirm â†’ state 24). +0x108 (0xDBA5A0) magic list (âœ“ live via state 6), +0x2C8 (0xDBA760) summon list, both 6-byte entries. **v2.33: NOT battle-only â€” the menu populates it too**, with EFFECTIVE stats (materia applied): +0x02..+0x07 u8 str/vit/mag/spr/dex/luck, +0x08/+0x0A/+0x0C/+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/maxHP/MP/maxMP (single BSS pattern hit against the status screenshot; hunt + dump logs 2026-07-18). Menu consumers must guard staleness: block HP pair == savemap record HP pair |
 | `BATTLE_ITEM_LIST_TABLE` | `0x009AC354` | Global (not per-slot) ITEM list (state 5): single column, **6-byte** entries, u16 id at +0 (**0xFFFF = empty; id 0 = Potion is VALID**, v2.36 â€” the old "skip 0" silenced Potions), u8[+4] enable flag. index = w0+w4+scroll |
 | *(magic/summon list format)* | â€” | **3-COLUMN grid, 8-byte entries** (v2.36 Confirm-path disasm â€” NOT the item layout): u8 id at +0 (0xFF = empty), u8[+6] bit 0x02 = disabled. Selected index = **w0 + (w4+scroll)Â·3**. Tables: magic = CHAR_BLOCK+slotÂ·0x440+0x108, summon = +0x2C8. The v2.9 linear formula/6-byte reading was correct only for items + a â‰¤3-spell single row |
+| *(limit list format)* | -- | **State-24 LIMIT-SELECT list (v2.30.98 static, ff7_limit_battle_widget_static.py): PARALLEL BYTE ARRAYS at CHAR_BLOCK+0xAC (0xDBA544)** -- u8 id[3] at +0 (0-based limit index; the draw code 0x6DF40D feeds it to kernel-text section 3 = the magic-names file biased +128, i.e. EXACTLY ResolveActionName branch 7, live-verified idx 0 = Braver), u8 target_flags[3] at +3 (confirm: table[w4+3] -> 0xDC3C84), **u8 count at +6**, 3 x 0x1C attack-data records at +8. Widget at +0x118 (0xDC21B8 + slot*0x700); init 0x6DA51A pins visible rows = total entries = count, so the list **NEVER scrolls and index = the raw vertical cursor w4** (no w0/scroll term -- unlike every other battle list). Builders (menu module: 0x703517 all-slots sync loop, 0x703048 Set-handler path) fill ids from the CURRENT limit level (savemap charrec +0x0E) via helper 0x5C8684(record, level*3+technique) -- why the window shows one level's techniques only. fn[24] = fn[15] = 0x6DA67E; the handler and draw index their slot from 0xDC3C80 (second active-slot byte, = 0xDC3C7C whenever the widget is open) |
+| `BATTLE_LIMIT_COUNT` | `0x00DC35A4` | u16 = widget-init copy of the limit list's count byte (table+6); sits just before BATTLE_MENU_BUSY. Doc-only -- the mod reads the per-slot count byte (v2.30.98) |
 | `BATTLE_TEXT_QUEUE` | `0x00BF1EB8` | Battle text display queue (v2.36): battle_text_data[64], **stride 6**, s16 buffer_idx at +0 (-1 = empty slot, â‰¥0x100 = scene AI dialogue). FFNx name-anchored (add_text_to_display_queue+0x25). The channel BattleMessageThread reads for the scorpion tail warning etc. |
 | `SCENE_MSG_BASE / _OFFSETS` | `0x009AD1E0 / 0x009AD9E0` | Current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0 + (idx-0x100)Â·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD â†’ 0x41D2E5). v2.36 |
 | `BATTLE_ISSUED_CMD` | `0x00DC3C70` | u8 = FFNx issued_command_id (âœ“ live: 1 on Attack confirm, 2 on Magic, 19=0x13 on Right press = Change-row, 20 on Limit) |
@@ -7111,6 +7113,65 @@ log header v2.30.97.
 
 ---
 
+### v2.30.98 (2026-08-09): battle limit-break selection spoken -- state 24 decoded
+
+**User request** (screenshot BattleScreen/limit_break_selection_1.jpg):
+after confirming Limit in battle, the "LIMIT LEVEL 1 / Braver" selection
+window was silent -- BMENU state 24 was the last unvoiced battle list
+(known since v2.9 as "limit-ish", never decoded).
+
+**Static session** (NEW investigate/ff7_limit_battle_widget_static.py,
+log limit_battle_widget_static_20260809_133041.log -- exe file only,
+same recipe as the v2.36 submenu session). fn table 0x91E6B8 gave
+fn[24] = fn[15] = 0x6DA67E; one listing each of the handler, its
+widget-init 0x6DA51A (found adjacent), the draw 0x6DF40D, and the
+menu-module builders 0x703517/0x703048 settled everything:
+
+- Widget = WIDGET_BASE + slot*0x700 + **0x118** (0xDC21B8). The init
+  pins visible rows = total entries = count, so the list NEVER scrolls
+  and the selected index is the RAW vertical cursor w4 -- no w0/scroll
+  term, unlike every other battle list.
+- Entries = **parallel byte arrays at CHAR_BLOCK+0xAC** (0xDBA544):
+  u8 id[3] at +0, u8 target_flags[3] at +3 (confirm: table[w4+3] ->
+  0xDC3C84), u8 count at +6 (copied to 0xDC35A4 at init), 3 x 0x1C
+  attack records at +8.
+- The id IS the 0-based limit index: the game's own draw feeds it to
+  get_kernel_text(section 3, id) = the magic-names file at bias +128 --
+  byte-for-byte the lookup ResolveActionName branch 7 already performs
+  (live-verified v2.30.77: idx 0 = Braver = entry 128). Zero new name
+  machinery needed, Aeris/Tifa block swap inherited for free.
+- Builders fill ids from the CURRENT limit level (savemap charrec
+  +0x0E) via helper 0x5C8684(record, level*3+technique) -- why the
+  window lists one level's techniques only.
+- fn[24]/draw index their slot from 0xDC3C80 (a second active-slot
+  byte); the init uses the known 0xDC3C7C -- equal while open.
+
+**Mod changes (BattleMenuThread only, no cfg change)**: new state-24
+branch -- reads w4 + the per-slot count byte (count 1..3 and w4 < count
+gate out mid-build reads), resolves via ResolveActionName(0x14, id)
+with a positional "limit N" fallback, prefixes "Limit level N." (charrec
++0x0E) on the first announce per list-open (one utterance, the v2.37
+turn-prefix lesson), logs "BMENU limit slot= w4= count= id= =>". Also
+FIXED IN PASSING: the targeting arm list (from_menu) omitted state 24,
+so the post-Confirm target cursor after a single-target limit (Braver)
+was silent -- now armed like the other lists.
+
+**Verify queue [LIMITSEL98]** (first battle with a full limit gauge):
+(a) confirming Limit speaks "Limit level 1. Braver." and cursor moves
+between techniques speak each name (needs 2+ learned -- Cross-slash);
+(b) cancel back to the command grid re-announces "Limit", re-entering
+re-speaks the header; (c) after confirming Braver the enemy target
+cursor SPEAKS (the from_menu fix); (d) a character at limit level 2+
+says the right level and techniques; (e) Cait Sith/Tifa limit widgets
+(states 26/27, different UIs -- slots/reels) remain out of scope and
+should stay silent rather than misspeak; (f) log header v2.30.98.
+
+**Residual**: states 26 (Cait Sith slots) and 27 (Tifa reels) have their
+own widgets (handlers 0x6DA898/0x6DA795, dumped in the same log for a
+future session); the target_flags byte at +3 is decoded but unused.
+
+---
+
 ## 9. Menu and Config TTS (v2.0â€“v2.3, 2026-07-01â€“02)
 
 ### Overview
@@ -7441,6 +7502,9 @@ Proven payoffs of cluster reasoning so far:
 | `0x6D8C75` / `0x6D91FA` | state 0 (actor ready) / state 1 (command menu) handlers | state 1 is where the command cursor logic lives; Confirm jump table at 0x6D97F7 |
 | `0x6D98E3` / `0x6D9B98` / `0x6DA072` | state 5/6/7 list handlers | magic-shaped/per-actor lists; widget ptr = 0xDC20D8/0xDC2110/0xDC2148 + slotÂ·0x700 |
 | `0x6F4DB2` | shared widget navigation helper | takes widget ptr arg; ALL cursor inc/dec/wrap/scroll logic â€” cursor ops are [reg+disp], invisible to absolute-operand scans |
+| `0x6DA51A` / `0x6DA67E` | limit widget init / state-24 limit-select handler (fn[15] = fn[24]) | init copies count (table+6) to 0xDC35A4 + the widget's rows/total; the handler's confirm writes table[w4] -> 0xDC3C78 and table[w4+3] -> 0xDC3C84, calls 0x6E5C52, state -> 0 with prev 0x18 (v2.30.98, ff7_limit_battle_widget_static.py) |
+| `0x6DF40D` | battle limit window draw | rows via get_kernel_text(section 3, table[i]) = magic names biased +128; title's level digit from savemap charrec +0x0E (v2.30.98) |
+| `0x703517` / `0x703048` | limit-list builders (menu module) | fill the battle char blocks' limit ids (all slots / Set-handler path) from the savemap limit level via helper 0x5C8684(record, level*3+technique), plus the 0x1C attack records from 0x91F6D4/0x91F688 (v2.30.98) |
 | `0x6E5C52` | set_battle_targeting_data (FFNx) | +0x14E/+0x164 â†’ target type/index globals |
 | `0x6E6291` | battle_update_targeting_info (FFNx) | +0x684 â†’ targeting_actor_id 0xDC3C98 |
 | `0x6D72E9` / `0x6D1CC0` | kernel2 request consumer / dispatcher | real CALL to 0x41963C at 0x6D72C6 |
@@ -7653,6 +7717,7 @@ Sub-map of `modules_global_object` (0xCC0D88 + offset; PSX decomp names in quote
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0xDBA498` | BATTLE_CHAR_BLOCK | Per-party-slot char data, stride 0x440 â€” battle command/magic/summon tables (v2.9) AND, v2.33, the menu's computed EFFECTIVE stats: +0x02..+0x07 u8 stats, +0x08..+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/MP pairs. See the Â§4 row for the full field map. Sits BELOW the savemap â€” the two must not be conflated |
+| `0xDBA544` | battle LIMIT list (slot 0) | CHAR_BLOCK+0xAC parallel byte arrays: ids +0..+2, target flags +3..+5, count +6, 3 x 0x1C attack records +8; built from the savemap limit level by the menu module (v2.30.98; full layout in the S4 limit-list row) |
 
 ### Kernel gear-data arrays: 0xDBCAEE â€“ â‰ˆ0xDBEB00 (loaded from kernel.bin)
 
@@ -7728,8 +7793,11 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC6B2C` | SAVEMENU_SLOT_SCROLL | u8 0..12 scroll offset, LIVE-CONFIRMED (field probe 20260717_200802); absolute slot = row + scroll. Neighbors: 0xDC6B34 = slot count (15), 0xDC6B24 = visible rows (3), 0xDC6B3C tween + 0xDC6B48 direction flag = scroll-animation noise |
 | `0xDC208C` | kernel2 lookup result ptr | written after every consumer CALL to 0x41963C â€” but consumer is FFNx-replaced, so **never written in practice**; observed 0 always (2026-07-11) |
 | `0xDC20A0` | BATTLE_WIDGET_BASE | per-slot (+slotÂ·0x700) battle menu widget structs â€” command cursor at +0/+4; see Â§4 (2026-07-12) |
+| `0xDC21B8` | limit-select widget (slot 0) | state-24 widget = WIDGET_BASE+0x118 (+slot*0x700); init 0x6DA51A zeroes cursors (unless resume flag 0xDC3C5C), sets rows = total = count -> never scrolls (v2.30.98) |
+| `0xDC35A4` | BATTLE_LIMIT_COUNT | u16 widget-init copy of the limit list's count byte (CHAR_BLOCK+0xB2); see the S4 limit-list row (v2.30.98) |
 | `0xDC35AC` | BATTLE_MENU_BUSY | u32 transition flag; `0xDC35A8` = command-menu-opened SFX-played byte |
 | `0xDC3C54â€“0xDC3C98` | issued-action staging block | 0xDC3C70 cmd id, 0xDC3C78 action id, 0xDC3C7C ACTIVE SLOT, 0xDC3C84 action idx, 0xDC3C90/94 target type/idx, 0xDC3C98 targeting actor (all = FFNx externals; static 2026-07-12) |
+| `0xDC3C80` | second active-slot byte | fn[24]/the limit draw index the char + widget blocks from THIS copy while the widget init uses 0xDC3C7C -- equal whenever the battle menu is open; the mod keeps reading 0xDC3C7C (v2.30.98) |
 | `0xDC3640` | flash-name compose buffer | dispatcher branch 4 (cmd 0x07) output |
 | `0xDC38E0` | BATTLE_ACTOR_DATA (FFNx struct) | +0x08 pending pulse, +0x0C command_index, +0x10 action_index â€” the v2.7 flash-message source |
 | `0xDCA028` | SAVEMENU_WIDGET_STATE | save-menu widget state machine: 0=file grid, 1=slot list, 7=save-confirm dialog (v2.29.5; only 7 acted on) |
