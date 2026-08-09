@@ -19,7 +19,7 @@
 // artifact in a play-test log said WHICH build produced it -- diagnosing the
 // 2026-08-04 station report meant inferring the deployed version from file
 // timestamps. One constant, bumped per release alongside the commit tag.
-#define FF7ACCESS_VERSION "2.30.102"
+#define FF7ACCESS_VERSION "2.30.103"
 
 namespace Config {
 

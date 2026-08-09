@@ -2660,6 +2660,20 @@ correctly on both installs; (b) materia commands (Steal/Sense/Mug...)
 named; a 2x-Cut-class command (id > 0x17) named if one is equipped;
 (c) no "REJECT src=cmdmenu" or sec=5 REJECT lines in clean play;
 (d) log header v2.30.102.
+2026-08-09 EXTENDED BY v2.30.103 (prevention rework, deployed both
+13D14A93D2133178, research S8 v2.30.103): new offline dump tool
+byte-verified the whole piece-18 table (cap 0x20 exact; entry-0
+'Left' filler is VANILLA, not Echo-S) and exposed a second dormant
+instance -- the hardcoded 0x12/0x13 cases were REVERSED vs both the
+file and the .49 disasm; now corrected (0x12 Change / 0x13 Defend)
+and demoted to last-resort behind GKT + heap. Debug-gated shadow
+check logs "BMENU shadow diff" whenever GKT and heap disagree on a
+command name. Additional verify items:
+(e) zero "BMENU shadow diff" lines in clean 2026-plain play (any hit
+    = investigate immediately -- it means a source is wrong);
+(f) Right on Attack still announces "Defend", Left "Change" (the
+    unchanged v2.30.49 state path);
+(g) log header v2.30.103.
 
 [REVIEW101] v2.30.101 review fixes -- verify queue + skipped findings
 ------------------------------------------------------------------------

@@ -2488,15 +2488,14 @@ static bool ResolveViaGameKernelText(int section, uint32_t idx,
     // never flash in battle (usable items are 0-0x7F, thrown weapons
     // 0x80-0xFF), so anything above is a corrupt/mid-write pair that must
     // not resolve to a plausible equipment name. Section 5 (command names)
-    // caps at 0x20 = the file's 32-entry extent (v2.30.102: its
-    // description sibling enumerates as exactly 32 entries in the
-    // 2026-08-01 kernel2 section dump, and the engine's own cmd->branch
-    // table 0x6D70A8 tops out at id 0x20 = enemy-action, which is never a
-    // menu id) — the file is RAW-id-indexed (see CommandMenuName), so the
-    // old 0x18 cap would have cut off the Slash-All/2x-Cut id range the
-    // v2.30.100 rework exists to name. kernel2_get_text itself has NO
-    // bounds check, so the caps here are the only thing preventing an
-    // off-table u16 read.
+    // caps at 0x20 = the file's 32-entry extent, byte-verified v2.30.103
+    // (ff7_kernel_text_tables_dump.py: KERNEL.BIN piece 18 offset table =
+    // 64 bytes = 32 entries, [0]'Left' filler .. [0x1B]'4x-Cut', both
+    // installs byte-identical) — the file is RAW-id-indexed (see
+    // CommandMenuName), so the pre-.102 0x18 cap would have cut off the
+    // Slash-All/2x-Cut id range the v2.30.100 rework exists to name.
+    // kernel2_get_text itself has NO bounds check, so the caps here are
+    // the only thing preventing an off-table u16 read.
     const uint32_t cap =
           (section == FF7Addr::GKT_SECTION_MAGIC)  ? 0xE0u
         : (section == FF7Addr::GKT_SECTION_SUMMON) ? 0xE0u - 0x38u
@@ -7694,23 +7693,14 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 // ---------------------------------------------------------------------------
 
 // Resolve a battle COMMAND id to its display name.
-// Priority: (1) hardcoded names for ids the kernel command-name table does
-// not cover 1:1 â€” the Defend/Change-row pseudo-commands and Limit (which
-// keeps its unshifted kernel id, live-confirmed); (2) the game's own
-// get_kernel_text, section 5 at the RAW id (the file carries a filler
-// entry 0 — the engine's menu draw at 0x71F35A pushes the id unadjusted);
-// (3) the scavenged heap section at entry id-1 (its signature anchors one
-// entry into the file, so 0-based-off-Attack holds THERE only); (4) the
-// v2.7 generic label ("command N" worst case). Returns via `out`.
+// Priority (reordered v2.30.103 -- the game's data first, hardcoded text
+// LAST): (1) the game's own get_kernel_text, section 5 at the RAW id;
+// (2) the scavenged heap section at entry id-1; (3) hardcoded last-resort
+// names for the three ids whose misnaming would misdescribe an ACTION
+// (0x12/0x13/0x14); (4) the v2.7 generic label ("command N" worst case).
+// Returns via `out`.
 static void CommandMenuName(uint8_t id, std::wstring& out)
 {
-    switch (id) {
-    case 0x12: out = L"Defend";     return;  // Left at column edge
-    case 0x13: out = L"Change row"; return;  // Right at column edge
-    case 0x14: out = L"Limit";      return;  // replaces Attack at full gauge
-    default:
-        break;
-    }
     // v2.30.100: the game's own command-name lookup first (GKT section 5 =
     // the command-names file). On 2013+7H the heap scan has NEVER found
     // this section (log.10: command=0 with a 22-scan fruitless streak), so
@@ -7721,17 +7711,40 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
     // v2.30.102: the index is the RAW command id, NOT id-1. The engine's
     // own command-menu draw (call site 0x71F35A, byte-verified) pushes the
     // menu row's id byte unadjusted: the file is id-indexed with a filler
-    // entry 0 (vanilla's description sibling duplicates entry 1 into
-    // entry 0; Echo-S rebuilds entry 0 as a "Left" label — which is
-    // exactly what v2.30.100/.101 spoke for Attack in log.11, every name
-    // shifted one down). The id-1 convention belongs ONLY to the heap
-    // fallback below, whose "Attack|Magic|" signature anchors its base one
-    // entry into the file — as anchored, id-1 there was play-proven for
-    // weeks and stays.
+    // entry 0. v2.30.103 correction from the KERNEL.BIN piece-18 dump
+    // (ff7_kernel_text_tables_dump.py, both installs byte-identical):
+    // the 'Left' filler at entry 0 is VANILLA, not an Echo-S rebuild;
+    // 32 entries total, [1]Attack .. [0x1B]4x-Cut. The id-1 convention
+    // belongs ONLY to the heap fallback below, whose "Attack|Magic|"
+    // signature anchors its base one entry into the file — as anchored,
+    // id-1 there was play-proven for weeks and stays.
     if (id != 0 &&
         ResolveViaGameKernelText(FF7Addr::GKT_SECTION_COMMAND,
-                                 static_cast<uint32_t>(id), out))
+                                 static_cast<uint32_t>(id), out)) {
+        // v2.30.103 SHADOW CHECK (debug builds of the log only): whenever
+        // the play-proven alternate source can also resolve this id,
+        // compare and log any disagreement. This is the regression net the
+        // .100 source migration lacked -- the .102 shifted-name bug would
+        // have printed "shadow diff id=0x01 gkt=Left heap=Attack" on the
+        // first battle's log instead of waiting for a human ear. A diff
+        // line means A SOURCE IS WRONG (convention drift or heap rot),
+        // not necessarily the spoken one; the raw strings carried are the
+        // evidence. Costs one heap decode per cursor change, debug only.
+        if (Config::Get().debug_log) {
+            std::wstring shadow;
+            if (SectionEntryText(ValidatedSection(&g_k2.command,
+                                                  g_k2_command_sig),
+                                 static_cast<uint32_t>(id) - 1, shadow) &&
+                PlausibleActionName(shadow) && shadow != out) {
+                char dbg[224];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU shadow diff id=0x%02X gkt=%ls heap=%ls",
+                    static_cast<unsigned>(id), out.c_str(), shadow.c_str());
+                Log::Write(dbg);
+            }
+        }
         return;
+    }
     // v2.22.1 fallback: the scavenged command section is a TRANSIENT battle
     // allocation (the 2026-07-16 session log caught a reused copy speaking
     // binary garbage on menu open) â€” revalidate its head signature before
@@ -7755,6 +7768,25 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
             Log::Write(dbg);
         }
         out.clear();
+    }
+    // v2.30.103 last-resort hardcoded names, CORRECTED and demoted from
+    // first to third. Pre-.103 these three sat ABOVE the lookups because
+    // the shifted id-1 convention couldn't serve them -- a patch over the
+    // very bug .102 fixed -- and 0x12/0x13 were REVERSED ("Defend"/
+    // "Change row") against both the piece-18 file ([0x12]='Change',
+    // [0x13]='Defend') and the project's own v2.30.49 state disasm
+    // (state 2 = Change preloads id 0x12 at 0x6D937C, state 3 = Defend
+    // preloads 0x13 at 0x6D9429). Dormant in practice: the command GRID
+    // never carries 0x12/0x13 (the .49 widget states own them, spoken by
+    // their own literals in BattleMenuThread), and 0x14 Limit resolves
+    // via GKT/heap above. These exist so a total lookup failure still
+    // names the three ids whose misnaming would misdescribe an action.
+    switch (id) {
+    case 0x12: out = L"Change"; return;  // Left on Attack (row swap)
+    case 0x13: out = L"Defend"; return;  // Right on Attack
+    case 0x14: out = L"Limit";  return;  // replaces Attack at full gauge
+    default:
+        break;
     }
     wchar_t generic_buf[32];
     out = GenericActionLabel(id, generic_buf, _countof(generic_buf));

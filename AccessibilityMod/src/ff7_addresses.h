@@ -1698,8 +1698,11 @@ constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
 //         ⚠ RAW-id-indexed: the engine's command-menu draw (call site
 //         0x71F35A, byte-verified 2026-08-09) pushes the menu row's id
 //         byte ([0xDD4714]+row*2+0x1A) UNADJUSTED — the file has a filler
-//         entry 0 (Echo-S rebuilds it as a "Left" label; the v2.30.100
-//         id-1 assumption spoke every command shifted one down, log.11)
+//         entry 0, 'Left' in VANILLA KERNEL.BIN piece 18 (v2.30.103 dump
+//         ff7_kernel_text_tables_dump.py: 32 entries, [1]Attack ..
+//         [0x12]Change [0x13]Defend [0x14]Limit .. [0x1B]4x-Cut; the
+//         v2.30.100 id-1 assumption spoke every command shifted one
+//         down, log.11)
 //     6..9 = battle statics via jump table 0x419A38 (7 COMPOSES into a
 //         scratch buffer = writes — NEVER call 7 from mod threads;
 //         9 returns ENEMY_ATTACK_NAME_TABLE rows, which the mod already
