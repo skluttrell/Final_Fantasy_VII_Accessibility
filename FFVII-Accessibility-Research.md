@@ -7386,6 +7386,82 @@ construction; the [K2DESC] command/mg_desc scan gap on 2013+7H is
 MOOT for the command grid (GKT section 5) but still open for
 descriptions.
 
+### v2.30.101 (2026-08-09): review fixes on the .96-.100 battle-name rework
+
+**Source**: user-invoked high-effort multi-agent code review of the
+local branch (.96-.100 + docs commits); 21 candidates independently
+verified, 10 reported. User directive: fix what needs no guessing and
+cannot break the day's features; re-track PARKED.txt. Five code fixes
++ one doc fix shipped, three findings deliberately skipped (parked
+under [REVIEW101]).
+
+**Fixes**:
+1. PlausibleActionName "????" exception (CONFIRMED regression): the
+   gate's 3-run rule rejected the REAL Enemy Skill named "????"
+   (Jersey, Shinra Mansion; magic entry 88; walkthrough-verified) --
+   casting it spoke only the generic label while the screen flashed
+   "????". Exact-match allowance added ONLY for L"????" (after
+   trailing-space trim): padding entries decode identically, but if
+   one ever flashes the screen shows "????" too, so parity holds
+   either way; the observed junk class is punctuation MIXES, never
+   exactly four question marks, so nothing junk is readmitted.
+2. GKT idx caps tightened to keep the engine's bias APPLIED
+   (ResolveViaGameKernelText): the .100 caps (0xE0 sections 0-3)
+   mirrored the engine's guard but not its CONSEQUENCE -- at
+   idx+bias >= 0xE0 (0x4196F1 cmp/jge) the engine silently DROPS the
+   bias and reads magic entry idx raw = a wrong-namespace name (a
+   wild limit idx 144 would speak magic entry 144, another
+   character's limit, where the old SectionEntryText bounds check
+   spoke the generic label). New caps = 0xE0 - bias per section
+   (biases 0x7B74A0 = {0,0x38,0x48,0x80}): magic 0xE0, summon 0xA8,
+   E.Skill 0x98, limit 0x60 -- every legitimate flash idx (summons
+   <16, E.Skills <24, limits ~<21) is far inside them.
+3. Section 4 cap 0x180 -> 0x100, restoring the v2.7-era "armor/
+   accessory ids never flash in battle" guard the .100 rework
+   dropped: usable items are 0-0x7F, thrown weapons 0x80-0xFF; a
+   corrupt idx 0x100-0x17F must fall back to the generic label, not
+   resolve through the engine's remap to a plausible equipment name.
+4. Limit-list header retry (state 24, .98): limit_header_pending was
+   cleared BEFORE the CharRecFromPartySlot null-check, so one failed
+   savemap lookup (mid-transition/flashback alias) dropped the
+   "Limit level N." prefix for the whole list-open. The clear now
+   lives inside the success path; a failed lookup retries on the
+   next entry announce.
+5. CommandMenuName heap-fallback gate rejection now logs
+   "BATTLE name REJECT src=cmdmenu id= => <decoded junk>" (the
+   v2.30.81 every-rejection-ships-evidence rule; this was the one
+   silent gate site). DLL literal check passed.
+6. Walk-into line announce gained the curated full_phrase suffix
+   suppression the .97 browser build pass has (parity: today no
+   curated full-phrase row classifies CLIMB/OK/EXIT so no audible
+   change, but the next curated climb-line row would have spoken
+   "X, hop in, climb" -- the exact v2.30.67 conflicting-instruction
+   failure -- and split the one-vocabulary rule between the voices).
+7. Doc fix ff7_addresses.h GET_KERNEL_TEXT idx-guard note: described
+   the caps as 0xE0/0x180/0x20 (0x20 never matched the code's 0x18);
+   now states the 0xE0-bias rule and points at the code.
+
+**Deliberately SKIPPED (parked, [REVIEW101] in PARKED.txt)**: the
+dmg_disp 50ms slot-reuse race (fix needs a design choice -- generation
+counter or value re-read -- against a feature awaiting its FIRST play
+test [MISS99]); the accented-name gate risk (rules (b)/(c) reject 3+
+extended glyphs -- correct for observed junk tails, potentially wrong
+for accent-heavy retranslations; no accented-name corpus exists to
+tune against, and loosening the gate un-guessed risks readmitting the
+junk .100 closed); the ModelSpokenName/browser-build-pass structural
+dedup (refactoring two just-shipped, unverified features).
+
+**Verify queue [REVIEW101]** (rides [GKT100]/[MISS99] play tests):
+(a) learn or cast Enemy Skill "????" (Jersey, Shinra Mansion) -- the
+name speaks (NVDA punctuation settings decide how "????" is voiced;
+any rendering beats the generic label + spurious REJECT line);
+(b) limit flashes still name correctly (caps must not have narrowed a
+legit path -- flash lines say src=gkt); (c) thrown weapons still name
+(item idx 0x80-0xFF inside the new 0x100 cap); (d) battle limit list
+still speaks "Limit level N." header on first entry; (e) any
+"REJECT src=cmdmenu" line in a log carries its junk evidence;
+(f) log header v2.30.101.
+
 ---
 ---
 

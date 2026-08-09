@@ -2369,11 +2369,11 @@ static void ScanKernel2Sections(bool urgent = false)
 // Rules are deliberately loose enough that no legitimate kernel name can
 // fail: trailing spaces are ignored; single punctuation marks and pairs
 // pass; rejections are (a) 3+ RUNS of the same non-alphanumeric char
-// (never in a real name, always in junk — and '????' padding entries
-// SHOULD read as unnamed), (b) 3+ extended glyphs (>0x7E: the é/ü table
-// region — decoded junk tails like "ÑÖ ÉàÅí" are full of them, real
-// names have at most an accent or two), (c) a punctuation-majority
-// string. KNOWN LIMITATION (accepted): sparse-letters junk like the
+// (never in a real name, always in junk), (b) 3+ extended glyphs (>0x7E:
+// the é/ü table region — decoded junk tails like "ÑÖ ÉàÅí" are full of
+// them, real names have at most an accent or two), (c) a
+// punctuation-majority string. ONE exact-match exception below: "????".
+// KNOWN LIMITATION (accepted): sparse-letters junk like the
 // v2.30.76 "% Y-c'  sSd p vge tex" shape passes these rules — rejecting
 // it would need tightness that risks real retranslated names; the
 // gkt-primary source is the defense for that class.
@@ -2384,6 +2384,17 @@ static bool PlausibleActionName(const std::wstring& name)
         --len;
     if (len == 0 || len > 32)
         return false;
+    // v2.30.101: "????" is a REAL castable name — the Enemy Skill learned
+    // from Jersey in the Shinra Mansion (walkthrough-verified; magic file
+    // entry 88) — and the screen flashes it, so sighted parity requires
+    // speaking it (v2.30.100 rejected it as junk: a confirmed regression).
+    // Kernel PADDING entries decode identically, but if one ever flashed
+    // the screen would render "????" too, so speaking it is still exactly
+    // what a sighted player gets. EXACT match only: the observed junk
+    // class is punctuation MIXES ("((((((%%%%", "-./.!###"), never
+    // precisely four question marks, so this cannot readmit it.
+    if (len == 4 && name.compare(0, 4, L"????") == 0)
+        return true;
     size_t alnum = 0, ext = 0, run = 0;
     wchar_t prev = 0;
     for (size_t i = 0; i < len; ++i) {
@@ -2464,15 +2475,29 @@ static void LogRejectedName(const char* src, int section, uint32_t idx,
 static bool ResolveViaGameKernelText(int section, uint32_t idx,
                                      std::wstring& out)
 {
-    // Index caps mirror the engine's own guards (GET_KERNEL_TEXT_FN notes):
-    // sections 0-3 bias-guard at 0xE0; section 4's remap tops out at 0x180
-    // (key-item ids never flash in battle); command ids are 1..~0x17 (the
-    // command-names file holds 24 entries — kernel2_get_text itself has NO
-    // bounds check, so the cap here is the only thing preventing an
-    // off-table u16 read).
-    const uint32_t cap = (section <= FF7Addr::GKT_SECTION_LIMIT) ? 0xE0u
-                       : (section == FF7Addr::GKT_SECTION_ITEM)  ? 0x180u
-                                                                 : 0x18u;
+    // Index caps, tightened v2.30.101 to keep the engine's bias APPLIED:
+    // get_kernel_text only adds a section's namespace bias (.data table
+    // 0x7B74A0 = {0, 0x38, 0x48, 0x80} for sections 0-3) while
+    // idx+bias < 0xE0 (0x4196F1 cmp/jge in the committed disassembly) —
+    // past that it silently DROPS the bias and reads magic entry idx raw,
+    // a wrong-namespace name (a wild limit flash idx of 144 would speak
+    // magic entry 144, another character's limit, instead of the generic
+    // label). Capping at 0xE0-bias restores the rejection the old
+    // SectionEntryText bounds check gave those indices. Section 4 caps at
+    // 0x100 = the restored v2.7-era guard: armor/accessory ids (0x100+)
+    // never flash in battle (usable items are 0-0x7F, thrown weapons
+    // 0x80-0xFF), so anything above is a corrupt/mid-write pair that must
+    // not resolve to a plausible equipment name. Command ids are 1..~0x17
+    // (the command-names file holds 24 entries — kernel2_get_text itself
+    // has NO bounds check, so the caps here are the only thing preventing
+    // an off-table u16 read).
+    const uint32_t cap =
+          (section == FF7Addr::GKT_SECTION_MAGIC)  ? 0xE0u
+        : (section == FF7Addr::GKT_SECTION_SUMMON) ? 0xE0u - 0x38u
+        : (section == FF7Addr::GKT_SECTION_ESKILL) ? 0xE0u - 0x48u
+        : (section == FF7Addr::GKT_SECTION_LIMIT)  ? 0xE0u - 0x80u
+        : (section == FF7Addr::GKT_SECTION_ITEM)   ? 0x100u
+                                                   : 0x18u;
     if (idx >= cap)
         return false;
     uint8_t raw[64];
@@ -7693,9 +7718,24 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
     // every lookup, and (v2.30.100) gate the text like every battle name.
     if (id != 0 &&
         SectionEntryText(ValidatedSection(&g_k2.command, g_k2_command_sig),
-                         static_cast<uint32_t>(id) - 1, out) &&
-        PlausibleActionName(out))
-        return;
+                         static_cast<uint32_t>(id) - 1, out)) {
+        if (PlausibleActionName(out))
+            return;
+        // v2.30.101: the rejection must ship its evidence (the v2.30.81
+        // standing rule — every other gate site logs; this one dropped the
+        // junk silently, leaving the exact reused-copy class this fallback
+        // exists for undiagnosable from a tester log). Same shape as the
+        // heap-reject line in ResolveActionName: no raw bytes at this
+        // altitude, so the decoded junk itself is the evidence.
+        if (Config::Get().debug_log) {
+            char dbg[224];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BATTLE name REJECT src=cmdmenu id=%u => %ls",
+                static_cast<unsigned>(id), out.c_str());
+            Log::Write(dbg);
+        }
+        out.clear();
+    }
     wchar_t generic_buf[32];
     out = GenericActionLabel(id, generic_buf, _countof(generic_buf));
 }
@@ -8075,9 +8115,16 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                 // level is read from the savemap record (+0x0E) — the same
                 // source the game's builder chose the techniques from.
                 if (limit_header_pending) {
-                    limit_header_pending = false;
                     const uint32_t rec = CharRecFromPartySlot(slot);
+                    // v2.30.101: clear the flag only once the header is
+                    // actually composed. Clearing before the null-check
+                    // meant one failed record lookup (leader cross-check /
+                    // flashback-alias resolution mid-transition) dropped
+                    // the "Limit level N." prefix for the whole list-open;
+                    // leaving it pending retries on the next entry
+                    // announce instead.
                     if (rec) {
+                        limit_header_pending = false;
                         const uint8_t lvl = *reinterpret_cast<const volatile uint8_t*>(
                             rec + FF7Addr::SAVEMAP_CHAR_LIMITLVL_OFF);
                         wchar_t hdr[48];
@@ -12622,7 +12669,23 @@ static DWORD WINAPI FieldNavThread(LPVOID /*unused*/)
                                     ? FF7LineCatalog::Find(
                                           static_cast<uint16_t>(field_id), ent)
                                     : nullptr;
-                            if (li) {
+                            // v2.30.101: curated full-phrase names ("brown
+                            // train, hop in") already carry their own
+                            // instruction — suppress the catalog suffix
+                            // exactly as the browser build pass does
+                            // (curated_full check there), or a future
+                            // full-phrase row on a CLIMB/OK line would
+                            // speak two conflicting instructions ("X, hop
+                            // in, climb" — the v2.30.67 ladder failure the
+                            // full_phrase flag exists to prevent) and the
+                            // two voices would split vocabulary.
+                            const FF7CuratedLines::CuratedLine* cur =
+                                (field_id > 0)
+                                    ? FF7CuratedLines::Find(
+                                          static_cast<uint16_t>(field_id), ent)
+                                    : nullptr;
+                            if (li != nullptr &&
+                                !(cur != nullptr && cur->full_phrase)) {
                                 using namespace FF7LineCatalog;
                                 switch (li->kind) {
                                 case LK_EXIT:

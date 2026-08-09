@@ -1704,8 +1704,13 @@ constexpr uint32_t G_SMALL_BATTLE_MODEL_STATE  = 0x00BF23B8;
 //   hazard is a concurrently freed FFNx section block (kernel2 reload),
 //   hence the SEH guard + text plausibility gate at the call site.
 //   idx guard: for sections<4 the engine only applies the bias while
-//   idx+bias < 0xE0; a wild idx would walk past the offset table, so
-//   callers cap idx (< 0xE0 for 0..3, < 0x180 for 4, < 0x20 for 5).
+//   idx+bias < 0xE0 (0x4196F1 cmp/jge) — past that it DROPS the bias and
+//   reads magic entry idx raw (wrong namespace), so callers cap idx at
+//   0xE0-bias (biases 0x7B74A0 = {0,0x38,0x48,0x80}), < 0x100 for 4
+//   (armor/accessory ids never flash in battle), < 0x18 for 5 (the
+//   command file holds 24 entries). Caps live in ResolveViaGameKernelText
+//   (v2.30.101 — earlier 0xE0/0x180/0x18 caps left the bias-skip window
+//   open, and this comment said 0x20 where the code enforced 0x18).
 constexpr uint32_t GET_KERNEL_TEXT_FN          = 0x0041963C;
 constexpr int      GKT_FILE_BASE               = 8;    // every engine call site
 constexpr int      GKT_SECTION_MAGIC           = 0;
