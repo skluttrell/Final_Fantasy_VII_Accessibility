@@ -2475,20 +2475,28 @@ static void LogRejectedName(const char* src, int section, uint32_t idx,
 static bool ResolveViaGameKernelText(int section, uint32_t idx,
                                      std::wstring& out)
 {
-    // Index caps, tightened v2.30.101 to keep the engine's bias APPLIED:
-    // get_kernel_text only adds a section's namespace bias (.data table
-    // 0x7B74A0 = {0, 0x38, 0x48, 0x80} for sections 0-3) while
-    // idx+bias < 0xE0 (0x4196F1 cmp/jge in the committed disassembly) —
-    // past that it silently DROPS the bias and reads magic entry idx raw,
-    // a wrong-namespace name (a wild limit flash idx of 144 would speak
-    // magic entry 144, another character's limit, instead of the generic
-    // label). Capping at 0xE0-bias restores the rejection the old
-    // SectionEntryText bounds check gave those indices. Section 4 caps at
-    // 0x100 = the restored v2.7-era guard: armor/accessory ids (0x100+)
-    // never flash in battle (usable items are 0-0x7F, thrown weapons
-    // 0x80-0xFF), so anything above is a corrupt/mid-write pair that must
-    // not resolve to a plausible equipment name. Section 5 (command names)
-    // caps at 0x20 = the file's 32-entry extent, byte-verified v2.30.103
+    // Index caps. Magic-family sections 0-3 cap at 0x100 = the magic
+    // file's 256-entry extent (v2.30.105, CORRECTING the .101 0xE0-bias
+    // caps): the engine adds a section's namespace bias (.data table
+    // 0x7B74A0 = {0, 0x38, 0x48, 0x80}) only while idx+bias < 0xE0
+    // (0x4196F1: ecx = idx + bias; cmp ecx, 0xE0; jge skip-bias — from
+    // the committed .100 disassembly) and reads magic entry idx RAW past
+    // that. v2.30.101 read the raw path as a wrong-namespace hazard and
+    // capped it out entirely — but it is a real namespace the engine's
+    // own draws depend on: piece 19 holds Tifa/Cait Sith/Vincent limit
+    // techniques a SECOND time, raw at entries 96-121, reached exactly
+    // through the bias drop (log.12: Tifa's limit flash idx=98, sum
+    // 226 >= 0xE0 → raw entry 98 'Beat Rush'; the biased entry 226 is
+    // EMPTY — dump 20260809_190342, both installs identical). So the
+    // cap's only job is the file extent: either engine branch lands
+    // inside the 256-entry table for idx < 0x100, and the raw tail
+    // 224-255 is empty padding that falls through to the generic label.
+    // Section 4 caps at 0x100 = the restored v2.7-era guard:
+    // armor/accessory ids (0x100+) never flash in battle (usable items
+    // are 0-0x7F, thrown weapons 0x80-0xFF), so anything above is a
+    // corrupt/mid-write pair that must not resolve to a plausible
+    // equipment name. Section 5 (command names) caps at 0x20 = the
+    // file's 32-entry extent, byte-verified v2.30.103
     // (ff7_kernel_text_tables_dump.py: KERNEL.BIN piece 18 offset table =
     // 64 bytes = 32 entries, [0]'Left' filler .. [0x1B]'4x-Cut', both
     // installs byte-identical) — the file is RAW-id-indexed (see
@@ -2497,10 +2505,10 @@ static bool ResolveViaGameKernelText(int section, uint32_t idx,
     // kernel2_get_text itself has NO bounds check, so the caps here are
     // the only thing preventing an off-table u16 read.
     const uint32_t cap =
-          (section == FF7Addr::GKT_SECTION_MAGIC)  ? 0xE0u
-        : (section == FF7Addr::GKT_SECTION_SUMMON) ? 0xE0u - 0x38u
-        : (section == FF7Addr::GKT_SECTION_ESKILL) ? 0xE0u - 0x48u
-        : (section == FF7Addr::GKT_SECTION_LIMIT)  ? 0xE0u - 0x80u
+          (section == FF7Addr::GKT_SECTION_MAGIC)  ? 0x100u
+        : (section == FF7Addr::GKT_SECTION_SUMMON) ? 0x100u
+        : (section == FF7Addr::GKT_SECTION_ESKILL) ? 0x100u
+        : (section == FF7Addr::GKT_SECTION_LIMIT)  ? 0x100u
         : (section == FF7Addr::GKT_SECTION_ITEM)   ? 0x100u
                                                    : 0x20u;
     if (idx >= cap)
@@ -2644,7 +2652,13 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out,
     case 6:         gkt_section = FF7Addr::GKT_SECTION_ESKILL; break;
     case 7:   // Limit Break. LIVE-VERIFIED 2026-08-04 (v2.30.76 probe,
               // BOTH installs): flash idx IS the 0-based limit index
-              // (idx 0 -> entry 128 "Braver"). The engine remaps its own
+              // (idx 0 -> entry 128 "Braver") â€” for the characters whose
+              // techniques live in the biased 128+ region. v2.30.105
+              // (log.12): Tifa/Cait Sith/Vincent limits flash a RAW
+              // magic-file entry instead (Tifa idx=98 'Beat Rush'), which
+              // the engine reaches by DROPPING the bias at idx+128 >= 0xE0
+              // (0x4196F1) â€” pass idx through unchanged and the engine
+              // picks the right branch itself. The engine remaps its own
               // 0x7F '????' sentinel internally; skip it here too so the
               // generic label speaks instead of nothing.
         if (idx == 0x7F)
@@ -2690,11 +2704,20 @@ static bool ResolveActionName(uint32_t cmd, uint32_t idx, std::wstring& out,
         }
         break;
     }
-    case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'â€¦)
-        ok = SectionEntryText(k2_magic, idx + 72, out);
+    case 6:   // cmd 0x0D Enemy Skill: magic entries 72-95 ('Frog Song'â€¦),
+              // raw entry past the engine's 0xE0 bias threshold (mirrors
+              // 0x4196F1 â€” see ResolveViaGameKernelText)
+        ok = SectionEntryText(k2_magic, (idx + 72 < 0xE0) ? idx + 72 : idx,
+                              out);
         break;
-    case 7:   // cmd 0x14 Limit Break: magic entries 128+ ('Braver'â€¦)
-        ok = SectionEntryText(k2_magic, idx + 128, out);
+    case 7:   // cmd 0x14 Limit Break: biased entries 128+ ('Braver'â€¦)
+              // while idx+128 < 0xE0, RAW entry past that â€” Tifa/Cait
+              // Sith/Vincent techniques live raw at entries 96-121 and
+              // are reached only through the engine's bias drop (log.12:
+              // Tifa flash idx=98 â†’ raw entry 98 'Beat Rush'; biased 226
+              // is empty). Mirrors 0x4196F1 exactly.
+        ok = SectionEntryText(k2_magic, (idx + 128 < 0xE0) ? idx + 128 : idx,
+                              out);
         break;
     case 8: { // cmd 0x20 enemy attack: per-formation table from scene.bin
         if (idx < 64) {   // formation attack slots are small indices (0-31)
@@ -2742,7 +2765,14 @@ static const wchar_t* GenericActionLabel(uint8_t command_id, wchar_t* buf, size_
     case 0x02: return L"Magic";
     case 0x03: return L"Summon";
     case 0x04: return L"Item";
-    case 0x06: return L"Steal";
+    // v2.30.105: Steal is id 0x05, NOT 0x06 â€” byte-verified against
+    // KERNEL.BIN piece 18 ([5]'Steal' [6]'Sense', dump 20260809_190342).
+    // 0x06 had carried "Steal" since v2.5: the same shifted-convention
+    // family as the reversed 0x12/0x13 the .103 dump caught. In practice
+    // CommandMenuName resolves these ids from the game's own file first,
+    // so this table only speaks when GKT and the heap copy BOTH fail.
+    case 0x05: return L"Steal";
+    case 0x06: return L"Sense";
     case 0x0D: return L"Enemy Skill";
     case 0x14: return L"Limit Break";
     case 0x20: return L"attacks";
@@ -6528,6 +6558,11 @@ static const wchar_t* const kBattleStatusName[32] = {
 // restarting on changes nothing here would speak.
 static constexpr uint32_t kBattleStatusTrackedMask = 0xFFFFFFFCu;
 
+// Defined with the battle-menu machinery below; the action thread's
+// report-open path resolves command names through it too (v2.30.105) so
+// the report and the menu can never disagree on a command's name.
+static void CommandMenuName(uint8_t id, std::wstring& out);
+
 static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
 {
     uint8_t last_actor_id = 0xFF;   // 0xFF = sentinel; announce on next valid actor change
@@ -6801,8 +6836,32 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
     const auto announce = [&](const wchar_t* actor_label, uint8_t command_id,
                               const std::wstring* exact_name) {
         wchar_t generic_buf[32];
-        const wchar_t* action = exact_name ? exact_name->c_str()
-            : GenericActionLabel(command_id, generic_buf, _countof(generic_buf));
+        std::wstring cmd_name;
+        const wchar_t* action;
+        const wchar_t* src_tag;   // which path named the action, for the log
+        if (exact_name) {
+            action  = exact_name->c_str();
+            src_tag = L"named";
+        } else if (command_id >= 1 && command_id < 0x20) {
+            // v2.30.105 (log.12: Tifa's Steal turns spoke "Tifa, command 5"
+            // all session while the battle MENU named the same id "Steal"):
+            // party-namespace command ids resolve through the SAME
+            // GKT-first resolver the menu cursor uses (CommandMenuName —
+            // section 5 at the raw id, heap and hardcoded fallbacks
+            // inside, "command N" only as ITS last resort), so the action
+            // report and the menu can never disagree on a command's name.
+            // This also names Sense/Mug/Throw/Morph/Manipulate/Mime and
+            // the materia-granted Slash-All/2x-Cut family, which the old
+            // generic table never carried. 0x20 (enemy action) is not a
+            // section-5 id — it keeps the "attacks" label below.
+            CommandMenuName(command_id, cmd_name);
+            action  = cmd_name.c_str();
+            src_tag = L"cmdname";
+        } else {
+            action  = GenericActionLabel(command_id, generic_buf,
+                                         _countof(generic_buf));
+            src_tag = L"generic";
+        }
         const bool combine = Config::Get().speak_battle_damage ||
                              Config::Get().speak_battle_status;
         if (combine) {
@@ -6829,8 +6888,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
             char dbg[192];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
                 "[FF7Access] BATTLE cmd=0x%02X %ls report-open gen=%lu => %ls, %ls",
-                static_cast<unsigned>(command_id),
-                exact_name ? L"named" : L"generic",
+                static_cast<unsigned>(command_id), src_tag,
                 static_cast<unsigned long>(report.gen), actor_label, action);
             Log::Write(dbg);
             return;
@@ -6843,8 +6901,7 @@ static DWORD WINAPI BattleActionThread(LPVOID /*unused*/)
         char dbg[160];
         _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
             "[FF7Access] BATTLE cmd=0x%02X %ls%ls => %ls",
-            static_cast<unsigned>(command_id),
-            exact_name ? L"named" : L"generic",
+            static_cast<unsigned>(command_id), src_tag,
             chain ? L" chained" : L"", msg);
         Log::Write(dbg);
         TTS::Speak(msg, /*interrupt=*/!chain);

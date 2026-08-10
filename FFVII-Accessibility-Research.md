@@ -226,7 +226,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `BATTLE_DISPATCH_BYTE_TABLE` | `0x006D70A8` | Static .text: byte[table+cmd] = flash-name branch for cmd 0x00â€“0x20; jump table at 0x6D7080. Branchâ†’source: 0/1=magic names; 2=summon; 3/5=item namespace; 4=buffer 0xDC3640; 6=magic+72 (E.Skill); 7=magic+128 (Limit, 0x7F='????'); 8=enemy attack table; 9=no flash text (v2.7) |
 | `BATTLE_CMDMENU_NAME_DRAW` | `0x0071F35A` | Static .text (v2.30.102, ff7_gkt_section5_callsites_static.py): the engine's battle command-menu name draw's `call 0x41963C` -- pushes section 5 with the menu row's RAW id byte (`[0xDD4714]+row*2+0x1A`, no -1; +0x1B = a per-row enable byte the same fn tests). THE byte proof that GKT section 5 is id-indexed with a filler entry 0; sibling sites in the same fn: 0x71F289 (section 0), 0x71F2D2 (section 1), 0x71F798 (section 2). Evidence anchor only -- the mod calls 0x41963C, never this site |
 | `ENEMY_ATTACK_NAME_TABLE` | `0x009A9484` | Current formation's enemy attack names from scene.bin, stride 0x20, FF7-encoded (v2.5 candidate â†’ CONFIRMED v2.7; 'Machine Gun'/'Tonfa'/'Bite'/'Tentacle') |
-| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). **CORRECTED v2.30.100 (2026-08-09): calling it WORKS everywhere, including battle** -- it is the exact resolver the flash box (consumer call 0x6D72C6) and the in-battle limit window (draw 0x6DF40D) render from. `__cdecl(section, idx, file_base)`, every engine call site passes file_base=8. Sections: 0=magic names, 1=summon (+56), 2=E.Skill (+72), 3=limit (+128; idx 0x7F = '????' sentinel -> empty), 4=item names w/ the engine's own namespace remap (<0x80 item, <0x100 weapon, <0x120 armor, <0x180 accessory), 5=command names, 6-9=battle statics via jump table 0x419A38 (7 COMPOSES into a scratch = writes; never call from mod threads). Sections 0-5 are pure reads; kernel2_get_text has NO bounds check (callers cap idx). The old 'useless in battle: scratch empty' reading was FFNx REPLACING the callee (FFNx/src/ff7/kernel.cpp: per-file external_malloc blocks, all freed+reallocated by kernel2_reset_counters on kernel2 reload = the stale-copy factory the heap scan kept latching) -- the scratch is bypassed under FFNx, not battle-empty. v2.30.100: PRIMARY battle name source (ResolveViaGameKernelText, SEH-guarded + plausibility gate). **v2.30.102: section 5 is RAW-id-indexed** -- the engine's command-menu draw (call site 0x71F35A) pushes the menu row's id byte unadjusted; the file has a filler entry 0 ('Left' in VANILLA KERNEL.BIN piece 18 -- v2.30.103 byte-dump ff7_kernel_text_tables_dump.py, both installs identical: 32 entries, [1]Attack [2]Magic [3]Summon [4]Item .. [0x11]Mug [0x12]Change [0x13]Defend [0x14]Limit [0x15]W-Magic [0x16]W-Sum. [0x17]W-Item [0x18]Slash-All [0x19]2x-Cut [0x1A]Flash [0x1B]4x-Cut, 0x1C-0x1F empty; the .100 id-1 guess spoke every command shifted one down, log.11). Section-5 cap = 0x20 = that 32-entry extent. **v2.30.104: also the MENU-side magic-file name source** (MagicFileNameGktFirst: magic/summon/E.Skill lists + limit-technique names GKT-first, heap = shadow/fallback; piece 19 has NO filler -- [0]='Cure', raw indices shared by both sources) |
+| `GET_KERNEL_TEXT` | `0x0041963C` | The REAL get_kernel_text (= FFNx external; sub_41963C; kernel2_get_text=0x419457 at +0xF7). **CORRECTED v2.30.100 (2026-08-09): calling it WORKS everywhere, including battle** -- it is the exact resolver the flash box (consumer call 0x6D72C6) and the in-battle limit window (draw 0x6DF40D) render from. `__cdecl(section, idx, file_base)`, every engine call site passes file_base=8. Sections: 0=magic names, 1=summon (+56), 2=E.Skill (+72), 3=limit (+128; idx 0x7F = '????' sentinel -> empty), 4=item names w/ the engine's own namespace remap (<0x80 item, <0x100 weapon, <0x120 armor, <0x180 accessory), 5=command names, 6-9=battle statics via jump table 0x419A38 (7 COMPOSES into a scratch = writes; never call from mod threads). Sections 0-5 are pure reads; kernel2_get_text has NO bounds check (callers cap idx). The old 'useless in battle: scratch empty' reading was FFNx REPLACING the callee (FFNx/src/ff7/kernel.cpp: per-file external_malloc blocks, all freed+reallocated by kernel2_reset_counters on kernel2 reload = the stale-copy factory the heap scan kept latching) -- the scratch is bypassed under FFNx, not battle-empty. v2.30.100: PRIMARY battle name source (ResolveViaGameKernelText, SEH-guarded + plausibility gate). **v2.30.102: section 5 is RAW-id-indexed** -- the engine's command-menu draw (call site 0x71F35A) pushes the menu row's id byte unadjusted; the file has a filler entry 0 ('Left' in VANILLA KERNEL.BIN piece 18 -- v2.30.103 byte-dump ff7_kernel_text_tables_dump.py, both installs identical: 32 entries, [1]Attack [2]Magic [3]Summon [4]Item .. [0x11]Mug [0x12]Change [0x13]Defend [0x14]Limit [0x15]W-Magic [0x16]W-Sum. [0x17]W-Item [0x18]Slash-All [0x19]2x-Cut [0x1A]Flash [0x1B]4x-Cut, 0x1C-0x1F empty; the .100 id-1 guess spoke every command shifted one down, log.11). Section-5 cap = 0x20 = that 32-entry extent. **v2.30.104: also the MENU-side magic-file name source** (MagicFileNameGktFirst: magic/summon/E.Skill lists + limit-technique names GKT-first, heap = shadow/fallback; piece 19 has NO filler -- [0]='Cure', raw indices shared by both sources). **v2.30.105: the 0xE0 bias-drop is a NAMESPACE MECHANISM, not only a hazard** -- 0x4196E1-0x419709: `ecx = idx + bias[section]; cmp ecx, 0xE0; jge skip-bias` (compare is on the SUM), so idx stays RAW past it, and piece 19 entries 96-121 hold Tifa/Cait Sith/Vincent limit techniques a second time, reachable ONLY through that drop (Tifa flash idx=98 +128 = 226 >= 0xE0 -> raw [98]='Beat Rush'; biased [226] is EMPTY -- log.12 + dump 20260809_190342). Mod caps sections 0-3 at 0x100 = piece-19 extent (the .101 0xE0-bias caps wrongly treated every dropped-bias idx as wild and blocked Tifa's limit names) |
 | `K2_LOADER_STATICS` | `0x00419379` | Vanilla kernel2 bump allocator (REPLACED under FFNx): returns 0x9A13C8+[0x9A8120], records the offset in u16 table 0x9A7FC8[[0x9A8124]++], advances the cursor. Statics: fill cursor 0x9A8120, file counter 0x9A8124 (both BSS). GKT remap tables (.data, byte-verified 2026-08-09, ff7_gkt_consumer_tables_static.py): bias 0x7B74A0 = 00 38 48 80; section->file 0x7B74A8 = 01 01 01 01 02 00; item-namespace thresholds 0x7B7488/0x7B748A + target sections 0x7B7498 (04 0A 0B 0C 0D); empty-string default 0x7C0AE8 (v2.30.100) |
 | `KERNEL2_RESULT_PTR` | `0x00DC208C` | Written with the lookup result after every CALL 0x41963C in the consumer (disasm-confirmed) â€” but NEVER written under FFNx (consumer path replaced); observed 0 through all battles. Do not use |
 | `MODULES_GLOBAL_OBJECT` | `0x00CC0D88` | Field module global struct; **PSX decomp struct (include/game.h ~370) matches field-for-field across +0x28..+0x3B** â€” PSX comments identify unnamed PC fields |
@@ -7647,6 +7647,62 @@ v2.30.104.
 Built clean, deployed both installs, hash-verified D93572CB37C6322A.
 NOT released.
 
+### v2.30.105 (2026-08-09): "Tifa, command 5" + Tifa's limit name -- report-open commands via GKT, raw technique region unlocked
+
+**User report (same log.12 session)**: "Kept hearing 'Tifa, command 5.'
+during battle" + asked whether log.12 suffices to name Tifa's limit.
+
+**Evidence, issue 1 (Steal)**: log.12 line 1156 "BMENU cmd ...
+id=0x05 => Steal" (the menu names it via GKT section 5) vs line 1177
+"BATTLE cmd=0x05 generic report-open ... => Tifa, command 5" -- the
+action report's generic label table never consulted GKT and its
+hardcoded map carried Steal at the WRONG id (0x06, a v2.5-era relic of
+the shifted convention -- same family as the reversed 0x12/0x13 the
+.103 dump caught; piece 18 byte-truth: [5]='Steal' [6]='Sense').
+
+**Evidence, issue 2 (limit name)**: log.12 line 1269 "BATTLE flash
+cmd=0x14 idx=98 ok=0 src=none". Piece-19 dump (20260809_190342, both
+installs identical): [98]='Beat Rush' in a RAW region 96-121 holding
+Tifa/Cait Sith/Vincent techniques a SECOND time; the biased entry
+98+128=226 is EMPTY. Committed .100 disasm byte-check: 0x4196E1-709
+computes `ecx = idx + bias; cmp ecx, 0xE0; jge skip-bias` -- the
+compare is on the SUM, and past it the idx stays raw. So the engine
+reaches 'Beat Rush' for flash idx 98 exactly through the bias drop
+the v2.30.101 caps treated as always-wild: cap 0x60 (=0xE0-0x80)
+blocked every raw-region technique. (Braver stays biased: 0+128=128 <
+0xE0 -> [128].) Also noted: Tifa's limit menu enters BMENU state 27
+(her reels), NOT state 24 -- the .98 selection announce never fires
+for her; states 26/27 remain the documented .98 residual.
+
+**Fix (proxy.cpp)**: (1) ResolveViaGameKernelText caps for sections
+0-3 -> 0x100 = piece-19 extent; either engine branch (biased or raw)
+lands in-file, raw tail 224-255 is empty padding that falls through
+to the generic label; wild indices still gated by PlausibleActionName
++ SEH. (2) ResolveActionName heap fallbacks for branches 6/7 mirror
+the engine's drop: entry = (idx+bias < 0xE0) ? idx+bias : idx.
+(3) The report-open announce resolves command ids 1..0x1F through
+CommandMenuName (GKT section 5 raw id, heap, hardcoded, generic --
+the SAME resolver the menu speaks from, one-vocabulary rule), tagged
+src "cmdname" in the report-open log line ("named"/"generic"
+unchanged); id 0x20 keeps "attacks". Names Steal/Sense/Mug/Throw/
+Morph/Manip./Mime/Slash-All/2x-Cut... at report-open, and enemy
+casts still say "Magic" ([2]). (4) GenericActionLabel corrected:
+0x05 Steal, 0x06 Sense.
+
+**Expected in play**: "Tifa, Steal." / "Couldn't steal anything." ;
+"Tifa, Limit" at report-open (GKT [0x14], was hardcoded "Limit
+Break"), upgraded to "Tifa, Beat Rush" when the flash resolves.
+
+**Verify queue [CMDNAME105]** (in PARKED.txt): (a) Steal turns speak
+"Tifa, Steal"; (b) Tifa's limit speaks "Beat Rush" (flash line ok=1
+src=gkt idx=98); (c) no "BATTLE name REJECT"/"gkt AV" lines in clean
+play (the widened caps must not admit junk); (d) Cloud's Braver still
+speaks (biased branch unchanged); (e) enemy turns still "attacks"/
+named skills; (f) log header v2.30.105.
+
+Built clean, deployed both installs, hash-verified 1D5BE03A78F71FDE.
+NOT released.
+
 ---
 ---
 
@@ -7974,7 +8030,7 @@ Proven payoffs of cluster reasoning so far:
 | Address | Symbol | Notes |
 |---------|--------|-------|
 | `0x40B27B` | sub_40B27B | anchor for movie-playing word (+0x25) |
-| `0x41963C` | sub_41963C = **get_kernel_text** (FFNx external, confirmed via kernel2_get_text call at +0xF7) | `(section, idx, 8)`; result -> 0xDC208C (dead under FFNx); **v2.30.100: called directly by the mod as the PRIMARY battle name source** -- works in battle (the limit window draw 0x6DF40D calls it and renders correctly); full section semantics in the S4 row |
+| `0x41963C` | sub_41963C = **get_kernel_text** (FFNx external, confirmed via kernel2_get_text call at +0xF7) | `(section, idx, 8)`; result -> 0xDC208C (dead under FFNx); **v2.30.100: called directly by the mod as the PRIMARY battle name source** -- works in battle (the limit window draw 0x6DF40D calls it and renders correctly); v2.30.105: the 0x4196F1 `cmp idx+bias, 0xE0 / jge` bias-drop is how the engine reaches piece 19's RAW technique region 96-121 (Tifa/Cait Sith/Vincent limits; mod caps sections 0-3 at 0x100); full section semantics in the S4 row |
 | `0x419457` | kernel2_get_text | `base = 0x9A13C8 + u16[0x9A7FC8 + file*2]; text = base + u16[base+idx*2]` |
 | `0x4223AC` / `0x42604E` / `0x42E156` | anim-script damage-post paths | anim opcode 0xC2 handler + two sibling paths: post the staged damage rows 0xBF2A40 to the effect60 display; staging is filled by the anim-event runner 0x42CFxx walking the anim-event queue 0x9ACB98 (v2.30.99, ff7_battle_miss_static*.py) |
 | `0x436DA7` / `0x5DA562` | damage-event allocator / filler | allocate + fill the 0x9ABA08 records (target, HP/MP display values + flags, barrier gauges) from the attack context [0x99CE0C] during damage calc -- the value/MISS-sentinel decision happens before the filler runs (v2.30.99) |
