@@ -1980,6 +1980,19 @@ constexpr uint16_t BMENU_STATE_ITEM_LIST   = 5;      // static-only so far
 constexpr uint16_t BMENU_STATE_MAGIC_LIST  = 6;      // live-confirmed
 constexpr uint16_t BMENU_STATE_SUMMON_LIST = 7;      // static-only so far
 constexpr uint16_t BMENU_STATE_LIMIT       = 24;     // limit-select widget (v2.9 note)
+// v2.30.106: the two "special" limit widgets (limit_battle_widget_static
+// dump 20260809_133041, fn table 0x91E6B8): fn[26]=0x6DA898 (state 0x1A)
+// and fn[27]=0x6DA795 (state 0x1B) are thin confirm/cancel wrappers with
+// NO cursor input — both read the SAME parallel byte arrays at
+// CHAR_BLOCK+0xAC as state 24 (ids +0..2, target flags +3..5), issue
+// id[0] as BATTLE_ISSUED_ACTION on OK (gated on a per-widget phase
+// helper == 2: 0x6E2143 / 0x6E3101), and call the identical
+// targeting-defaults helper 0x6E5C52 as fn[24]'s confirm. State 27 =
+// Tifa's limit (log.12 live: her Limit confirm goes 1 -> 27); state 26 =
+// Cait Sith's Slots by elimination (PROVISIONAL until he joins a
+// play-test party — same handler shape either way).
+constexpr uint16_t BMENU_STATE_LIMIT_SLOTS = 26;     // Cait Sith Slots widget
+constexpr uint16_t BMENU_STATE_LIMIT_REELS = 27;     // Tifa reel-limit widget
 constexpr uint16_t BMENU_STATE_CLOSED      = 0xFFFF;
 
 // Per-slot widget block and the widget offsets within it.

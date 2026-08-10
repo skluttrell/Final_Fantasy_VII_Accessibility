@@ -7976,10 +7976,15 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                 last_state == FF7Addr::BMENU_STATE_ITEM_LIST   ||
                 last_state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
                 last_state == FF7Addr::BMENU_STATE_SUMMON_LIST ||
-                last_state == FF7Addr::BMENU_STATE_LIMIT;   // v2.30.98:
+                last_state == FF7Addr::BMENU_STATE_LIMIT       ||   // v2.30.98:
                 // single-target limits (Braver) run the same post-Confirm
                 // target selection as the other lists — fn[24]'s confirm
                 // path calls the identical targeting-defaults helper.
+                last_state == FF7Addr::BMENU_STATE_LIMIT_SLOTS ||   // v2.30.106:
+                last_state == FF7Addr::BMENU_STATE_LIMIT_REELS;
+                // fn[26]/fn[27] confirm paths call the SAME helper 0x6E5C52
+                // (byte-verified, dump 20260809_133041) — Tifa/Cait Sith
+                // limits get the same post-Confirm target narration.
             targeting   = (state == FF7Addr::BMENU_STATE_TARGETING) && from_menu;
             last_target = 0xFF;   // re-announce the first target when armed
 
@@ -7990,8 +7995,13 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
             last_list_key = 0xFFFFFFFF;
             // v2.30.98: entering the limit list (from anywhere) re-arms the
             // "Limit level N." prefix; leaving it disarms so a stale flag
-            // can't prefix a later session's first entry.
-            limit_header_pending = (state == FF7Addr::BMENU_STATE_LIMIT);
+            // can't prefix a later session's first entry. v2.30.106: the
+            // special limit widgets (Tifa reels / Cait Sith Slots) carry
+            // the same window title, so they arm it too.
+            limit_header_pending =
+                (state == FF7Addr::BMENU_STATE_LIMIT       ||
+                 state == FF7Addr::BMENU_STATE_LIMIT_SLOTS ||
+                 state == FF7Addr::BMENU_STATE_LIMIT_REELS);
 
             if (Config::Get().debug_log) {
                 char dbg[96];
@@ -8038,6 +8048,8 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
             state == FF7Addr::BMENU_STATE_MAGIC_LIST  ||
             state == FF7Addr::BMENU_STATE_SUMMON_LIST ||
             state == FF7Addr::BMENU_STATE_LIMIT       ||
+            state == FF7Addr::BMENU_STATE_LIMIT_SLOTS ||   // v2.30.106
+            state == FF7Addr::BMENU_STATE_LIMIT_REELS ||
             targeting;
         if (!in_turn_session) {
             turn_announced = false;
@@ -8298,6 +8310,78 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
                     static_cast<unsigned>(entry_id), name.c_str());
                 Log::Write(dbg);
                 TTS::Speak(name, /*interrupt=*/true);
+            }
+        } else if (state == FF7Addr::BMENU_STATE_LIMIT_SLOTS ||
+                   state == FF7Addr::BMENU_STATE_LIMIT_REELS) {
+            // ---- special limit widgets: Tifa reels / Cait Sith Slots ----
+            // (v2.30.106 — the .98 residual). fn[26]/fn[27] have NO cursor
+            // input (OK confirms id[0], Cancel returns to the command
+            // menu; dump 20260809_133041), so unlike state 24 this is a
+            // single announce per widget-open: the window title plus every
+            // technique the builder placed in the CHAR_BLOCK+0xAC id
+            // array — all of them run when the player confirms, which is
+            // exactly what the sighted window conveys.
+            const uint32_t table = FF7Addr::BATTLE_CHAR_BLOCK
+                + slot * FF7Addr::BATTLE_CHAR_SLOT_STRIDE
+                + FF7Addr::BCHAR_OFF_LIMIT_LIST;
+            const uint8_t count =
+                *reinterpret_cast<const volatile uint8_t*>(table + FF7Addr::BLIST_LIMIT_COUNT_OFF);
+            // Same mid-build guard as state 24: the builders rewrite the
+            // block on limit-level changes; skip and retry next poll.
+            if (count == 0 || count > FF7Addr::BLIST_LIMIT_MAX)
+                goto targeting_check;
+
+            {
+                // One announce per open (state in the key; no cursor term).
+                const uint32_t key = (static_cast<uint32_t>(state) << 16);
+                if (key == last_list_key)
+                    goto targeting_check;
+
+                // The window's own title first — same source and .101
+                // retry rule as state 24: a failed record lookup leaves
+                // the announce for the next poll rather than speaking an
+                // untitled (or never-titled) list.
+                const uint32_t rec = CharRecFromPartySlot(slot);
+                if (!rec)
+                    goto targeting_check;
+                const uint8_t lvl = *reinterpret_cast<const volatile uint8_t*>(
+                    rec + FF7Addr::SAVEMAP_CHAR_LIMITLVL_OFF);
+                wchar_t hdr[48];
+                _snwprintf_s(hdr, _countof(hdr), _TRUNCATE,
+                             L"Limit level %u. ", static_cast<unsigned>(lvl));
+                std::wstring spoken = hdr;
+
+                uint8_t ids[FF7Addr::BLIST_LIMIT_MAX] = {};
+                for (uint8_t i = 0; i < count; ++i) {
+                    ids[i] = *reinterpret_cast<const volatile uint8_t*>(table + i);
+                    // Ids share state 24's namespace (the 0-based limit
+                    // index — both handlers issue them through the same
+                    // BATTLE_ISSUED_ACTION word), so branch 7 resolves
+                    // them identically.
+                    std::wstring name;
+                    if (!ResolveActionName(0x14, ids[i], name)) {
+                        wchar_t rowbuf[32];
+                        _snwprintf_s(rowbuf, _countof(rowbuf), _TRUNCATE,
+                                     L"limit %u", i + 1u);
+                        name = rowbuf;
+                    }
+                    if (i) spoken += L", ";
+                    spoken += name;
+                }
+                spoken += L".";
+
+                last_list_key        = key;
+                limit_header_pending = false;   // title composed above
+
+                char dbg[192];
+                _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                    "[FF7Access] BMENU limit-special state=%u slot=%u count=%u "
+                    "ids=%02X,%02X,%02X => %ls",
+                    static_cast<unsigned>(state), static_cast<unsigned>(slot),
+                    static_cast<unsigned>(count), ids[0], ids[1], ids[2],
+                    spoken.c_str());
+                Log::Write(dbg);
+                TTS::Speak(spoken, /*interrupt=*/true);
             }
         }
 

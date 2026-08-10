@@ -248,7 +248,7 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | `BATTLE_CHAR_BLOCK` | `0x00DBA498` | Per-slot battle char data, stride 0x440. +0x21 = command column count; **+0x4C (0xDBA4E4) = command table**, 6-byte entries indexed row+colÂ·4: u8[+0] command id, u8[+1] action type (Confirm jump-table selector 0â€“0xB), u8[+2] action id. **Command ids are 1-BASED for basic commands** (âœ“ live: 1=Attack, 2=Magic, 4=Item; 0xFF=empty cell) **but Limit keeps kernel id 0x14=20** (âœ“ live: replaces Attack's row-0 entry when the gauge fills; Confirm â†’ state 24). +0x108 (0xDBA5A0) magic list (âœ“ live via state 6), +0x2C8 (0xDBA760) summon list, both 6-byte entries. **v2.33: NOT battle-only â€” the menu populates it too**, with EFFECTIVE stats (materia applied): +0x02..+0x07 u8 str/vit/mag/spr/dex/luck, +0x08/+0x0A/+0x0C/+0x0E u16 Attack/Defense/Magic atk/Magic def, +0x10..+0x16 HP/maxHP/MP/maxMP (single BSS pattern hit against the status screenshot; hunt + dump logs 2026-07-18). Menu consumers must guard staleness: block HP pair == savemap record HP pair |
 | `BATTLE_ITEM_LIST_TABLE` | `0x009AC354` | Global (not per-slot) ITEM list (state 5): single column, **6-byte** entries, u16 id at +0 (**0xFFFF = empty; id 0 = Potion is VALID**, v2.36 â€” the old "skip 0" silenced Potions), u8[+4] enable flag. index = w0+w4+scroll |
 | *(magic/summon list format)* | â€” | **3-COLUMN grid, 8-byte entries** (v2.36 Confirm-path disasm â€” NOT the item layout): u8 id at +0 (0xFF = empty), u8[+6] bit 0x02 = disabled. Selected index = **w0 + (w4+scroll)Â·3**. Tables: magic = CHAR_BLOCK+slotÂ·0x440+0x108, summon = +0x2C8. The v2.9 linear formula/6-byte reading was correct only for items + a â‰¤3-spell single row |
-| *(limit list format)* | -- | **State-24 LIMIT-SELECT list (v2.30.98 static, ff7_limit_battle_widget_static.py): PARALLEL BYTE ARRAYS at CHAR_BLOCK+0xAC (0xDBA544)** -- u8 id[3] at +0 (0-based limit index; the draw code 0x6DF40D feeds it to kernel-text section 3 = the magic-names file biased +128, i.e. EXACTLY ResolveActionName branch 7, live-verified idx 0 = Braver), u8 target_flags[3] at +3 (confirm: table[w4+3] -> 0xDC3C84), **u8 count at +6**, 3 x 0x1C attack-data records at +8. Widget at +0x118 (0xDC21B8 + slot*0x700); init 0x6DA51A pins visible rows = total entries = count, so the list **NEVER scrolls and index = the raw vertical cursor w4** (no w0/scroll term -- unlike every other battle list). Builders (menu module: 0x703517 all-slots sync loop, 0x703048 Set-handler path) fill ids from the CURRENT limit level (savemap charrec +0x0E) via helper 0x5C8684(record, level*3+technique) -- why the window shows one level's techniques only. fn[24] = fn[15] = 0x6DA67E; the handler and draw index their slot from 0xDC3C80 (second active-slot byte, = 0xDC3C7C whenever the widget is open) |
+| *(limit list format)* | -- | **State-24 LIMIT-SELECT list (v2.30.98 static, ff7_limit_battle_widget_static.py): PARALLEL BYTE ARRAYS at CHAR_BLOCK+0xAC (0xDBA544)** -- u8 id[3] at +0 (0-based limit index; the draw code 0x6DF40D feeds it to kernel-text section 3 = the magic-names file biased +128, i.e. EXACTLY ResolveActionName branch 7, live-verified idx 0 = Braver), u8 target_flags[3] at +3 (confirm: table[w4+3] -> 0xDC3C84), **u8 count at +6**, 3 x 0x1C attack-data records at +8. Widget at +0x118 (0xDC21B8 + slot*0x700); init 0x6DA51A pins visible rows = total entries = count, so the list **NEVER scrolls and index = the raw vertical cursor w4** (no w0/scroll term -- unlike every other battle list). Builders (menu module: 0x703517 all-slots sync loop, 0x703048 Set-handler path) fill ids from the CURRENT limit level (savemap charrec +0x0E) via helper 0x5C8684(record, level*3+technique) -- why the window shows one level's techniques only. fn[24] = fn[15] = 0x6DA67E; the handler and draw index their slot from 0xDC3C80 (second active-slot byte, = 0xDC3C7C whenever the widget is open). **v2.30.106: the SAME +0xAC arrays serve BMENU states 26/27** (Cait Sith Slots / Tifa reels, handlers 0x6DA898 / 0x6DA795): thin confirm/cancel wrappers, NO cursor -- OK issues id[0] (gated on per-widget phase helper 0x6E2143 / 0x6E3101 == 2), Cancel -> state 1, same targeting-defaults 0x6E5C52 as fn[24]. State 27 = Tifa live-proven (log.12); 26 = Cait Sith by elimination (provisional) |
 | `BATTLE_LIMIT_COUNT` | `0x00DC35A4` | u16 = widget-init copy of the limit list's count byte (table+6); sits just before BATTLE_MENU_BUSY. Doc-only -- the mod reads the per-slot count byte (v2.30.98) |
 | `BATTLE_TEXT_QUEUE` | `0x00BF1EB8` | Battle text display queue (v2.36): battle_text_data[64], **stride 6**, s16 buffer_idx at +0 (-1 = empty slot, â‰¥0x100 = scene AI dialogue). FFNx name-anchored (add_text_to_display_queue+0x25). The channel BattleMessageThread reads for the scorpion tail warning etc. |
 | `SCENE_MSG_BASE / _OFFSETS` | `0x009AD1E0 / 0x009AD9E0` | Current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0 + (idx-0x100)Â·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD â†’ 0x41D2E5). v2.36 |
@@ -7703,6 +7703,56 @@ named skills; (f) log header v2.30.105.
 Built clean, deployed both installs, hash-verified 1D5BE03A78F71FDE.
 NOT released.
 
+### v2.30.106 (2026-08-09): Tifa's limit menu spoken -- special limit widgets (states 26/27)
+
+**User request**: "Let's get part 1 fixed" -- the .98 residual (states
+26/27 silent), surfaced by log.12 showing Tifa's Limit confirm going
+BMENU state 1 -> 27 with no announce.
+
+**Evidence (all already in the .98 dump 20260809_133041 -- no new
+investigation needed)**: fn[26] 0x6DA898 (state 0x1A) and fn[27]
+0x6DA795 (state 0x1B) are thin confirm/cancel wrappers with NO cursor
+input. Both read the SAME parallel byte arrays at CHAR_BLOCK+0xAC as
+state 24 (byte-proof: 0x6DA7F9-80E / 0x6DA8FC-911 read ids at +0 and
+target flags at +3), issue id[0] -> BATTLE_ISSUED_ACTION 0xDC3C78 on
+OK -- gated on a per-widget phase helper (0x6E2143 / 0x6E3101)
+returning 2 -- and call the identical targeting-defaults helper
+0x6E5C52 as fn[24]'s confirm. Cancel -> state 1. State 27 = Tifa
+(live-proven, log.12); state 26 = Cait Sith Slots by elimination
+(PROVISIONAL -- he has not joined a play-test party yet; handler
+shape identical either way). The reel MINIGAME (Yeah!/Hit!/Miss
+timing) is NOT in these handlers -- it runs during limit execution;
+that is the deferred part-2 investigation (start points: widget-init
+callees 0x6E3724 / 0x6E2FA9 + a live delta-scan while stopping
+reels; design decision pending: result-only announce vs positional
+timing tones).
+
+**Fix (BattleMenuThread)**: new state-26/27 branch -- ONE utterance
+per widget-open (no cursor to track): "Limit level N. <technique>,
+<technique>." listing every id the builder placed (all of them run
+on confirm, which is what the sighted window conveys). Names via
+ResolveActionName(0x14, id) -- ids share state 24's namespace (both
+handlers issue them through the same BATTLE_ISSUED_ACTION word);
+"limit N" positional fallback per entry. Same mid-build count guard
+as state 24; .101-style retry (record lookup failure leaves the
+whole announce for the next poll; last_list_key set only after
+speaking). States 26/27 added to the targeting from_menu arm
+(byte-justified by the shared 0x6E5C52 call), the turn-session set,
+and the limit_header_pending arm. New constants
+BMENU_STATE_LIMIT_SLOTS=26 / BMENU_STATE_LIMIT_REELS=27. Log line
+"BMENU limit-special state= slot= count= ids= => ...". DLL literal
+check passed.
+
+**Verify queue [TIFALIMIT106]** (in PARKED.txt): (a) Tifa's Limit
+confirm speaks "Limit level N. Beat Rush, ..."; (b) post-confirm
+target narration works (from_menu arm); (c) Cancel returns to a
+re-announced command menu; (d) state 26 = Cait Sith Slots confirmed
+when he joins the party; (e) count/ids in the log line match her
+learned techniques; (f) log header v2.30.106.
+
+Built clean, deployed both installs, hash-verified C89E8A3507E0AE3F.
+NOT released.
+
 ---
 ---
 
@@ -8054,6 +8104,7 @@ Proven payoffs of cluster reasoning so far:
 | `0x6D98E3` / `0x6D9B98` / `0x6DA072` | state 5/6/7 list handlers | magic-shaped/per-actor lists; widget ptr = 0xDC20D8/0xDC2110/0xDC2148 + slotÂ·0x700 |
 | `0x6F4DB2` | shared widget navigation helper | takes widget ptr arg; ALL cursor inc/dec/wrap/scroll logic â€” cursor ops are [reg+disp], invisible to absolute-operand scans |
 | `0x6DA51A` / `0x6DA67E` | limit widget init / state-24 limit-select handler (fn[15] = fn[24]) | init copies count (table+6) to 0xDC35A4 + the widget's rows/total; the handler's confirm writes table[w4] -> 0xDC3C78 and table[w4+3] -> 0xDC3C84, calls 0x6E5C52, state -> 0 with prev 0x18 (v2.30.98, ff7_limit_battle_widget_static.py) |
+| `0x6DA898` / `0x6DA795` | fn[26] state-0x1A / fn[27] state-0x1B special limit widget handlers (Cait Sith Slots / Tifa reels) | v2.30.106 (dump 20260809_133041): thin confirm/cancel wrappers, NO cursor input; both read the SAME CHAR_BLOCK+0xAC arrays as state 24, issue id[0] -> 0xDC3C78 + target[3] -> 0xDC3C84 on OK (gated on per-widget phase helper == 2: 0x6E2143 / 0x6E3101), call the same targeting-defaults 0x6E5C52, Cancel -> state 1. State 27 = Tifa live-proven (log.12); 26 = Cait Sith by elimination (provisional). The reel MINIGAME is NOT here -- it runs during execution (part-2 investigation pending) |
 | `0x6DF40D` | battle limit window draw | rows via get_kernel_text(section 3, table[i]) = magic names biased +128; title's level digit from savemap charrec +0x0E (v2.30.98) |
 | `0x71F35A` | battle command-menu name draw call site | `call 0x41963C` pushing section 5 + the menu row's RAW id (`[0xDD4714]+row*2+0x1A`, no -1) -- the v2.30.102 byte proof that the command-name file is id-indexed w/ filler entry 0; sibling section-0/1/2 calls at 0x71F289/0x71F2D2/0x71F798 (ff7_gkt_section5_callsites_static.py) |
 | `0x703517` / `0x703048` | limit-list builders (menu module) | fill the battle char blocks' limit ids (all slots / Set-handler path) from the savemap limit level via helper 0x5C8684(record, level*3+technique), plus the 0x1C attack records from 0x91F6D4/0x91F688 (v2.30.98) |
