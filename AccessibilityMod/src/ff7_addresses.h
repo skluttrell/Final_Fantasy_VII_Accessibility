@@ -1995,6 +1995,39 @@ constexpr uint16_t BMENU_STATE_LIMIT_SLOTS = 26;     // Cait Sith Slots widget
 constexpr uint16_t BMENU_STATE_LIMIT_REELS = 27;     // Tifa reel-limit widget
 constexpr uint16_t BMENU_STATE_CLOSED      = 0xFFFF;
 
+// v2.30.107: the reel minigame's live state (statically decoded from
+// display_tifa_slots_handler 0x6E3135 -- the FFNx-named state-0x1B draw
+// case of display_battle_menu 0x6D797C -- plus reel init 0x6E300D and
+// tifa_confirm_setup 0x6E3724; logs reel_widget_static_20260809_210819 +
+// reel_semantics_static_20260809_211218). The whole minigame runs WHILE
+// BMENU state 27 (Tifa) / 26 (Cait Sith) is active: position words
+// advance +1 per drawn frame, OK (via battle input check 0x41AB74, NOT
+// the menu thunk) stops the current reel, and the stopped reel keeps
+// advancing until its position is symbol-aligned (pos & 3 == 0).
+//
+// RESULT FORMULA (byte-proven at 0x6E3757-377F, the game's own confirm
+// harvest): symbol under the marker for reel i =
+//   u8[TIFA_REEL_PATTERN + row[i]*16 + ((2 - pos[i]/4) & 0xF)]
+// where pos/4 rounds toward zero (cdq/and 3/sar 2) and 2 = the CENTER
+// of the five visible cells. Symbol meanings from the damage consumer
+// 0x5DD03D (result 0 skips the technique; result > 1 sets the 0x80
+// power flag on attack id 0x62+technique): 0 = Miss, 1 = Hit,
+// 2 = Yeah!. Rows = GLOBAL technique index 0..9 (init 0x6E300D builds
+// one reel per learned-technique bit within the limit level's range;
+// rows 2/5/8 are all-zero padding = Tifa's empty third slots).
+// Cait Sith's variant (state 26) uses table 0x91E9D8, marker slot 1,
+// a shift-based position ((pos >> (u8[0xDC3B6C]+1)) & 0xF), results
+// -> 0x9A88B0 -- NOT served by the v2.30.107 assist (deferred).
+constexpr uint32_t REEL_COUNT          = 0x00DC3BAC; // u8 number of reels
+constexpr uint32_t REEL_POS            = 0x00DC3C00; // s16[reel] spin position
+constexpr uint32_t REEL_STOPPED        = 0x00DC3C18; // u8[reel] 1 = stopped
+constexpr uint32_t REEL_CURRENT        = 0x00DC3C24; // u8 reel the next OK stops
+constexpr uint32_t REEL_PATTERN_ROW    = 0x00DC3A58; // u8[reel] technique idx 0-9
+constexpr uint32_t TIFA_REEL_PATTERN   = 0x0091EAD0; // .data u8[10][16] symbols
+constexpr uint32_t REEL_MAX            = 7;          // init clears 7 stop flags
+constexpr uint32_t REEL_ROW_MAX        = 9;          // technique rows 0..9
+constexpr uint32_t REEL_MARKER_SLOT    = 2;          // center of 5 visible cells
+
 // Per-slot widget block and the widget offsets within it.
 constexpr uint32_t BATTLE_WIDGET_BASE        = 0x00DC20A0;
 constexpr uint32_t BATTLE_WIDGET_SLOT_STRIDE = 0x700;

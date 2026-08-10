@@ -7895,6 +7895,232 @@ static void CommandMenuName(uint8_t id, std::wstring& out)
     out = GenericActionLabel(id, generic_buf, _countof(generic_buf));
 }
 
+// ---------------------------------------------------------------------------
+// v2.30.107: Tifa limit-reel assist -- the part-2 minigame feature.
+//
+// Tifa's limit break runs a slot bar INSIDE BMENU state 27: one spinning
+// reel per learned technique, OK stops the current reel on whatever
+// symbol sits at the marker (0 = Miss skips the technique, 1 = Hit,
+// 2 = Yeah! powers it up -- semantics byte-proven at damage consumer
+// 0x5DD03D). The engine machinery is fully static-decoded (logs
+// reel_widget_static_20260809_210819 + reel_semantics_static_..._211218;
+// address block in ff7_addresses.h REEL_*): position words advance +1
+// per drawn frame, symbol-under-marker =
+//   pattern[row*16 + ((2 - pos/4) & 0xF)]
+// (toward-zero /4, replicated in ReelSymStep below = the engine's
+// cdq/and-3/sar-2), and a stop settles pos forward to the next multiple
+// of 4 -- so the landed symbol is the one that was APPROACHING at press
+// time, which the tone lead below accounts for.
+//
+// Two methods, per the 2026-08-09 user decision (both shipped, tone
+// default, config-selectable):
+//   limit_reel_tone  -- a cue tone fires limit_reel_tone_lead ms before
+//     a Yeah! reaches the marker of the CURRENT reel; press OK on the
+//     cue and the Yeah! lands. The spin rate is MEASURED live (EMA over
+//     observed position advance) so the lead survives the 30fps/60fps
+//     split FFNx's fps limiter creates; the cue re-fires on every Yeah!
+//     pass, so a missed press just waits for the next lap.
+//   limit_reel_speak -- each reel's settled result is spoken the moment
+//     it stops ("Yeah!" / "Hit" / "Miss").
+//
+// Runs from BattleMenuThread BEFORE its speak_battle_menu gate -- like
+// the dialog tones, the reel cues are usable independently of menu
+// narration. While the assist is live the thread polls at 8ms instead
+// of 50ms (a symbol lasts ~66ms at 60fps; a 50ms grid would jitter the
+// cue by most of a symbol). Cait Sith's Slots (state 26) use a
+// different table/marker/position encoding and are NOT served here --
+// deferred until he reaches a play-test party.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ReelAssistState {
+    bool      active = false;                       // inside a state-27 session?
+    uint8_t   was_stopped[FF7Addr::REEL_MAX] = {};  // stop-edge tracking
+    bool      speak_pending[FF7Addr::REEL_MAX] = {};// stopped, awaiting settle
+    uint8_t   rate_reel = 0xFF;                     // reel the rate sampler tracks
+    int       last_pos = 0;
+    ULONGLONG last_pos_tick = 0;
+    float     ms_per_pos = 33.4f;                   // 30fps prior until measured
+    uint8_t   cue_reel = 0xFF;                      // last cued reel...
+    int       cue_target = -1;                      // ...and Yeah!'s absolute step
+};
+ReelAssistState g_reel;
+
+// The engine's own signed /4 (cdq; and edx,3; add; sar 2) = round toward
+// zero. Position words are monotonic per session but never reset, so
+// negatives after an s16 wrap still divide the way the engine divides.
+inline int ReelSymStep(int pos) { return (pos + ((pos < 0) ? 3 : 0)) >> 2; }
+
+// One assist tick. Returns true while the caller should poll FAST (8ms):
+// exactly when the assist is enabled and Tifa's reel state is on screen.
+static bool TifaReelAssistTick()
+{
+    const Config::Settings& cfg = Config::Get();
+    const bool tone  = cfg.limit_reel_tone;
+    const bool speak = cfg.limit_reel_speak;
+    if (!tone && !speak) {
+        if (g_reel.active) g_reel = ReelAssistState{};
+        return false;
+    }
+
+    const uint8_t mode =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::GAME_MODE);
+    const uint16_t state =
+        *reinterpret_cast<const volatile uint16_t*>(FF7Addr::BATTLE_MENU_STATE);
+    if (mode != 2 || state != FF7Addr::BMENU_STATE_LIMIT_REELS) {
+        if (g_reel.active) g_reel = ReelAssistState{};   // session over
+        return false;
+    }
+
+    const uint8_t count =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_COUNT);
+    if (count == 0 || count > FF7Addr::REEL_MAX)
+        return true;   // widget mid-build; stay fast and retry next tick
+
+    if (!g_reel.active) {
+        g_reel        = ReelAssistState{};
+        g_reel.active = true;
+        if (Config::Get().debug_log) {
+            // Session-open evidence line: every cue/stop claim below is
+            // interpretable against this (v2.30.81 rule).
+            const uint8_t r0 = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_PATTERN_ROW);
+            const uint8_t r1 = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_PATTERN_ROW + 1);
+            const uint8_t r2 = *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_PATTERN_ROW + 2);
+            char dbg[160];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BMENU reel session count=%u rows=%u,%u,%u "
+                "tone=%d speak=%d lead=%d",
+                static_cast<unsigned>(count), r0, r1, r2,
+                tone ? 1 : 0, speak ? 1 : 0, cfg.limit_reel_tone_lead);
+            Log::Write(dbg);
+        }
+    }
+
+    const ULONGLONG now = GetTickCount64();
+
+    // ---- spoken results: detect stop edges, speak once SETTLED ----
+    // (the engine advances a stopped reel to the next pos & 3 == 0
+    // boundary; only then is the marker symbol the final result)
+    for (uint8_t i = 0; i < count; ++i) {
+        const uint8_t stopped =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_STOPPED + i);
+        if (stopped && !g_reel.was_stopped[i]) {
+            g_reel.was_stopped[i]  = 1;
+            g_reel.speak_pending[i] = speak;
+        }
+        if (!g_reel.speak_pending[i])
+            continue;
+        const int pos = *reinterpret_cast<const volatile int16_t*>(
+            FF7Addr::REEL_POS + i * 2u);
+        if ((pos & 3) != 0)
+            continue;   // still settling; next tick
+        g_reel.speak_pending[i] = false;
+        const uint8_t row =
+            *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_PATTERN_ROW + i);
+        if (row > FF7Addr::REEL_ROW_MAX)
+            continue;
+        const uint8_t sym = *reinterpret_cast<const volatile uint8_t*>(
+            FF7Addr::TIFA_REEL_PATTERN + row * 16u +
+            ((FF7Addr::REEL_MARKER_SLOT - ReelSymStep(pos)) & 0xF));
+        const wchar_t* word = (sym == 2) ? L"Yeah!"
+                            : (sym == 1) ? L"Hit"
+                                         : L"Miss";
+        if (Config::Get().debug_log) {
+            char dbg[128];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BMENU reel stop reel=%u row=%u pos=%d sym=%u => %ls",
+                static_cast<unsigned>(i), static_cast<unsigned>(row),
+                pos, static_cast<unsigned>(sym), word);
+            Log::Write(dbg);
+        }
+        TTS::Speak(word, /*interrupt=*/true);
+    }
+
+    if (!tone)
+        return true;
+
+    // ---- timing tone for the CURRENT reel ----
+    const uint8_t cur =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_CURRENT);
+    if (cur >= count)
+        return true;   // all reels stopped; next OK launches the limit
+    if (*reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_STOPPED + cur))
+        return true;   // current reel is settling
+    const int pos = *reinterpret_cast<const volatile int16_t*>(
+        FF7Addr::REEL_POS + cur * 2u);
+    const uint8_t row =
+        *reinterpret_cast<const volatile uint8_t*>(FF7Addr::REEL_PATTERN_ROW + cur);
+    if (row > FF7Addr::REEL_ROW_MAX)
+        return true;
+
+    // Live spin-rate sample: ms per position unit, EMA-smoothed. Sampling
+    // restarts whenever the tracked reel changes (each reel's position
+    // word is independent). The 4..70ms clamp rejects wild samples from
+    // ticks where the poll straddled an engine hitch.
+    if (g_reel.rate_reel != cur) {
+        g_reel.rate_reel     = cur;
+        g_reel.last_pos      = pos;
+        g_reel.last_pos_tick = now;
+    } else if (pos != g_reel.last_pos) {
+        const int       dp = pos - g_reel.last_pos;
+        const ULONGLONG dt = now - g_reel.last_pos_tick;
+        if (dp > 0 && dt > 0) {
+            const float r = static_cast<float>(dt) / static_cast<float>(dp);
+            if (r >= 4.0f && r <= 70.0f)
+                g_reel.ms_per_pos = 0.7f * g_reel.ms_per_pos + 0.3f * r;
+        }
+        g_reel.last_pos      = pos;
+        g_reel.last_pos_tick = now;
+    }
+
+    // Distance (in whole symbols) until the next Yeah! reaches the
+    // marker: as pos grows, marker entry (2 - pos/4) & 15 DECREASES, so
+    // the symbol arriving k steps from now sits at entry (e - k) & 15.
+    const int step = ReelSymStep(pos);
+    const int e    = (static_cast<int>(FF7Addr::REEL_MARKER_SLOT) - step) & 0xF;
+    const volatile uint8_t* tbl = reinterpret_cast<const volatile uint8_t*>(
+        FF7Addr::TIFA_REEL_PATTERN + row * 16u);
+    int k = -1;
+    for (int j = 0; j < 16; ++j) {
+        if (tbl[(e - j) & 0xF] == 2) { k = j; break; }
+    }
+    if (k < 0)
+        return true;   // no Yeah! on this row (all-zero padding rows)
+
+    // Cue when the Yeah! is ~lead ms out. k_target floors at 1: firing
+    // while the Yeah! is already AT the marker is always too late once
+    // the stop-settle advances one more symbol.
+    const float ms_per_sym = 4.0f * g_reel.ms_per_pos;
+    int k_target = static_cast<int>(
+        static_cast<float>(cfg.limit_reel_tone_lead) / ms_per_sym + 0.5f);
+    if (k_target < 1) k_target = 1;
+    if (k_target > 8) k_target = 8;
+
+    const int target_abs = step + k;   // absolute step at which it lands
+    if (k <= k_target &&
+        (g_reel.cue_reel != cur || g_reel.cue_target != target_abs)) {
+        g_reel.cue_reel   = cur;
+        g_reel.cue_target = target_abs;
+        if (Config::Get().debug_log) {
+            char dbg[160];
+            _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
+                "[FF7Access] BMENU reel cue reel=%u row=%u pos=%d k=%d "
+                "ktarget=%d mspp=%d.%d",
+                static_cast<unsigned>(cur), static_cast<unsigned>(row), pos,
+                k, k_target, static_cast<int>(g_reel.ms_per_pos),
+                static_cast<int>(g_reel.ms_per_pos * 10.0f) % 10);
+            Log::Write(dbg);
+        }
+        // 1976 Hz (a pitch no other cue uses), 40ms. Blocks this thread
+        // for the duration -- the standard Tones contract; 40ms is under
+        // one symbol period, so the next tick re-reads fresh state.
+        Tones::Play(1976, 40);
+    }
+    return true;
+}
+
+} // namespace
+
 static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
 {
     uint16_t  last_state    = FF7Addr::BMENU_STATE_CLOSED;
@@ -7945,9 +8171,19 @@ static DWORD WINAPI BattleMenuThread(LPVOID /*unused*/)
         }
     };
 
+    // v2.30.107: poll interval drops to 8ms while the Tifa reel assist is
+    // live (a reel symbol lasts ~66ms at 60fps; the normal 50ms grid
+    // would jitter the timing cue by most of a symbol). All other work in
+    // this loop is change-detecting, so the faster cadence costs only a
+    // few extra byte reads during the seconds the reels are on screen.
+    DWORD poll_ms = 50;
     for (;;) {
-        if (WaitForSingleObject(g_cursor_stop_event, 50) == WAIT_OBJECT_0)
+        if (WaitForSingleObject(g_cursor_stop_event, poll_ms) == WAIT_OBJECT_0)
             break;
+
+        // Reel assist runs BEFORE the narration gate below: like the
+        // dialog tones, the reel cues work independently of menu speech.
+        poll_ms = TifaReelAssistTick() ? 8 : 50;
 
         if (!Config::Get().speak_battle_menu) {
             reset_all();

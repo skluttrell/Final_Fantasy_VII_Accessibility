@@ -103,6 +103,15 @@ const Entry kEntries[] = {
     { "speak_battle_menu", L"Battle menu speech", Kind::Bool,
       &Config::Settings::speak_battle_menu,
       L"Narrates the in-battle command menu and target selection." },
+    // v2.30.107: the two Tifa-reel methods (the lead tuner
+    // limit_reel_tone_lead stays cfg-file-only — the F8 menu has no
+    // millisecond editor and the default suits most reaction times).
+    { "limit_reel_tone", L"Limit reel timing tone", Kind::Bool,
+      &Config::Settings::limit_reel_tone,
+      L"Tone before a Yeah reaches the marker on Tifa's limit reels." },
+    { "limit_reel_speak", L"Limit reel spoken results", Kind::Bool,
+      &Config::Settings::limit_reel_speak,
+      L"Speaks Yeah, Hit, or Miss as each of Tifa's reels stops." },
     { "speak_menus", L"Menu speech", Kind::Bool,
       &Config::Settings::speak_menus,
       L"Narrates the title screen and all game menus." },

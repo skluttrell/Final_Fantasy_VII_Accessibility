@@ -2675,6 +2675,34 @@ command name. Additional verify items:
     unchanged v2.30.49 state path);
 (g) log header v2.30.103.
 
+[REELS107] v2.30.107 verify queue -- Tifa's reel minigame tones + speech
+------------------------------------------------------------------------
+Parked: 2026-08-09 (shipped v2.30.107, deployed both
+31987F2FF19585DB, NOT released; full derivation research S8
+v2.30.107, addresses S4 REEL_* + S14). User decision: both methods,
+config-selectable, tone timing default. Two offline static passes
+(ff7_reel_widget_static.py + ff7_reel_semantics_static.py) decoded
+the whole minigame -- which runs INSIDE BMENU state 27, correcting
+the .98/.106 "during execution" model. Symbol semantics byte-proven:
+0=Miss (technique skipped), 1=Hit, 2=Yeah! (0x80 power flag).
+Shipped: TifaReelAssistTick in BattleMenuThread (8ms poll while
+live, speech-independent like the dialog tones); cfg
+limit_reel_tone=true / limit_reel_speak=false /
+limit_reel_tone_lead=250 (+ glossary + F8 rows); installed cfgs
+spliced (values preserved).
+Verify: (a) "BMENU reel session" line on confirming Tifa's Limit;
+(b) cue tone audible, press-on-cue lands Yeah! (tune
+limit_reel_tone_lead if consistently early/late; mspp= in the cue
+lines shows the measured spin rate); (c) speak mode's word matches
+the outcome (Yeah! = boosted damage, Miss = technique skipped);
+(d) F8 menu lists both settings; (e) no battle-menu regressions
+from the 8ms poll; (f) log header v2.30.107.
+DEFERRED: Cait Sith's Slots (state 26) -- different pattern table
+(0x91E9D8, 6 symbol kinds), marker slot 1, shift-based position;
+needs symbol NAMING (sprites, not text) before speech/tones make
+sense; full reference listings already in the two investigation
+logs. Revive when he reaches a play-test party.
+
 [TIFALIMIT106] v2.30.106 verify queue -- Tifa/Cait Sith limit menus spoken
 ------------------------------------------------------------------------
 Parked: 2026-08-09 (shipped v2.30.106, deployed both
@@ -2693,14 +2721,11 @@ returns to a re-announced command menu; (d) state 26 = Cait Sith
 Slots confirmed when he joins a party (currently BY ELIMINATION);
 (e) log-line count/ids match her learned techniques; (f) log header
 v2.30.106.
-PART 2 (deferred by user 2026-08-09, "we'll figure out part 2
-later"): the reel MINIGAME during limit execution (Yeah!/Hit!/Miss
-timing). Start points when revived: widget-init callees 0x6E3724
-(Tifa) / 0x6E2FA9 (Cait) + a live delta-scan session while stopping
-reels slowly; DESIGN DECISION NEEDED from the user first:
-result-only announces ("Yeah!" after each stop) vs positional
-timing tones (wall-bump-tone style cue when Yeah! passes the
-marker); risk: 50ms poll may be too coarse for reel speed.
+PART 2 [RESOLVED same day by v2.30.107 -- see [REELS107]: user chose
+both methods behind config, tone default; two static passes decoded
+the minigame (it runs INSIDE state 27, not during execution as
+assumed here); the 50ms-poll risk was real and answered with an 8ms
+assist poll. Only Cait Sith's Slots remain deferred.]
 
 [CMDNAME105] v2.30.105 verify queue -- report-open command names + Tifa's limit name
 ------------------------------------------------------------------------

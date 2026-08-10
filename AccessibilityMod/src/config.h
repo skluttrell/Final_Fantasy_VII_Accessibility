@@ -19,7 +19,7 @@
 // artifact in a play-test log said WHICH build produced it -- diagnosing the
 // 2026-08-04 station report meant inferring the deployed version from file
 // timestamps. One constant, bumped per release alongside the commit tag.
-#define FF7ACCESS_VERSION "2.30.106"
+#define FF7ACCESS_VERSION "2.30.107"
 
 namespace Config {
 
@@ -81,6 +81,34 @@ struct Settings {
     // because a player may want quiet menus but spoken actions, or vice versa.
     // Default: true.
     bool speak_battle_menu = true;
+
+    // limit_reel_tone: If true, Tifa's limit-break reels (the Yeah!/Hit!/
+    // Miss slot bar you stop with OK) play a TIMING TONE shortly before a
+    // "Yeah!" symbol reaches the stop marker, so the player can aim for
+    // the best result the way a sighted player watches the symbol
+    // approach (v2.30.107, user-requested design: both methods behind
+    // config, tone timing the default). The mod reads the game's own
+    // reel state and pattern tables (see ff7_addresses.h REEL_*) and
+    // fires the cue limit_reel_tone_lead milliseconds early, measuring
+    // the live spin rate so the lead survives 30/60fps differences.
+    // Like the dialog tones, this is independent of speech settings.
+    // Default: true.
+    bool limit_reel_tone = true;
+
+    // limit_reel_speak: If true, each reel SPOKEN result is announced the
+    // moment it stops ("Yeah!", "Hit", "Miss") — the after-the-fact
+    // method. Both settings can be on together (tone to aim, speech to
+    // confirm), or both off for silent reels. Default: false (the tone
+    // method is the primary per the 2026-08-09 user decision).
+    bool limit_reel_speak = false;
+
+    // limit_reel_tone_lead: How many milliseconds BEFORE a Yeah! reaches
+    // the stop marker the timing tone fires. This is reaction-time
+    // headroom: hearing the cue, then pressing OK, takes a beat, and the
+    // game also settles a stop onto the NEXT symbol boundary. Tune it if
+    // Yeah!s keep landing one symbol early (lower it) or late (raise
+    // it). Clamped 0..1000. Default: 250.
+    int limit_reel_tone_lead = 250;
 
     // speak_menus: If true, menu navigation is announced. Covers the title
     // screen cursor, main menu cursor + Quit dialog, Config sub-menu rows and

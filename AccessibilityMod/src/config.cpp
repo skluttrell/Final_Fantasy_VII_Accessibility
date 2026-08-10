@@ -144,6 +144,19 @@ void Load()
         else if (key == "speak_battle_damage") g_settings.speak_battle_damage = parse_bool(value);
         else if (key == "speak_battle_status") g_settings.speak_battle_status = parse_bool(value);
         else if (key == "speak_battle_menu") g_settings.speak_battle_menu = parse_bool(value);
+        else if (key == "limit_reel_tone")  g_settings.limit_reel_tone  = parse_bool(value);
+        else if (key == "limit_reel_speak") g_settings.limit_reel_speak = parse_bool(value);
+        // limit_reel_tone_lead takes MILLISECONDS (0-1000); same strtol +
+        // end-pointer + clamp treatment as tone_volume — a typo keeps the
+        // compiled default rather than silently zeroing the lead.
+        else if (key == "limit_reel_tone_lead") {
+            char* end = nullptr;
+            const long v = strtol(value.c_str(), &end, 10);
+            if (end != value.c_str()) {
+                g_settings.limit_reel_tone_lead =
+                    static_cast<int>(v < 0 ? 0 : (v > 1000 ? 1000 : v));
+            }
+        }
         else if (key == "speak_menus")   g_settings.speak_menus   = parse_bool(value);
         else if (key == "speak_enemy_hp_always") g_settings.speak_enemy_hp_always = parse_bool(value);
         else if (key == "wall_bump_tone") g_settings.wall_bump_tone = parse_bool(value);

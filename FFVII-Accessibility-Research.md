@@ -250,6 +250,8 @@ every confirmed address â€” the clustering itself is a discovery tool.
 | *(magic/summon list format)* | â€” | **3-COLUMN grid, 8-byte entries** (v2.36 Confirm-path disasm â€” NOT the item layout): u8 id at +0 (0xFF = empty), u8[+6] bit 0x02 = disabled. Selected index = **w0 + (w4+scroll)Â·3**. Tables: magic = CHAR_BLOCK+slotÂ·0x440+0x108, summon = +0x2C8. The v2.9 linear formula/6-byte reading was correct only for items + a â‰¤3-spell single row |
 | *(limit list format)* | -- | **State-24 LIMIT-SELECT list (v2.30.98 static, ff7_limit_battle_widget_static.py): PARALLEL BYTE ARRAYS at CHAR_BLOCK+0xAC (0xDBA544)** -- u8 id[3] at +0 (0-based limit index; the draw code 0x6DF40D feeds it to kernel-text section 3 = the magic-names file biased +128, i.e. EXACTLY ResolveActionName branch 7, live-verified idx 0 = Braver), u8 target_flags[3] at +3 (confirm: table[w4+3] -> 0xDC3C84), **u8 count at +6**, 3 x 0x1C attack-data records at +8. Widget at +0x118 (0xDC21B8 + slot*0x700); init 0x6DA51A pins visible rows = total entries = count, so the list **NEVER scrolls and index = the raw vertical cursor w4** (no w0/scroll term -- unlike every other battle list). Builders (menu module: 0x703517 all-slots sync loop, 0x703048 Set-handler path) fill ids from the CURRENT limit level (savemap charrec +0x0E) via helper 0x5C8684(record, level*3+technique) -- why the window shows one level's techniques only. fn[24] = fn[15] = 0x6DA67E; the handler and draw index their slot from 0xDC3C80 (second active-slot byte, = 0xDC3C7C whenever the widget is open). **v2.30.106: the SAME +0xAC arrays serve BMENU states 26/27** (Cait Sith Slots / Tifa reels, handlers 0x6DA898 / 0x6DA795): thin confirm/cancel wrappers, NO cursor -- OK issues id[0] (gated on per-widget phase helper 0x6E2143 / 0x6E3101 == 2), Cancel -> state 1, same targeting-defaults 0x6E5C52 as fn[24]. State 27 = Tifa live-proven (log.12); 26 = Cait Sith by elimination (provisional) |
 | `BATTLE_LIMIT_COUNT` | `0x00DC35A4` | u16 = widget-init copy of the limit list's count byte (table+6); sits just before BATTLE_MENU_BUSY. Doc-only -- the mod reads the per-slot count byte (v2.30.98) |
+| `REEL_COUNT / _POS / _STOPPED / _CURRENT / _PATTERN_ROW` | `0x00DC3BAC / 0x00DC3C00 / 0x00DC3C18 / 0x00DC3C24 / 0x00DC3A58` | **v2.30.107: Tifa's limit-reel minigame live state** (runs entirely inside BMENU state 27; statically decoded from display_tifa_slots_handler 0x6E3135 + init 0x6E300D + confirm harvest 0x6E3724 -- logs reel_widget_static_20260809_210819 / reel_semantics_static_..._211218): u8 reel count; s16[reel] spin position (+1 per drawn frame, /4 toward-zero = whole symbols, a stop settles forward to pos&3==0); u8[reel] stopped flags; u8 current-reel index (OK via battle input check 0x41AB74 stops it, sfx 0x1E3 on the last); u8[reel] pattern row = GLOBAL technique index 0..9 (rows 2/5/8 all-zero padding = Tifa's empty third slots; built by init from limit level u8[0xDBFEA2] + learned mask u16[0xDBFEB6]). Symbol under marker = u8[0x91EAD0 + row*16 + ((2 - pos/4) & 0xF)] (marker = CENTER of 5 visible cells, byte-proven in 0x6E3724). Read every 8ms by the reel assist while state 27 is live |
+| `TIFA_REEL_PATTERN` / `TIFA_REEL_RESULTS` | `0x0091EAD0` / `0x009A88B4` | .data u8[10][16] symbol patterns (0=Miss 1=Hit 2=Yeah!, semantics byte-proven at the sole damage-side reader 0x5DD03D: result 0 SKIPS the technique, >1 ORs the 0x80 power flag onto attack id 0x62+technique = the raw magic-file names 98+); results u8[reel] written by confirm harvest 0x6E3724. Cait Sith's Slots variant (state 26, NOT served by the mod yet): pattern 0x91E9D8 u8[3][16] (6 symbol kinds), marker slot 1, shift-position ((pos >> (u8[0xDC3B6C]+1)) & 0xF), results 0x9A88B0 (readers 0x5DEDC1..0x5DF480, 0x49FC6D); shared input cooldown u8 0xDC3B70 (0x0A per stop) |
 | `BATTLE_TEXT_QUEUE` | `0x00BF1EB8` | Battle text display queue (v2.36): battle_text_data[64], **stride 6**, s16 buffer_idx at +0 (-1 = empty slot, â‰¥0x100 = scene AI dialogue). FFNx name-anchored (add_text_to_display_queue+0x25). The channel BattleMessageThread reads for the scorpion tail warning etc. |
 | `SCENE_MSG_BASE / _OFFSETS` | `0x009AD1E0 / 0x009AD9E0` | Current formation's scene.bin messages: text(idx) = 0x9AD1E0 + u16[0x9AD9E0 + (idx-0x100)Â·2], FF7-decoded. Replicates GET_KERNEL_TEXT section 8 (handler 0x4199AD â†’ 0x41D2E5). v2.36 |
 | `EFFECT60_FN_ARRAY` | `0x00BFB1B0` | u32[60] effect60 function pointers (add-fn 0x5BED92 disasm, v2.30.99): first zero slot wins; paired data slot = 0xBFC3A0 + idx*0x20, current-executing idx word [0xBF2DF4]. THE mod's damage-display watch: fn == 0x5BB410 means a floating damage number/glyph is on screen (READ BY MOD, 50ms poll) |
@@ -7753,6 +7755,73 @@ learned techniques; (f) log header v2.30.106.
 Built clean, deployed both installs, hash-verified C89E8A3507E0AE3F.
 NOT released.
 
+### v2.30.107 (2026-08-09): Tifa's reel minigame accessible -- timing tones (default) + spoken results, config-selectable
+
+**User decision**: "set up both method and let the user decide which
+they want to use as a configuration option. Though, the tone based
+timing should be default." (Part 2 of the Tifa limit work, revived
+same day.)
+
+**Investigation (2 offline static passes, no live session needed)**:
+NEW investigate/ff7_reel_widget_static.py +
+ff7_reel_semantics_static.py (logs ..._210819 / ..._211218). Entry
+point was the v2.30.100 lesson applied FIRST: grep vendored FFNx --
+it NAMES the machinery (display_tifa_slots_handler_6E3135 =
+display_battle_menu 0x6D797C's jump-table case, + a 60fps "Tifa slots
+speed patch" at +0x168 marking the spin divider). KEY CORRECTION: the
+reels run INSIDE BMENU state 27 (the .106/.98 "reels during
+execution" model was wrong) -- fn[27] is only the confirm/cancel
+shell around them; phase helper 0x6E3101 returns 0/1/2 =
+none/some/all-stopped, and the .106 technique announce already fires
+at the right moment. Full decode in S4 (REEL_* row) + S14: count
+0xDC3BAC, s16 pos[reel] 0xDC3C00 (+1/frame, /4 = symbols, stop
+settles to pos&3==0), stopped 0xDC3C18, current 0xDC3C24, pattern
+row 0xDC3A58 = technique index into u8[10][16] table 0x91EAD0;
+symbol-under-marker formula byte-proven at the game's own confirm
+harvest 0x6E3724 (marker = center slot 2); symbol semantics
+byte-proven at damage consumer 0x5DD03D (0=Miss skips the technique,
+1=Hit, 2=Yeah! ORs the 0x80 power flag onto attack id 0x62+tech --
+which also EXPLAINS the .105 flash idx 98 = 0x62 = Beat Rush).
+Pattern contents match game lore (Beat Rush 4Y/12H/0M .. Final
+Heaven 1Y/8H/7M).
+
+**Fix (proxy.cpp TifaReelAssistTick + config plumbing)**: assist runs
+from BattleMenuThread BEFORE the speak_battle_menu gate (reel cues
+are speech-independent, the dialog-tone principle); the thread's poll
+drops 50ms -> 8ms while the assist is live (a symbol lasts ~66ms at
+60fps -- a 50ms grid would jitter the cue by most of a symbol).
+TONE METHOD (default): finds the next Yeah! approaching the CURRENT
+reel's marker (entry (2 - pos/4 - k) & 15) and plays 1976 Hz/40ms
+when it is limit_reel_tone_lead ms out (default 250, cfg 0-1000);
+ms-per-symbol is EMA-MEASURED from live position advance so the lead
+survives the 30/60fps split; re-cues every lap (a missed press waits
+for the next pass); k_target floors at 1 because the stop-settle
+advances one more symbol. SPEAK METHOD: on each stop edge, waits for
+the settle boundary then speaks the landed symbol ("Yeah!"/"Hit"/
+"Miss"). THREE cfg settings (list + glossary + F8 menu Bool rows;
+lead is cfg-file-only): limit_reel_tone=true, limit_reel_speak=false,
+limit_reel_tone_lead=250. Log lines: "BMENU reel session count= rows=
+tone= speak= lead=" once per widget-open, "BMENU reel cue reel= row=
+pos= k= ktarget= mspp=" per cue, "BMENU reel stop reel= row= pos=
+sym= => word" per stop. Installed cfgs at BOTH installs spliced with
+the three new list lines only (user-customized values preserved --
+speak_dialog=false etc.); canonical cfg embedded in the DLL verified
+("TIFA'S LIMIT REELS" literal present). Cait Sith's Slots (state 26,
+different table/marker/shift encoding, 6 symbol kinds needing sprite
+naming) deliberately NOT served -- deferred with full reference
+listings in the investigation logs.
+
+**Verify queue [REELS107]** (in PARKED.txt): (a) reel session line
+appears when Tifa's Limit is confirmed; (b) cue tones audible and a
+press on the cue lands Yeah! (else tune limit_reel_tone_lead; log
+mspp= shows the measured rate); (c) speak mode announces the same
+result the damage suggests (Yeah! boosted / Miss skipped); (d) F8
+menu lists both new settings; (e) 8ms poll causes no battle-menu
+regressions (cursor announces unchanged); (f) log header v2.30.107.
+
+Built clean, deployed both installs, hash-verified 31987F2FF19585DB.
+NOT released.
+
 ---
 ---
 
@@ -8104,7 +8173,9 @@ Proven payoffs of cluster reasoning so far:
 | `0x6D98E3` / `0x6D9B98` / `0x6DA072` | state 5/6/7 list handlers | magic-shaped/per-actor lists; widget ptr = 0xDC20D8/0xDC2110/0xDC2148 + slotÂ·0x700 |
 | `0x6F4DB2` | shared widget navigation helper | takes widget ptr arg; ALL cursor inc/dec/wrap/scroll logic â€” cursor ops are [reg+disp], invisible to absolute-operand scans |
 | `0x6DA51A` / `0x6DA67E` | limit widget init / state-24 limit-select handler (fn[15] = fn[24]) | init copies count (table+6) to 0xDC35A4 + the widget's rows/total; the handler's confirm writes table[w4] -> 0xDC3C78 and table[w4+3] -> 0xDC3C84, calls 0x6E5C52, state -> 0 with prev 0x18 (v2.30.98, ff7_limit_battle_widget_static.py) |
-| `0x6DA898` / `0x6DA795` | fn[26] state-0x1A / fn[27] state-0x1B special limit widget handlers (Cait Sith Slots / Tifa reels) | v2.30.106 (dump 20260809_133041): thin confirm/cancel wrappers, NO cursor input; both read the SAME CHAR_BLOCK+0xAC arrays as state 24, issue id[0] -> 0xDC3C78 + target[3] -> 0xDC3C84 on OK (gated on per-widget phase helper == 2: 0x6E2143 / 0x6E3101), call the same targeting-defaults 0x6E5C52, Cancel -> state 1. State 27 = Tifa live-proven (log.12); 26 = Cait Sith by elimination (provisional). The reel MINIGAME is NOT here -- it runs during execution (part-2 investigation pending) |
+| `0x6DA898` / `0x6DA795` | fn[26] state-0x1A / fn[27] state-0x1B special limit widget handlers (Cait Sith Slots / Tifa reels) | v2.30.106 (dump 20260809_133041): thin confirm/cancel wrappers, NO cursor input; both read the SAME CHAR_BLOCK+0xAC arrays as state 24, issue id[0] -> 0xDC3C78 + target[3] -> 0xDC3C84 on OK (gated on per-widget phase helper == 2: 0x6E2143 / 0x6E3101), call the same targeting-defaults 0x6E5C52, Cancel -> state 1. State 27 = Tifa live-proven (log.12); 26 = Cait Sith by elimination (provisional). CORRECTED v2.30.107: the reel minigame runs DURING these states (not during execution) -- see the 0x6E3135 row |
+| `0x6E3135` / `0x6E300D` / `0x6E3724` | display_tifa_slots_handler (FFNx name) / Tifa reel init / Tifa confirm harvest | v2.30.107 (reel_widget_static + reel_semantics_static logs, 20260809): display_battle_menu 0x6D797C's jump-table case for state 0x1B -- draws 5 cells per reel, advances s16 pos[reel] 0xDC3C00 +1/frame, polls OK via battle input check 0x41AB74 (NOT the menu thunk) to stop the current reel 0xDC3C24, settles a stopped reel to pos&3==0, sfx 0x1E3 when the last stops; FFNx 60fps speed patch lands at +0x168/+0x16B. Init 0x6E300D: clears 7 stop flags + current + cooldown 0xDC3B70=0x0A, builds one reel per learned-technique bit (mask u16 0xDBFEB6) within the limit level's range (u8 0xDBFEA2 -> caps 3/6/9/10), pattern row = technique index. Confirm harvest 0x6E3724: result[i] = u8[0x91EAD0 + row*16 + ((2 - pos/4) & 0xF)] -> 0x9A88B4 (THE byte proof of the marker-slot-2 formula the v2.30.107 assist replicates). Cait siblings: display 0x6E2170 (state 0x1A case), init tail 0x6E2121-43, harvest 0x6E2FA9 |
+| `0x5DD03D` | Tifa reel-result damage consumer | v2.30.107: iterates the learned-technique bitmask via 0x5C8684, reads result u8[0x9A88B4+i]: 0 -> technique SKIPPED (= Miss), else issues attack id 0x62+technique via 0x5CAC07 with the 0x80 power flag ORed on when result > 1 (= Yeah!; 1 = plain Hit). Also the origin of the 0x62 base = raw magic-file name entries 98+ (ties the .105 flash idx 98 = Beat Rush together) |
 | `0x6DF40D` | battle limit window draw | rows via get_kernel_text(section 3, table[i]) = magic names biased +128; title's level digit from savemap charrec +0x0E (v2.30.98) |
 | `0x71F35A` | battle command-menu name draw call site | `call 0x41963C` pushing section 5 + the menu row's RAW id (`[0xDD4714]+row*2+0x1A`, no -1) -- the v2.30.102 byte proof that the command-name file is id-indexed w/ filler entry 0; sibling section-0/1/2 calls at 0x71F289/0x71F2D2/0x71F798 (ff7_gkt_section5_callsites_static.py) |
 | `0x703517` / `0x703048` | limit-list builders (menu module) | fill the battle char blocks' limit ids (all slots / Set-handler path) from the savemap limit level via helper 0x5C8684(record, level*3+technique), plus the 0x1C attack records from 0x91F6D4/0x91F688 (v2.30.98) |
@@ -8406,6 +8477,11 @@ needed; the helper's own math is the documented ground truth.)
 | `0xDC208C` | kernel2 lookup result ptr | written after every consumer CALL to 0x41963C â€” but consumer is FFNx-replaced, so **never written in practice**; observed 0 always (2026-07-11) |
 | `0xDC20A0` | BATTLE_WIDGET_BASE | per-slot (+slotÂ·0x700) battle menu widget structs â€” command cursor at +0/+4; see Â§4 (2026-07-12) |
 | `0xDC21B8` | limit-select widget (slot 0) | state-24 widget = WIDGET_BASE+0x118 (+slot*0x700); init 0x6DA51A zeroes cursors (unless resume flag 0xDC3C5C), sets rows = total = count -> never scrolls (v2.30.98) |
+| `0xDC3A58` / `0xDC3BAC` / `0xDC3C00` / `0xDC3C18` / `0xDC3C24` | Tifa/Cait reel minigame state | v2.30.107: pattern rows u8[reel] (technique idx 0..9) / reel count u8 / spin pos s16[reel] (+1 per frame; NEVER reset between uses -- s16 wrap after ~36min cumulative reel time, engine divides toward zero so negatives stay coherent) / stopped flags u8[reel] / current-reel u8. Full semantics = S4 REEL_* row; assist reads all five at 8ms while BMENU state 27 |
+| `0xDC3B6C` / `0xDC3B70` | Cait speed shift / reel input cooldown | v2.30.107: u8 shift for Cait's position-to-entry mapping (init 2); u8 frames until the next OK is accepted (0x0A per stop, decremented each draw) |
+| `0x91EAD0` / `0x91E9D8` | Tifa / Cait reel pattern tables (.data) | v2.30.107: u8[10][16] and u8[3][16]; Tifa symbols 0=Miss 1=Hit 2=Yeah! (Beat Rush row 0 = 4Y/12H/0M .. Final Heaven row 9 = 1Y/8H/7M; rows 2/5/8 zero padding). The mod reads them in-process (no ASLR) |
+| `0x9A88B4` / `0x9A88B0` | Tifa / Cait reel results | v2.30.107: u8[reel] harvested at confirm (0x6E3724 / 0x6E2FA9), consumed by 0x5DD03D / 0x5DEDC1-cluster on the damage side. Doc-only -- the assist computes the same symbol live instead |
+| `0xDBFEA2` / `0xDBFEB6` | active char limit level / learned-technique mask | v2.30.107: u8 level (1-4) + u16 bitmask the reel init 0x6E300D builds reels from. Doc-only for the mod (rows come from 0xDC3A58) |
 | `0xDC35A4` | BATTLE_LIMIT_COUNT | u16 widget-init copy of the limit list's count byte (CHAR_BLOCK+0xB2); see the S4 limit-list row (v2.30.98) |
 | `0xDC35AC` | BATTLE_MENU_BUSY | u32 transition flag; `0xDC35A8` = command-menu-opened SFX-played byte |
 | `0xDC3C54â€“0xDC3C98` | issued-action staging block | 0xDC3C70 cmd id, 0xDC3C78 action id, 0xDC3C7C ACTIVE SLOT, 0xDC3C84 action idx, 0xDC3C90/94 target type/idx, 0xDC3C98 targeting actor (all = FFNx externals; static 2026-07-12) |
