@@ -328,6 +328,11 @@ straight in — no overshoot occurred, which is the point), (c) \
 pressed while inside ("NAV veryclose center" never fired), (e)
 wandering-NPC target, and the J/L / Shift+K disarm gestures. These
 ride the next ordinary play session.
+LOG NOTE 2026-08-10 (log.13): three more clean homing cycles (slots
+6/7/12 — armed outside, entry announce fired at dist 78/79/68 inside
+reach 80, disarmed on the interaction dialog within ~0.2-2.5s) —
+(a)/(d) re-confirmed. (b)/(c)/(e) STILL unexercised: every approach
+walked straight in, so mid-circle updates never had cause to fire.
 
 [WALKORD96] Walk-into announces carry the browser's duplicate ordinals
 ------------------------------------------------------------------------
@@ -384,6 +389,19 @@ swapped line after re-entry; (c) upper train after brown opens the
 exit route (journey to Sector 7 Station routes); (d) "center wreck 1,
 climb" ordinal-before-suffix; (e) field 144 names; (f) non-curated
 fields unchanged ("ladder 2", "Trigger N"); (g) log header v2.30.97.
+PLAY-VERIFIED 2026-08-10 (log.13, v2.30.107 — the graveyard run this
+entry was built for): (a)/(b) curated names carried everywhere — the
+scans name BOTH lines of each hop pair identically all session
+('brown train, hop in' ents 7+8, 'upper train, hop in' ents 9+10),
+no ", scene", journey titles bare ("brown train, hop in: on another
+level..." 09:51:05); (c) PASS — after the train hops the walk graph
+grew comps 37 -> 53 and journeys to Sector 7,Station 1/2 ROUTED
+(09:56-09:57); (d) PASS by ear — user transcript "center wreck 2,
+climb" (ordinal before suffix); (e) PASS — field 144 journeys spoke
+south/middle/north wreck + "roof gap jump 1" (09:41); (f) PASS —
+fields 146/156 stayed uncurated ('border', 'save point'); (g) header
+v2.30.107. QUEUE CLOSED. One NEW route-content bug from the same
+run => [YARDROUTE].
 
 [LIMITSEL98] Battle limit-break selection list spoken
 ------------------------------------------------------------------------
@@ -439,6 +457,19 @@ RESIDUAL: crits still invisible (flags-word bits are the suspect --
 the dmgdisp corpus will show which bit rides a crit); MP damage
 numbers observable now but deliberately unspoken (follow-up if
 wanted); -2/-3 glyph meanings unknown.
+PLAY-VERIFIED 2026-08-10 (log.13, v2.30.107, 2013+7H -- first
+session with real whiff traffic; Ghosts evade constantly): (a) PASS
+-- enemy misses spoken all session (Ghost 1/2/3, Deenglow 2; 49
+BATTLE miss lines); (b) PASS -- party misses spoken (Tifa, Cloud,
+Aerith); (c) PASS -- exactly one spoken miss per missed action,
+repeats 1.9s apart kept distinct, no dedup false-drops seen; (d)
+PASS -- every line carries actor/slot/flags (all flags=0000); (g)
+PASS -- zero entry-time ghost misses across ~10 battles; (f) header
+v2.30.107 (includes .99). BONUS confirmed: the combined-line fold
+works ("Cloud, Braver, Ghost 1, miss."). NOT EXERCISED: (e) no
+val=-2/-3 display occurred all session; (h) no multi-target miss.
+The [REVIEW101] dmgdisp slot-reuse race never manifested. QUEUE
+CLOSED except (e)/(h), which stay as passive watch items.
 
 [DIALOGCHARS] More strange characters in dialog: "Ø" before Aerith line
 ------------------------------------------------------------------------
@@ -773,6 +804,75 @@ LockedEdgeAhead() path: the bump message ("The way is closed for now."
 on freezing against a locked edge) is a different, correct case and
 should stay.
 
+[LADDERDIR] Ladders can be left/right oriented, not just up/down
+------------------------------------------------------------------------
+Parked: 2026-08-10 (user report).
+"The ladders can have different directions after all. All the ones in
+Reactor No. 1 were up and down, but the ones in the train graveyard
+are mostly left or right. There was another ladder like that too on my
+way to Reactor No. 5."
+This breaks the working assumption (baked in during the reactor-only
+play window) that ladders are vertical. Three places in the mod touch
+ladder direction — check each when revived:
+(1) [LADDER] v2.30.60 on-ladder announce: the push bearing comes from
+the climb target +0x7C/+0x80 rotated by control_direction and
+quantised with the pathfinder's own 8-way sectors — that machinery
+CAN say left/right already; whether it actually did on the graveyard
+ladders needs a log (LADDER log lines carry mtype and the bearing).
+(2) [JOURNEY3] v2.30.68 fix (4): JOURNEY ladder push is decided by
+HEIGHT ("down = descending; dz in LADDER log") — a sideways ladder
+has dz≈0 between ends, so that rule can only ever say up/down and is
+the likely wrong-word source on horizontal ladders.
+(3) [LADDER]'s own RESIDUAL: mtype 4 vs 5 and +0x6E 0/1 distinguish
+LADER's four cases — plausibly orientation is encoded there; the
+graveyard/Reactor-5 sightings are exactly the data points that
+residual was waiting for. When revived: pull the LADER log lines from
+a train-graveyard session (mtype, +0x6E, dz, spoken word vs the real
+orientation) before changing any rule.
+LOG EVIDENCE 2026-08-10 (log.13, v2.30.107 — exactly the session
+this entry wanted): 17 climbs across fields 144/145, and EVERY one
+spoke up or down (LADDER lines dir=0 or dir=4 only — the 8-way
+machinery never produced a left/right word) while the user reports
+the real pad inputs on the graveyard wrecks are left/right. Hard
+facts for the fix: (i) dz=+352/-352 on every single climb —
+sideways ladders still have full height change, so no height rule
+can ever detect orientation (kills the [JOURNEY3] fix-(4) approach
+for these); (ii) mtype was 5 on all climbs but ONE (09:41:53 field
+144 first climb: mtype=4, dz=+352, also spoken "up") — so 4 vs 5 is
+not an obvious orientation split from this data alone; (iii) the
+climb-target bearing itself is what quantised to up/down, so either
+these LADER targets really are near-vertical in world space and the
+SCREEN direction differs (camera/control rotation questions), or
++0x7C/+0x80 isn't carrying the sideways component. Missing data for
+next time: the raw bearing + control_direction per climb (only the
+quantised dir= is logged today) — add them to the LADDER log line
+when this is revived.
+
+[YARDROUTE] Graveyard route to Sector 7 station omits roof gap jump 2
+------------------------------------------------------------------------
+Parked: 2026-08-10 (user report + log.13 09:56-09:57, field 145).
+Journeys to Sector 7,Station 1/2 spoke "First take center wreck 1
+... Then center wreck 2. Then left wreck 2. Then ask again." — the
+user's sighted check: after climbing center wreck 1 the CORRECT next
+step is "roof gap jump 2", which sits very close ABOVE center wreck
+2; the spoken "center wreck 2 then left wreck 2" leg is wrong.
+Since center wreck 1/2 are the two ends of ONE climb pair, the graph
+is routing up one side and straight back down the other instead of
+across the roof gap. The graph does use roof-gap lines elsewhere in
+the very same session ("roof gap jump 1" in field 144's route
+09:41:24, "roof gap jump 3" in 145's route to the brown train
+09:51:05), so this is a connectivity/hop-choice error around center
+wreck 2 + roof gap jump 2, not a category exclusion. The cost was
+real: the player wandered ~15 minutes (09:57-10:12) before reaching
+the station via left wreck 2 — so a route through left wreck 2 DID
+eventually work; whether the spoken leg is impassable or merely
+wrong-order/misleading needs ground truth.
+When revived: dump field 145's walkmesh components around those four
+lines (which component each line END sits in, especially center
+wreck 2's top end vs roof gap jump 2's near end) and check the hop
+search's choice — same investigation family as the
+ff7_graveyard_train_dump.py tool that built [TRAINYARD97].
+
 
 ========================================================================
 Entries below imported 2026-08-06 from TODO.txt (user directive: work
@@ -878,6 +978,18 @@ truncated). Deadline should re-anchor on the flash/name-upgrade or
 first fragment opportunity, not the turn open.
 Also clean across all three logs: zero STALE lines, all 30 flash
 resolutions ok=1, no junk text anywhere.
+LOG NOTE 2026-08-10 (log.13, v2.30.107): (d) multi-target CONFIRMED
+in play at last ("Aerith, Limit, Cloud plus 70 HP, Tifa plus 50 HP,
+Aerith plus 122 HP." — one line, every target). Issue (5) home=prev
+off-by-one RE-OBSERVED, three clean cases: Ghost 2's Fire damage
+spoke as "Ghost 1, Drain, Tifa minus 53 HP." (10:13:16), and
+Aerith's Healing Wind heals twice rode the lingering ENEMY attack
+report ("Deenglow, attacks, Cloud plus 195 HP, Tifa plus 188 HP,
+Aerith plus 142 HP." 09:43:46; "Ghost 3, attacks, ..." 10:15:08 —
+an enemy "attacking" the party to full health is the audible
+symptom).
+Still zero STALE/junk lines. Issue (5) remains the top open
+battle-speech defect.
 
 [LAYERFILTER] Shift+; layer filter — SHIPPED v2.30.88 (2026-08-05), awaiting play-test
 ------------------------------------------------------------------------
@@ -2637,6 +2749,15 @@ src=gkt with the name; limit breaks speak what the screen shows;
 Tifa's limit (idx=98) -- note what speaks now; materia-granted
 commands (Mug/Sense) named on 2013+7H; zero REJECT lines in clean
 play; log header v2.30.100.
+PLAY-VERIFIED 2026-08-10 (log.13, v2.30.107, ~10 battles): every one
+of the 36 flash lines resolved ok=1 -- kernel-namespace names all
+src=gkt (Braver idx=0, Healing Wind idx=14, Beat Rush idx=98, Fire,
+Blizzard, Cure, Silence, item Potion), enemy-scene names (cmd=0x20
+Drain / Mono Laser) correctly via the heap fallback, ALL plausible;
+zero "BATTLE name REJECT"/AV lines; limits spoke exactly the screen
+names; Tifa's idx=98 now speaks "Beat Rush" (the [CMDNAME105] fix).
+Non-menu queue CLOSED; the menu half closed under [GKT102] the same
+session.
 2026-08-09 SAME EVENING: the command-menu half of this queue FAILED
 its first play test (log.11: every menu name shifted one down --
 "Left"/"Attack"/"Summon" for Attack/Magic/Item). Root cause: GKT
@@ -2674,6 +2795,14 @@ command name. Additional verify items:
 (f) Right on Attack still announces "Defend", Left "Change" (the
     unchanged v2.30.49 state path);
 (g) log header v2.30.103.
+PLAY-VERIFIED 2026-08-10 (log.13, v2.30.107, 2013+7H): (a) PASS --
+battle menu spoke Attack/Magic/Item/Steal/Limit at the right rows
+all session (the .100 one-down shift is gone); (b) PARTIAL -- Steal
+named; no Mug/Sense/2x-Cut-class materia equipped to exercise the
+rest; (c) PASS -- zero REJECT lines; (e) zero "BMENU shadow diff"
+lines THIS install (the item as written wants a 2026-plain session
+too -- still open); (g) header v2.30.107. STILL OPEN: (f)
+Defend/Change via Right/Left never pressed. Core fix confirmed.
 
 [REELS107] v2.30.107 verify queue -- Tifa's reel minigame tones + speech
 ------------------------------------------------------------------------
@@ -2702,6 +2831,18 @@ DEFERRED: Cait Sith's Slots (state 26) -- different pattern table
 needs symbol NAMING (sprites, not text) before speech/tones make
 sense; full reference listings already in the two investigation
 logs. Revive when he reaches a play-test party.
+FIRST PLAY DATA 2026-08-10 (log.13): (a) PASS -- "BMENU reel session
+count=1 rows=0,0,0 tone=1 speak=0 lead=250" on both of Tifa's limit
+confirms; cue lines fired steadily (measured spin mspp ~16-17 after
+a first-second spin-up from 33 -- the measurement half of (b)
+works); (e) PASS -- no battle-menu regressions anywhere in the
+session; (f) header v2.30.107. OUTCOMES: session 1 (09:44) landed
+damage ("Tifa, Beat Rush, Deenglow minus 48 HP." -- at least Hit);
+session 2 (10:13) ended "(no effect)" but that is NOT tone-timing
+evidence -- Ghost 2's Fire killed her target between confirm and
+execution. STILL NEEDED: (b) the user's EAR verdict (does pressing
+on the tone land Yeah!?) before touching limit_reel_tone_lead;
+(c) speak mode untested (speak=0 all session); (d) F8 never opened.
 
 [TIFALIMIT106] v2.30.106 verify queue -- Tifa/Cait Sith limit menus spoken
 ------------------------------------------------------------------------
@@ -2721,6 +2862,15 @@ returns to a re-announced command menu; (d) state 26 = Cait Sith
 Slots confirmed when he joins a party (currently BY ELIMINATION);
 (e) log-line count/ids match her learned techniques; (f) log header
 v2.30.106.
+PLAY-VERIFIED 2026-08-10 (log.13): (a) PASS -- "Limit level 1. Beat
+Rush." spoke on both reel-widget opens ("BMENU limit-special
+state=27 slot=1"); (e) PASS -- count=1 ids=15 = exactly her learned
+set; (f) header v2.30.107. NOT EXERCISED: (b) no target-list
+narration appeared after either reel confirm (state 27 -> 65535
+directly; whether the game skipped the target step or the user OK'd
+straight through isn't distinguishable from the log -- listen next
+time); (c) cancel path never taken; (d) Cait Sith still not in
+party.
 PART 2 [RESOLVED same day by v2.30.107 -- see [REELS107]: user chose
 both methods behind config, tone default; two static passes decoded
 the minigame (it runs INSIDE state 27, not during execution as
@@ -2748,6 +2898,14 @@ REJECT"/"gkt AV" lines in clean play (widened caps must not admit
 junk); (d) Cloud's Braver still speaks (biased branch unchanged);
 (e) enemy turns still "attacks"/named skills, enemy casts still
 "Magic"; (f) log header v2.30.105.
+PLAY-VERIFIED 2026-08-10 (log.13, v2.30.107): (a) PASS -- "Tifa,
+Steal" on every Steal turn (cmd=0x05 cmdname report-open lines);
+(b) PASS -- Tifa's limit spoke "Beat Rush" twice, flash idx=98 ok=1
+src=gkt, combined line "Tifa, Beat Rush, Deenglow minus 48 HP.";
+(c) PASS -- zero REJECT/AV lines; (d) PASS -- Cloud's Braver ok=1
+src=gkt four times; (e) PASS -- enemy turns opened "Ghost N, Magic"
+and upgraded to the real names (Fire, Drain) on flash; (f) header
+v2.30.107 (.105 included). ENTRY RESOLVED.
 RESIDUAL (unchanged .98 scope): Tifa's limit MENU is BMENU state 27
 (reels) -- the state-24 selection announce never fires for her;
 states 26/27 (Cait Sith slots / Tifa reels) still silent as lists.
@@ -2772,6 +2930,12 @@ after fighting a battle in the same session (the stale-block
 window); (b) summon + E.Skill tabs still named; (c) limit menu
 technique names still speak; (d) zero "MAGICM/LIMITM shadow diff"
 lines in clean play; (e) log header v2.30.104.
+PLAY-VERIFIED 2026-08-10 (log.13): (a) PASS -- magic menu spoke
+'Cure, 5 MP' at 09:46:16, AFTER three battles in the same session
+(exactly the stale-block window this fix targets); (d) zero
+shadow-diff lines; (e) header v2.30.107. NOT EXERCISED: (b)
+summon/E.Skill tabs (only Cure + Empty slots in the lineup), (c)
+menu-side limit list (LIMITM never opened).
 RESIDUAL (unchanged scope): item/materia/equip menu names + ALL
 descriptions still heap-scanned -- GKT can serve item-family NAMES
 (section 4 remap) if those menus ever report the same class;
